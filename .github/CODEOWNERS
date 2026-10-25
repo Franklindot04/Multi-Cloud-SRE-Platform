@@ -1,0 +1,10 @@
+# Default owner for everything
+*                   @Franklindot04
+
+# Area-specific ownership (adjust as the team grows)
+/infra/             @Franklindot04
+/platform/          @Franklindot04
+/apps/              @Franklindot04
+/deploy/            @Franklindot04
+/docs/              @Franklindot04
+/.github/           @Franklindot04
