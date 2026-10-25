@@ -45,7 +45,61 @@ variable "flow_log_retention_days" {
 }
 
 variable "cluster_name" {
-  description = "Optional EKS cluster name used to tag subnets. Leave null until the cluster exists."
+  description = "EKS cluster name. Defaults to <project>-<environment>. Also used to tag the shared subnets."
   type        = string
   default     = null
+}
+
+variable "kubernetes_version" {
+  description = "Kubernetes minor version for the EKS cluster. Newest version in EKS standard support at the time of writing."
+  type        = string
+  default     = "1.37"
+}
+
+variable "public_access_cidrs" {
+  description = "CIDR blocks allowed to reach the public Kubernetes API endpoint. Restrict to your own /32."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "admin_principal_arns" {
+  description = "IAM user or role ARNs granted cluster admin through EKS access entries."
+  type        = list(string)
+  default     = []
+}
+
+variable "node_instance_types" {
+  description = "Instance types for the managed node group."
+  type        = list(string)
+  default     = ["t3.large", "m5.large"]
+}
+
+variable "node_capacity_type" {
+  description = "Node capacity type: SPOT or ON_DEMAND."
+  type        = string
+  default     = "SPOT"
+}
+
+variable "node_desired_size" {
+  description = "Desired number of nodes."
+  type        = number
+  default     = 2
+}
+
+variable "node_min_size" {
+  description = "Minimum number of nodes."
+  type        = number
+  default     = 1
+}
+
+variable "node_max_size" {
+  description = "Maximum number of nodes."
+  type        = number
+  default     = 4
+}
+
+variable "node_disk_size_gb" {
+  description = "Root volume size in GiB for each node."
+  type        = number
+  default     = 30
 }

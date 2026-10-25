@@ -1,6 +1,6 @@
 # AWS environment stack
 
-Root Terraform stack for the AWS side of the platform. It currently provisions the VPC network by composing the [`aws-network`](../../modules/aws-network) module; clusters and other resources arrive in later changes.
+Root Terraform stack for the AWS side of the platform. It currently provisions the VPC network and the EKS cluster by composing the [`aws-network`](../../modules/aws-network) and [`aws-eks`](../../modules/aws-eks) modules; other resources arrive in later changes.
 
 ## Files
 
@@ -9,7 +9,8 @@ Root Terraform stack for the AWS side of the platform. It currently provisions t
 | `backend.tf` | S3 backend, partial configuration |
 | `backend.hcl.example` | Template for the per-environment backend values |
 | `network.tf` | VPC network via the `aws-network` module |
-| `outputs.tf` | VPC, subnet and NAT outputs |
+| `eks.tf` | EKS cluster via the `aws-eks` module |
+| `outputs.tf` | VPC, subnet, NAT and cluster outputs, including a kubeconfig command |
 | `providers.tf` | AWS provider with default tags |
 | `versions.tf` | Terraform and provider version constraints |
 | `variables.tf` | Inputs (`environment` is required; network inputs have defaults) |
@@ -43,6 +44,21 @@ terraform plan -var environment=dev
 | `cluster_name` | `null` | Set once the EKS cluster exists to tag subnets |
 
 Apply and destroy steps, with cost notes, are in the [AWS network runbook](../../../../docs/runbooks/aws-network.md).
+
+## Cluster inputs
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `cluster_name` | `<project>-<environment>` | Also used for the shared subnet tag, so the network and cluster always agree |
+| `kubernetes_version` | `1.37` | Newest EKS standard-support version when written; check the EKS version calendar before changing |
+| `public_access_cidrs` | `["0.0.0.0/0"]` | Restrict to your own `/32` |
+| `admin_principal_arns` | `[]` | IAM users or roles granted cluster admin; the creator is admin by default |
+| `node_instance_types` | `["t3.large", "m5.large"]` | |
+| `node_capacity_type` | `SPOT` | `SPOT` or `ON_DEMAND` |
+| `node_desired_size`, `node_min_size`, `node_max_size` | `2`, `1`, `4` | |
+| `node_disk_size_gb` | `30` | |
+
+Apply and destroy steps, with cost notes, are in the [AWS EKS runbook](../../../../docs/runbooks/aws-eks.md). The control plane bills hourly while the cluster exists.
 
 ## Validate without a backend
 

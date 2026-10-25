@@ -10,3 +10,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0004](0004-terraform-module-and-state-conventions.md) | Terraform module and state conventions | Accepted |
 | [0005](0005-observability-stack-choice.md) | Observability stack choice | Accepted |
 | [0006](0006-aws-network-design.md) | AWS network design | Accepted |
+| [0007](0007-eks-cluster-design.md) | EKS cluster design | Accepted |
