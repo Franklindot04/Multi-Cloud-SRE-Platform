@@ -8,9 +8,9 @@ TF_DIR := infra/terraform
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
 
-fmt: ## Format Terraform files (no-op if terraform is not installed)
+fmt: ## Format Terraform files; use CHECK=1 to only report (skips if terraform is missing)
 	@if command -v terraform >/dev/null 2>&1; then \
-		terraform fmt -recursive $(TF_DIR); \
+		terraform fmt -recursive $(if $(CHECK),-check -diff,) $(TF_DIR); \
 	else \
 		echo "terraform not installed; skipping fmt"; \
 	fi
@@ -27,18 +27,8 @@ lint: ## Lint markdown and YAML (skips tools that are not installed)
 		echo "yamllint not installed; skipping yaml lint"; \
 	fi
 
-validate: ## Validate Terraform configurations (placeholder until stacks exist)
-	@if ! command -v terraform >/dev/null 2>&1; then \
-		echo "terraform not installed; skipping validate"; \
-	elif [ -z "$$(find $(TF_DIR) -name '*.tf' -print -quit)" ]; then \
-		echo "no Terraform configuration found; nothing to validate"; \
-	else \
-		for dir in $$(find $(TF_DIR) -name '*.tf' -exec dirname {} \; | sort -u); do \
-			echo "validating $$dir"; \
-			terraform -chdir=$$dir init -backend=false -input=false >/dev/null && \
-			terraform -chdir=$$dir validate || exit 1; \
-		done; \
-	fi
+validate: ## Validate every Terraform directory (skips if terraform is missing)
+	@./scripts/terraform-validate.sh $(TF_DIR)
 
 docs: ## Check that every ADR is listed in the ADR index
 	@status=0; \

@@ -46,7 +46,7 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 ## Status
 
-Phase 0 (foundation) is in progress. The repository contains structure, documentation and tooling only; no cloud resources have been created.
+Phase 0 (foundation) is in progress. The repository structure, conventions, linting and CI are in place, and the Terraform bootstrap stacks for the AWS and GCP state buckets and the environment stack scaffolding are written and validate. Nothing has been applied and no cloud resources exist yet; clusters and networking come in Phase 1.
 
 ## Getting started
 

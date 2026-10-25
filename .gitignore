@@ -16,6 +16,8 @@ override.tf.json
 terraform.rc
 *.tfplan
 tfplan
+# Real backend config is local only; the committed template is backend.hcl.example
+backend.*.hcl
 # .terraform.lock.hcl is intentionally committed
 
 # Python
