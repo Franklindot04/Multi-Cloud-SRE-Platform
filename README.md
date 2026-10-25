@@ -46,7 +46,7 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 ## Status
 
-Phase 0 (foundation) is in progress. The repository structure, conventions, linting and CI are in place, and the Terraform bootstrap stacks for the AWS and GCP state buckets and the environment stack scaffolding are written and validate. Nothing has been applied and no cloud resources exist yet; clusters and networking come in Phase 1.
+Phase 0 (foundation) is in progress, and Phase 1 has started with the AWS network. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks for the state buckets and the `aws-network` module (VPC, subnets, NAT, flow logs) are written, tested and validated. Nothing has been applied and no cloud resources exist yet. GCP networking, the clusters, and DNS and traffic management are still to come.
 
 ## Getting started
 

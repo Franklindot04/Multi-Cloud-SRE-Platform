@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate docs
+.PHONY: help fmt lint validate test docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -29,6 +29,9 @@ lint: ## Lint markdown and YAML (skips tools that are not installed)
 
 validate: ## Validate every Terraform directory (skips if terraform is missing)
 	@./scripts/terraform-validate.sh $(TF_DIR)
+
+test: ## Run Terraform module tests (mocked providers, no credentials)
+	@./scripts/terraform-test.sh $(TF_DIR)/modules
 
 docs: ## Check that every ADR is listed in the ADR index
 	@status=0; \
