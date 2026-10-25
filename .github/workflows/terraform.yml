@@ -6,6 +6,7 @@ on:
       - "infra/terraform/**"
       - ".tflint.hcl"
       - "scripts/terraform-validate.sh"
+      - "scripts/terraform-test.sh"
       - ".github/workflows/terraform.yml"
 
 permissions:
@@ -38,6 +39,16 @@ jobs:
         with:
           terraform_version: "1.11.4"
       - run: ./scripts/terraform-validate.sh
+
+  test:
+    name: Module tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+      - run: ./scripts/terraform-test.sh
 
   tflint:
     name: TFLint

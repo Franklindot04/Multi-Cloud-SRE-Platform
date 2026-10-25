@@ -9,3 +9,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0003](0003-gitops-with-argo-cd.md) | GitOps with Argo CD | Accepted |
 | [0004](0004-terraform-module-and-state-conventions.md) | Terraform module and state conventions | Accepted |
 | [0005](0005-observability-stack-choice.md) | Observability stack choice | Accepted |
+| [0006](0006-aws-network-design.md) | AWS network design | Accepted |

@@ -27,10 +27,10 @@ State
 Practices
 
 - Require Terraform 1.11 or later (S3 native locking is stable from 1.11) and pin provider major versions with `~>` in root stacks. Modules declare minimum versions only.
-- Commit `.terraform.lock.hcl` with hashes for the Linux and macOS platforms in use (`terraform providers lock`).
+- Commit `.terraform.lock.hcl` for root stacks and bootstrap stacks, with hashes for the Linux and macOS platforms in use (`terraform providers lock`). Modules do not commit lock files; they inherit provider versions from the stack that calls them.
 - Modules contain no provider or backend configuration, and no hardcoded regions or account IDs.
 - Naming and tagging/labelling follow a common scheme: `project`, `environment`, `managed-by`, `owner`, applied through provider default tags or labels.
-- `terraform fmt -check`, `init -backend=false` plus `validate`, and `tflint` (core, AWS and GCP rulesets) run in CI on every pull request without cloud credentials. Plans run on pull requests and applies run only from the main branch through an approved workflow, both authenticated by OIDC federation, not stored keys.
+- `terraform fmt -check`, `init -backend=false` plus `validate`, and `tflint` (core, AWS and GCP rulesets) run in CI on every pull request without cloud credentials. Modules also carry native `terraform test` suites under `tests/` that use mocked providers and `command = plan`, so they run in CI without credentials too. Plans run on pull requests and applies run only from the main branch through an approved workflow, both authenticated by OIDC federation, not stored keys.
 - Modules are versioned with semantic versioning using per-module tags (`<module>/vX.Y.Z`).
 
 ## Consequences
