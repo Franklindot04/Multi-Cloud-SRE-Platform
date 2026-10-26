@@ -4,6 +4,9 @@ extends: default
 ignore: |
   .terraform/
   node_modules/
+  platform/addons/*/templates/
+  platform/addons/*/charts/
+  platform/addons/*/Chart.lock
 
 rules:
   line-length:

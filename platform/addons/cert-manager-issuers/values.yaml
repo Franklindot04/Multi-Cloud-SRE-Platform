@@ -1,0 +1,32 @@
+---
+# Namespace of the cert-manager release (the cluster resource namespace).
+namespace: cert-manager
+
+# Works with no domain: issues certificates signed by an in-cluster key.
+selfSigned:
+  enabled: true
+  name: selfsigned
+
+# CA-style issuer: a self-signed root certificate used to sign other certificates,
+# so workloads can trust one CA instead of many self-signed certificates.
+ca:
+  enabled: true
+  name: internal-ca
+  commonName: multi-cloud-sre internal CA
+  duration: 87600h # 10 years
+  renewBefore: 8760h
+
+# Let's Encrypt DNS-01 issuers. Present but disabled: nothing references them
+# and they are not created until a domain exists.
+dns01:
+  acmeServer: https://acme-staging-v02.api.letsencrypt.org/directory
+  email: ""
+  route53:
+    enabled: false
+    name: letsencrypt-route53
+    region: eu-north-1
+    hostedZoneId: ""
+  cloudDns:
+    enabled: false
+    name: letsencrypt-clouddns
+    project: ""

@@ -1,0 +1,47 @@
+---
+# Disabled until a domain exists. Without domain filters ExternalDNS would try
+# to manage every zone it can see, so it must not run unconfigured.
+externalDns:
+  enabled: false
+
+external-dns:
+  replicaCount: 1 # the chart allows at most one replica
+  priorityClassName: platform-addons-critical
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  podSecurityContext:
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    privileged: false
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    capabilities:
+      drop:
+        - ALL
+
+  serviceAccount:
+    create: true
+    name: external-dns
+
+  sources:
+    - ingress
+    - service
+
+  # upsert-only never deletes records, a safe default for a first rollout.
+  policy: upsert-only
+  registry: txt
+  interval: 1m
+  logLevel: info
+  logFormat: json

@@ -92,3 +92,13 @@ output "dns_name_servers" {
   description = "Cloud DNS name servers. Pass these to the AWS stack as delegated_subdomains."
   value       = module.dns.name_servers
 }
+
+output "external_dns_service_account_email" {
+  description = "Google service account email for the external-dns service account annotation (null when disabled)."
+  value       = one(google_service_account.external_dns[*].email)
+}
+
+output "cert_manager_service_account_email" {
+  description = "Google service account email for the cert-manager service account annotation (null when disabled)."
+  value       = one(google_service_account.cert_manager[*].email)
+}

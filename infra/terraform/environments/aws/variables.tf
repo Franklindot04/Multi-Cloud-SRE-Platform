@@ -168,3 +168,37 @@ variable "dns_record_ttl" {
   type        = number
   default     = 60
 }
+
+variable "enable_load_balancer_controller_iam" {
+  description = "Create the IAM role for the AWS Load Balancer Controller add-on."
+  type        = bool
+  default     = true
+}
+
+variable "enable_external_dns_iam" {
+  description = "Create the IAM role for the external-dns add-on. Needs a hosted zone (domain_name or addons_hosted_zone_id)."
+  type        = bool
+  default     = false
+}
+
+variable "enable_cert_manager_iam" {
+  description = "Create the IAM role for cert-manager Route 53 DNS-01 challenges. Needs a hosted zone (domain_name or addons_hosted_zone_id)."
+  type        = bool
+  default     = false
+}
+
+variable "addons_hosted_zone_id" {
+  description = "Route 53 hosted zone ID the DNS add-on roles may change. Defaults to the zone created from domain_name."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.addons_hosted_zone_id != "" || var.domain_name != "" || !(var.enable_external_dns_iam || var.enable_cert_manager_iam)
+    error_message = "The DNS add-on roles need a hosted zone: set domain_name or addons_hosted_zone_id, or disable enable_external_dns_iam and enable_cert_manager_iam."
+  }
+
+  validation {
+    condition     = var.addons_hosted_zone_id == "" || can(regex("^Z[A-Z0-9]{6,31}$", var.addons_hosted_zone_id))
+    error_message = "addons_hosted_zone_id must be a Route 53 hosted zone ID such as Z0123456789ABCDEFGHIJ."
+  }
+}

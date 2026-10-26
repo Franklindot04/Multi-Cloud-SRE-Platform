@@ -14,3 +14,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0008](0008-gcp-network-design.md) | GCP network design | Accepted |
 | [0009](0009-gke-cluster-design.md) | GKE cluster design | Accepted |
 | [0010](0010-dns-and-traffic-management.md) | DNS and traffic management | Accepted |
+| [0011](0011-cluster-baseline-addons.md) | Cluster baseline add-ons | Accepted |

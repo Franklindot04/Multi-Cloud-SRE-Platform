@@ -1,0 +1,9 @@
+---
+cert-manager:
+  # fsGroup lets the non-root controller read the IRSA web identity token.
+  securityContext:
+    fsGroup: 1001
+  serviceAccount:
+    annotations:
+      # terraform output cert_manager_role_arn (only needed for Route 53 DNS-01)
+      eks.amazonaws.com/role-arn: arn:aws:iam::REPLACE_ACCOUNT_ID:role/multi-cloud-sre-dev-cert-manager

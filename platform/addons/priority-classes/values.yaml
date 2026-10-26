@@ -1,0 +1,7 @@
+---
+# Higher than application workloads, lower than the built-in system-* classes.
+# The system-* classes are reserved for kube-system, so add-ons in their own
+# namespaces use this class instead.
+platformAddonsCritical:
+  name: platform-addons-critical
+  value: 1000000

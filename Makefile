@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate test docs
+.PHONY: help fmt lint validate test addons-check docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -32,6 +32,9 @@ validate: ## Validate every Terraform directory (skips if terraform is missing)
 
 test: ## Run Terraform module tests (mocked providers, no credentials)
 	@./scripts/terraform-test.sh $(TF_DIR)/modules
+
+addons-check: ## Lint, render and schema-check the cluster add-ons (skips if helm or kubeconform is missing)
+	@./scripts/addons-check.sh platform/addons
 
 docs: ## Check that every ADR is listed in the ADR index
 	@status=0; \

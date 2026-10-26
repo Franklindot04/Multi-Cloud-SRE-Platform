@@ -132,3 +132,25 @@ variable "dns_force_destroy" {
   type        = bool
   default     = false
 }
+
+variable "enable_external_dns_iam" {
+  description = "Create the Google service account and Workload Identity binding for the external-dns add-on. Needs dns_name."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_external_dns_iam || var.dns_name != ""
+    error_message = "enable_external_dns_iam needs a Cloud DNS zone: set dns_name."
+  }
+}
+
+variable "enable_cert_manager_iam" {
+  description = "Create the Google service account and Workload Identity binding for cert-manager Cloud DNS DNS-01 challenges. Needs dns_name."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_cert_manager_iam || var.dns_name != ""
+    error_message = "enable_cert_manager_iam needs a Cloud DNS zone: set dns_name."
+  }
+}

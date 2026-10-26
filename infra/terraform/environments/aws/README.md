@@ -10,6 +10,8 @@ Root Terraform stack for the AWS side of the platform. It currently provisions t
 | `backend.hcl.example` | Template for the per-environment backend values |
 | `network.tf` | VPC network via the `aws-network` module |
 | `eks.tf` | EKS cluster via the `aws-eks` module |
+| `addons-iam.tf` | IAM roles for the cluster add-ons (IRSA) via the `aws-irsa` module |
+| `policies/` | Vendored official load balancer controller IAM policy, with its source and version |
 | `dns.tf` | Optional Route 53 zone, delegation and traffic steering via the `aws-dns` module |
 | `outputs.tf` | VPC, subnet, NAT and cluster outputs, including a kubeconfig command |
 | `providers.tf` | AWS provider with default tags |
@@ -78,6 +80,19 @@ DNS is off by default: an empty `domain_name` creates nothing. Hosted zones and 
 | `dns_record_ttl` | `60` | Seconds |
 
 Apply the GCP stack first and pass its name servers here as `delegated_subdomains`; the stacks never read each other's state. See the [global DNS runbook](../../../../docs/runbooks/global-dns.md).
+
+## Add-on IAM inputs
+
+Roles for the cluster add-ons in [`platform/addons`](../../../../platform/addons). Nothing is installed by Terraform.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `enable_load_balancer_controller_iam` | `true` | Role for the AWS Load Balancer Controller, using the vendored official policy |
+| `enable_external_dns_iam` | `false` | Route 53 role scoped to one hosted zone; needs `domain_name` or `addons_hosted_zone_id` |
+| `enable_cert_manager_iam` | `false` | Route 53 DNS-01 role scoped to one hosted zone; same requirement |
+| `addons_hosted_zone_id` | `""` | Hosted zone the DNS roles may change; defaults to the zone from `domain_name` |
+
+Outputs `aws_load_balancer_controller_role_arn`, `external_dns_role_arn` and `cert_manager_role_arn` go into the `eks.amazonaws.com/role-arn` annotations in the add-on values files. See the [cluster add-ons runbook](../../../../docs/runbooks/cluster-addons.md).
 
 ## Validate without a backend
 

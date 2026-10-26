@@ -1,0 +1,7 @@
+apiVersion: v2
+name: priority-classes
+description: Priority class for platform add-ons that do not run in kube-system
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

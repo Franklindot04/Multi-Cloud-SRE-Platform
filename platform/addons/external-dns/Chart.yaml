@@ -1,0 +1,13 @@
+apiVersion: v2
+name: external-dns
+description: ExternalDNS, publishes Ingress and Service host names to Route 53 or Cloud DNS (disabled by default)
+type: application
+version: 0.1.0
+appVersion: 0.23.0
+annotations:
+  platform/clouds: "aws,gcp"
+dependencies:
+  - name: external-dns
+    version: 1.23.0
+    repository: https://kubernetes-sigs.github.io/external-dns/
+    condition: externalDns.enabled

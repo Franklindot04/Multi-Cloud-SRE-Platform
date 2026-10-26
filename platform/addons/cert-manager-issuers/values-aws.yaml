@@ -1,0 +1,7 @@
+---
+# Route 53 DNS-01 is the AWS option. Credentials come from IRSA on the
+# cert-manager service account (see the cert-manager add-on), never from keys.
+dns01:
+  route53:
+    region: eu-north-1
+    hostedZoneId: ZREPLACEHOSTEDZONEID # terraform output dns_zone_id

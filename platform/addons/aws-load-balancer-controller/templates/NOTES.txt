@@ -1,0 +1,1 @@
+Wrapper chart for the aws-load-balancer-controller add-on. The workload comes from the upstream chart dependency; see this directory README.

@@ -1,0 +1,6 @@
+---
+# Cloud DNS DNS-01 is the GCP option. Credentials come from Workload Identity
+# on the cert-manager service account (see the cert-manager add-on).
+dns01:
+  cloudDns:
+    project: REPLACE_PROJECT_ID

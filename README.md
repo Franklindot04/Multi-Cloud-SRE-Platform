@@ -46,7 +46,7 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 ## Status
 
-Phase 0 (foundation) is in progress, and Phase 1 has started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks for the state buckets, the network and Kubernetes cluster modules for both clouds, and the optional DNS and traffic management modules (`aws-dns`, `gcp-dns`, off until a domain is supplied) are written, tested and validated. No network, cluster or DNS zone has been applied yet. Load balancer endpoints for the DNS records arrive with the application phase.
+Phase 0 (foundation) is in progress, and Phases 1 and 2 have started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks, the network and Kubernetes cluster modules for both clouds, and the optional DNS modules are written, tested and validated. The cluster baseline add-ons (AWS Load Balancer Controller, external-dns, cert-manager, metrics-server) are defined as pinned, CI-checked Helm charts in `platform/addons`, with their cloud permissions in Terraform; Argo CD, which will deploy them, comes next. No network, cluster, DNS zone or add-on has been applied yet.
 
 ## Getting started
 

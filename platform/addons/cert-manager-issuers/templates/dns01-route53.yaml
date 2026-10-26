@@ -1,0 +1,20 @@
+{{- if .Values.dns01.route53.enabled }}
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ .Values.dns01.route53.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  acme:
+    server: {{ .Values.dns01.acmeServer }}
+    email: {{ required "dns01.email is required when a DNS-01 issuer is enabled" .Values.dns01.email }}
+    privateKeySecretRef:
+      name: {{ .Values.dns01.route53.name }}-account-key
+    solvers:
+      - dns01:
+          route53:
+            region: {{ .Values.dns01.route53.region }}
+            hostedZoneID: {{ required "dns01.route53.hostedZoneId is required" .Values.dns01.route53.hostedZoneId }}
+{{- end }}
