@@ -1,0 +1,48 @@
+name: addons
+
+on:
+  pull_request:
+    paths:
+      - "platform/addons/**"
+      - "scripts/addons-check.sh"
+      - ".yamllint.yaml"
+      - ".github/workflows/addons.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: addons-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KUBECONFORM_VERSION: v0.8.0
+  # Kubernetes versions the clusters run, used for schema validation.
+  EKS_KUBERNETES_VERSION: "1.37.0"
+  GKE_KUBERNETES_VERSION: "1.36.0"
+
+jobs:
+  check:
+    name: Lint and render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.1.4
+
+      - name: Install kubeconform
+        run: |
+          base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -fsSLO "${base}/kubeconform-linux-amd64.tar.gz"
+          curl -fsSLO "${base}/CHECKSUMS"
+          grep ' kubeconform-linux-amd64.tar.gz$' CHECKSUMS | sha256sum -c -
+          tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+
+      - name: Install yamllint
+        run: pip install --user yamllint
+
+      - name: helm lint, helm template, kubeconform and yamllint
+        run: ./scripts/addons-check.sh platform/addons

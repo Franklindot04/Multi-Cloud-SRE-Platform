@@ -1,0 +1,1 @@
+Wrapper chart for the external-dns add-on. The workload comes from the upstream chart dependency; see this directory README.

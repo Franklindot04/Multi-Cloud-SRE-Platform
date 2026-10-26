@@ -1,0 +1,7 @@
+apiVersion: v2
+name: cert-manager-issuers
+description: ClusterIssuers for cert-manager - self-signed, internal CA, and optional ACME DNS-01
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

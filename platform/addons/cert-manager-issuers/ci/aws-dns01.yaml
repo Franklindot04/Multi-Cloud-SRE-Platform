@@ -1,0 +1,5 @@
+---
+dns01:
+  email: platform@example.com
+  route53:
+    enabled: true

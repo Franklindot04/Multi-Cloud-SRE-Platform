@@ -1,0 +1,6 @@
+---
+cert-manager:
+  serviceAccount:
+    annotations:
+      # terraform output cert_manager_service_account_email (only needed for Cloud DNS DNS-01)
+      iam.gke.io/gcp-service-account: certmgr-dev@REPLACE_PROJECT_ID.iam.gserviceaccount.com

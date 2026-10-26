@@ -10,6 +10,7 @@ Root Terraform stack for the GCP side of the platform. It currently provisions t
 | `backend.hcl.example` | Template for the per-environment backend values |
 | `network.tf` | VPC network via the `gcp-network` module |
 | `gke.tf` | GKE cluster via the `gcp-gke` module |
+| `addons-iam.tf` | Service accounts and Workload Identity bindings for the cluster add-ons |
 | `dns.tf` | Optional Cloud DNS zone via the `gcp-dns` module |
 | `outputs.tf` | Network, cluster and credentials outputs, including a `get-credentials` command |
 | `providers.tf` | Google provider with default labels |
@@ -73,6 +74,17 @@ DNS is off by default: an empty `dns_name` creates nothing. A Cloud DNS zone bil
 | `dns_force_destroy` | `false` | Allow destroying the zone with unmanaged record sets |
 
 After applying, pass the `dns_name_servers` output to the AWS stack as `delegated_subdomains`. See the [global DNS runbook](../../../../docs/runbooks/global-dns.md).
+
+## Add-on IAM inputs
+
+Service accounts for the cluster add-ons in [`platform/addons`](../../../../platform/addons), bound to Kubernetes service accounts with Workload Identity. Nothing is installed by Terraform.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `enable_external_dns_iam` | `false` | `roles/dns.admin` on the one Cloud DNS zone, plus project-level `roles/dns.reader` to list zones; needs `dns_name` |
+| `enable_cert_manager_iam` | `false` | Same permissions for Cloud DNS DNS-01; needs `dns_name` |
+
+Outputs `external_dns_service_account_email` and `cert_manager_service_account_email` go into the `iam.gke.io/gcp-service-account` annotations in the add-on values files. See the [cluster add-ons runbook](../../../../docs/runbooks/cluster-addons.md).
 
 ## Validate without a backend
 

@@ -87,6 +87,10 @@ secrets/
 .kube/
 kubeconfig*
 
+# Helm chart dependencies are downloaded at build time; Chart.lock is committed
+platform/addons/*/charts/
+*.tgz
+
 # Local scratch
 tmp/
 *.log

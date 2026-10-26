@@ -5,7 +5,7 @@ Infrastructure as code for both clouds. Everything under [`terraform/`](terrafor
 | Path | Purpose |
 | --- | --- |
 | `bootstrap/aws`, `bootstrap/gcp` | One-time stacks that create the remote state buckets |
-| `modules/` | Reusable Terraform modules (`aws-network`, `aws-eks`, `gcp-network`, `gcp-gke`, `aws-dns`, `gcp-dns`), with a `_template` for new ones |
+| `modules/` | Reusable Terraform modules (`aws-network`, `aws-eks`, `aws-irsa`, `gcp-network`, `gcp-gke`, `aws-dns`, `gcp-dns`), with a `_template` for new ones |
 | `environments/aws` | AWS root stack: S3 backend, provider, variables, the VPC network, the EKS cluster and optional DNS |
 | `environments/gcp` | GCP root stack: GCS backend, provider, variables, the VPC network, the GKE cluster and an optional DNS zone |
 
@@ -16,4 +16,4 @@ AWS networking (VPC, subnets, NAT, flow logs) and the EKS cluster (managed Spot 
 - Terraform 1.11 or later; AWS state uses S3 native locking (stable from 1.11), so there is no DynamoDB table.
 - Regions: `eu-north-1` (AWS) and `europe-north1` (GCP).
 - CI runs `fmt`, `validate` and `tflint` on pull requests with no cloud credentials (see [`terraform.yml`](../.github/workflows/terraform.yml)). CI also runs the module tests. Locally: `make fmt validate test`.
-- Full conventions: [ADR-0004](../docs/adr/0004-terraform-module-and-state-conventions.md). Runbooks: [bootstrap](../docs/runbooks/terraform-bootstrap.md) and [AWS network](../docs/runbooks/aws-network.md) and [AWS EKS](../docs/runbooks/aws-eks.md) and [GCP network](../docs/runbooks/gcp-network.md) and [GCP GKE](../docs/runbooks/gcp-gke.md), and [global DNS](../docs/runbooks/global-dns.md).
+- Full conventions: [ADR-0004](../docs/adr/0004-terraform-module-and-state-conventions.md). Runbooks: [bootstrap](../docs/runbooks/terraform-bootstrap.md) and [AWS network](../docs/runbooks/aws-network.md) and [AWS EKS](../docs/runbooks/aws-eks.md) and [GCP network](../docs/runbooks/gcp-network.md) and [GCP GKE](../docs/runbooks/gcp-gke.md), and [global DNS](../docs/runbooks/global-dns.md). The baseline add-ons (load balancer controller, external-dns, cert-manager, metrics-server) are defined as GitOps-ready charts in [`platform/addons`](../platform/addons); Terraform creates only their cloud permissions (`addons-iam.tf` in each environment, IAM roles for service accounts on AWS and Workload Identity service accounts on GCP). See [ADR-0011](../docs/adr/0011-cluster-baseline-addons.md) and the [cluster add-ons runbook](../docs/runbooks/cluster-addons.md).

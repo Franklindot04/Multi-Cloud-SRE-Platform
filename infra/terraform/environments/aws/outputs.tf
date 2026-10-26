@@ -77,3 +77,18 @@ output "app_fqdn" {
   description = "Fully qualified name of the application record (null when no domain is set)."
   value       = module.dns.app_fqdn
 }
+
+output "aws_load_balancer_controller_role_arn" {
+  description = "IAM role ARN for the AWS Load Balancer Controller service account annotation (null when disabled)."
+  value       = one(module.lbc_irsa[*].role_arn)
+}
+
+output "external_dns_role_arn" {
+  description = "IAM role ARN for the external-dns service account annotation (null when disabled)."
+  value       = one(module.external_dns_irsa[*].role_arn)
+}
+
+output "cert_manager_role_arn" {
+  description = "IAM role ARN for the cert-manager service account annotation (null when disabled)."
+  value       = one(module.cert_manager_irsa[*].role_arn)
+}

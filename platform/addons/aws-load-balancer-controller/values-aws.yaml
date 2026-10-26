@@ -1,0 +1,18 @@
+---
+aws-load-balancer-controller:
+  # Required: pods cannot reach the instance metadata service (the node
+  # launch template sets a hop limit of 1), so the controller cannot discover
+  # the region or VPC on its own.
+  clusterName: multi-cloud-sre-dev
+  region: eu-north-1
+  vpcId: vpc-REPLACE_WITH_VPC_ID # terraform output vpc_id
+
+  serviceAccount:
+    annotations:
+      # terraform output aws_load_balancer_controller_role_arn
+      eks.amazonaws.com/role-arn: arn:aws:iam::REPLACE_ACCOUNT_ID:role/multi-cloud-sre-dev-lbc
+
+  defaultTags:
+    project: multi-cloud-sre
+    environment: dev
+    managed-by: argocd
