@@ -16,7 +16,8 @@ Cluster mode
 
 Network and access
 
-- VPC-native using the pod and service secondary ranges from the network module.
+- VPC-native using the pod and service secondary ranges from the network module, which are passed in by name and so always match.
+- The cluster, its node pool, node service account and KMS key ring are named from the cluster name (`<project>-<environment>`, at most 24 characters because the node service account ID is limited to 30), independently of the network's own resource names.
 - Nodes are private (no external IPs) and reach the internet through Cloud NAT.
 - The control plane keeps a public endpoint so the cluster can be managed without a bastion, but it is limited by `master_authorized_cidrs`, which defaults to empty. With an empty list nothing on the internet can reach it, so operators must add their own `/32`. A private-only endpoint can be selected with `enable_private_endpoint` for stricter environments.
 - Google public IP ranges are not given access to the control plane.

@@ -12,6 +12,7 @@ The GKE cluster needs a VPC in `europe-north1`. The design should mirror the AWS
 Network
 
 - A custom-mode VPC with no auto-created subnets and regional dynamic routing. Every range is chosen explicitly, which is required to keep the address plan authoritative.
+- Resources are named `<project>-<environment>` (for example `multi-cloud-sre-dev`), the same scheme as the AWS network, so the two clouds read consistently.
 - A VPC in GCP is global, so a single regional subnet in `europe-north1` carries the nodes. Additional regions would add subnets to the same VPC.
 
 VPC-native GKE ranges

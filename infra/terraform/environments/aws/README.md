@@ -10,6 +10,7 @@ Root Terraform stack for the AWS side of the platform. It currently provisions t
 | `backend.hcl.example` | Template for the per-environment backend values |
 | `network.tf` | VPC network via the `aws-network` module |
 | `eks.tf` | EKS cluster via the `aws-eks` module |
+| `dns.tf` | Optional Route 53 zone, delegation and traffic steering via the `aws-dns` module |
 | `outputs.tf` | VPC, subnet, NAT and cluster outputs, including a kubeconfig command |
 | `providers.tf` | AWS provider with default tags |
 | `versions.tf` | Terraform and provider version constraints |
@@ -59,6 +60,24 @@ Apply and destroy steps, with cost notes, are in the [AWS network runbook](../..
 | `node_disk_size_gb` | `30` | |
 
 Apply and destroy steps, with cost notes, are in the [AWS EKS runbook](../../../../docs/runbooks/aws-eks.md). The control plane bills hourly while the cluster exists.
+
+## DNS inputs
+
+DNS is off by default: an empty `domain_name` creates nothing. Hosted zones and health checks bill monthly.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `domain_name` | `""` | Domain for the Route 53 hosted zone, for example `example.com` |
+| `delegated_subdomains` | `{}` | Subdomain to name servers, for example `{ gke = [...] }`, from the GCP stack's `dns_name_servers` output |
+| `dns_endpoints` | `{}` | Endpoints keyed `aws` and `gcp`, each with `fqdn` or `ip` and optional health check settings; empty creates no records |
+| `dns_enable_health_checks` | `true` | Health checks bill monthly |
+| `app_hostname` | `app` | Creates `app.<domain>` |
+| `routing_policy` | `weighted` | `weighted` for normal operation, `failover` for disaster recovery |
+| `dns_weights` | `{aws=50, gcp=50}` | Weights for the weighted policy |
+| `primary_cloud` | `aws` | Primary under the failover policy |
+| `dns_record_ttl` | `60` | Seconds |
+
+Apply the GCP stack first and pass its name servers here as `delegated_subdomains`; the stacks never read each other's state. See the [global DNS runbook](../../../../docs/runbooks/global-dns.md).
 
 ## Validate without a backend
 

@@ -57,3 +57,23 @@ output "kubeconfig_command" {
   description = "Command that writes this cluster's credentials into your kubeconfig."
   value       = "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name}"
 }
+
+output "dns_zone_id" {
+  description = "ID of the Route 53 hosted zone (null when no domain is set)."
+  value       = module.dns.zone_id
+}
+
+output "dns_name_servers" {
+  description = "Route 53 name servers to set at the domain registrar."
+  value       = module.dns.name_servers
+}
+
+output "dns_health_check_ids" {
+  description = "IDs of the Route 53 health checks, keyed by cloud."
+  value       = module.dns.health_check_ids
+}
+
+output "app_fqdn" {
+  description = "Fully qualified name of the application record (null when no domain is set)."
+  value       = module.dns.app_fqdn
+}

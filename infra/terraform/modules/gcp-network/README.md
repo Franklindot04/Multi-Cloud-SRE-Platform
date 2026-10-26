@@ -33,6 +33,19 @@ module "network" {
 
 A GKE module consumes `subnet_name`, `pods_range_name` and `services_range_name` as `ip_allocation_policy`'s `cluster_secondary_range_name` and `services_secondary_range_name`.
 
+## Naming
+
+Every resource is named `<name>-<environment>` plus a suffix, so with `name = "multi-cloud-sre"` and `environment = "dev"`:
+
+| Resource | Name |
+| --- | --- |
+| VPC network, Cloud Router, Cloud NAT | `multi-cloud-sre-dev` |
+| Node subnet | `multi-cloud-sre-dev-nodes` |
+| Secondary ranges | `multi-cloud-sre-dev-pods`, `multi-cloud-sre-dev-services` |
+| Firewall rules | `multi-cloud-sre-dev-allow-internal`, `-allow-iap-ssh`, `-allow-health-checks`, `-deny-all-ingress` |
+
+Pass the project name, not a name that already ends in the environment, or the environment appears twice.
+
 ## Address ranges
 
 All ranges are carved from the VPC /16 with `cidrsubnet`, so they always lie inside it and never overlap each other. For `vpc_cidr = 10.20.0.0/16`:
@@ -51,7 +64,7 @@ All ranges are carved from the VPC /16 with `cidrsubnet`, so they always lie ins
 | --- | --- | --- | --- |
 | `project_id` | `string` | n/a | GCP project ID. |
 | `region` | `string` | n/a | Region for the subnet, router and NAT. |
-| `name` | `string` | n/a | Base name (3-40 characters, lowercase); typically the cluster name. |
+| `name` | `string` | n/a | Base name (3-40 characters, lowercase), typically the project name. Resources are named `<name>-<environment>`. |
 | `environment` | `string` | n/a | One of `dev`, `staging`, `prod`. |
 | `vpc_cidr` | `string` | n/a | Private `/16` the subnet and secondary ranges are derived from. |
 | `nat_mode` | `string` | `"enabled"` | `enabled` or `none`. |
