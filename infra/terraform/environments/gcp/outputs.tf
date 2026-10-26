@@ -42,3 +42,38 @@ output "nat_name" {
   description = "Name of the Cloud NAT gateway (null when disabled)."
   value       = module.network.nat_name
 }
+
+output "cluster_name" {
+  description = "Name of the GKE cluster."
+  value       = module.gke.cluster_name
+}
+
+output "cluster_endpoint" {
+  description = "GKE control plane endpoint."
+  value       = module.gke.cluster_endpoint
+}
+
+output "cluster_location" {
+  description = "Zone or region of the GKE cluster."
+  value       = module.gke.location
+}
+
+output "workload_pool" {
+  description = "Workload Identity pool of the cluster."
+  value       = module.gke.workload_pool
+}
+
+output "node_service_account_email" {
+  description = "Email of the dedicated GKE node service account."
+  value       = module.gke.node_service_account_email
+}
+
+output "kms_key_id" {
+  description = "ID of the KMS key encrypting Kubernetes secrets."
+  value       = module.gke.kms_key_id
+}
+
+output "get_credentials_command" {
+  description = "Command that writes this cluster's credentials into your kubeconfig."
+  value       = module.gke.get_credentials_command
+}

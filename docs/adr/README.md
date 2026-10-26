@@ -12,3 +12,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0006](0006-aws-network-design.md) | AWS network design | Accepted |
 | [0007](0007-eks-cluster-design.md) | EKS cluster design | Accepted |
 | [0008](0008-gcp-network-design.md) | GCP network design | Accepted |
+| [0009](0009-gke-cluster-design.md) | GKE cluster design | Accepted |
