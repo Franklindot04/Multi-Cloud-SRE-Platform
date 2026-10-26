@@ -1,0 +1,37 @@
+---
+# HA profile for production hubs: use together with values.yaml (values.yaml first, then this file).
+# Needs at least three schedulable nodes and noticeably more memory than the default profile.
+argo-cd:
+  global:
+    affinity:
+      podAntiAffinity: hard
+
+  controller:
+    replicas: 2
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+
+  server:
+    replicas: 2
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+
+  repoServer:
+    replicas: 2
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+
+  applicationSet:
+    replicas: 2
+    pdb:
+      enabled: true
+      maxUnavailable: 1
+
+  # Replace the single Redis with Redis HA.
+  redis:
+    enabled: false
+  redis-ha:
+    enabled: true

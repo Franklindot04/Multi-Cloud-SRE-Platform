@@ -1,0 +1,61 @@
+---
+# ClusterIssuers on GKE. Wave 2: a PreSync hook in the chart waits for cert-manager's CRDs and webhook.
+# The Cloud DNS DNS-01 issuer stays off unless the cluster is labelled platform.example/dns01=true.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: cert-manager-issuers-gcp
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/cloud: gcp
+  template:
+    metadata:
+      name: 'cert-manager-issuers-gcp-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: cert-manager-issuers
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/addons/cert-manager-issuers
+        helm:
+          releaseName: cert-manager-issuers
+          valueFiles:
+            - values.yaml
+            - 'values-{{ index .metadata.labels "platform.example/cloud" }}.yaml'
+          parameters:
+            - name: 'dns01.cloudDns.enabled'
+              value: '{{ default "false" (index .metadata.labels "platform.example/dns01") }}'
+            - name: 'dns01.cloudDns.project'
+              value: '{{ index .metadata.annotations "platform.example/project-id" }}'
+              forceString: true
+            - name: 'dns01.email'
+              value: '{{ index .metadata.annotations "platform.example/acme-email" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: cert-manager
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: 8
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

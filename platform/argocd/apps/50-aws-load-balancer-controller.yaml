@@ -1,0 +1,81 @@
+---
+# AWS Load Balancer Controller on EKS. Wave 3.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: aws-load-balancer-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/cloud: aws
+  template:
+    metadata:
+      name: 'aws-load-balancer-controller-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: aws-load-balancer-controller
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/addons/aws-load-balancer-controller
+        helm:
+          releaseName: aws-load-balancer-controller
+          valueFiles:
+            - values.yaml
+            - 'values-{{ index .metadata.labels "platform.example/cloud" }}.yaml'
+          parameters:
+            - name: 'aws-load-balancer-controller.clusterName'
+              value: '{{ index .metadata.annotations "platform.example/cluster-name" }}'
+              forceString: true
+            - name: 'aws-load-balancer-controller.region'
+              value: '{{ index .metadata.annotations "platform.example/region" }}'
+              forceString: true
+            - name: 'aws-load-balancer-controller.vpcId'
+              value: '{{ index .metadata.annotations "platform.example/vpc-id" }}'
+              forceString: true
+            - name: 'aws-load-balancer-controller.serviceAccount.annotations.eks\.amazonaws\.com/role-arn'
+              value: '{{ index .metadata.annotations "platform.example/lbc-role-arn" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: kube-system
+      ignoreDifferences:
+        # The chart generates a new self-signed webhook certificate on every render.
+        - group: ""
+          kind: Secret
+          name: aws-load-balancer-tls
+          jsonPointers:
+            - /data
+        - group: admissionregistration.k8s.io
+          kind: MutatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+        - group: admissionregistration.k8s.io
+          kind: ValidatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 8
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

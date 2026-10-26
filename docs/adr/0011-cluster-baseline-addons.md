@@ -44,7 +44,7 @@ Version pinning policy
 
 - Both clouds get a working, maintained ingress path without running a proxy of our own.
 - The two clouds differ in ingress objects (`alb` versus `gce`), so manifests per cloud differ until the Gateway API is adopted.
-- Definitions can be validated and reviewed before any cluster exists, at the cost of placeholder values that must be filled from Terraform outputs.
+- Definitions can be validated and reviewed before any cluster exists, with cluster identifiers supplied at deploy time from Argo CD cluster Secrets (see [ADR-0012](0012-argocd-hub-and-gitops-structure.md)) instead of being committed.
 - Certificates work immediately through the self-signed and CA issuers; publicly trusted certificates wait for a domain.
 - Chart upgrades are deliberate, which means keeping up with upstream, especially cert-manager CRD changes.
 

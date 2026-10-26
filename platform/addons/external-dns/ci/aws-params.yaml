@@ -1,0 +1,12 @@
+---
+# Fixture values standing in for the Helm parameters that Argo CD supplies from the cluster secret.
+external-dns:
+  domainFilters:
+    - example.com
+  txtOwnerId: ci-cluster
+  env:
+    - name: AWS_DEFAULT_REGION
+      value: eu-north-1
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ci-external-dns

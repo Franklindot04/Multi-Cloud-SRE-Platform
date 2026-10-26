@@ -1,5 +1,8 @@
 ---
+# Fixture values for rendering the optional Route 53 issuer.
 dns01:
   email: platform@example.com
   route53:
     enabled: true
+    region: eu-north-1
+    hostedZoneId: Z0000000000000000000

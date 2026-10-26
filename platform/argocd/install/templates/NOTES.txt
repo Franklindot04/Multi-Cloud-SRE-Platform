@@ -1,0 +1,1 @@
+Wrapper chart for Argo CD. The workload comes from the argo-cd chart dependency; see this directory README.

@@ -1,6 +1,6 @@
 # Cluster add-ons
 
-GitOps-ready definitions of the baseline add-ons for both clusters. Argo CD deploys them from this directory in the next change (see [ADR-0011](../../docs/adr/0011-cluster-baseline-addons.md)). **Nothing is installed by these definitions.** The cloud permissions they need are created by Terraform in `infra/terraform/environments/<cloud>/addons-iam.tf`.
+GitOps-ready definitions of the baseline add-ons for both clusters. Argo CD deploys them from this directory (see [ADR-0011](../../docs/adr/0011-cluster-baseline-addons.md) and [`platform/argocd`](../argocd)). **Nothing is installed by these definitions themselves.** The cloud permissions they need are created by Terraform in `infra/terraform/environments/<cloud>/addons-iam.tf`.
 
 ## Components and pinned versions
 
@@ -40,7 +40,8 @@ platform/addons/<name>/
   values-aws.yaml       EKS overrides (where they differ)
   values-gcp.yaml       GKE overrides (where they differ)
   templates/            extra manifests (issuers, priority classes)
-  ci/<cloud>-*.yaml     extra value sets used only by the checks
+  ci/<cloud>-params.yaml  fixture values for the identifiers Argo CD supplies (checks only)
+  ci/<cloud>-*.yaml     extra value sets that switch on optional features (checks only)
   README.md
 ```
 
@@ -65,13 +66,13 @@ The built-in `system-*` classes are reserved for `kube-system`, so add-ons in th
 4. `aws-load-balancer-controller`, `metrics-server` (EKS)
 5. `external-dns` (only when a domain exists)
 
-### Workload identity placeholders
+### Cluster identifiers are not in these files
 
-Service account annotations in `values-aws.yaml` and `values-gcp.yaml` hold `REPLACE_...` placeholders. Replace them with the Terraform outputs: `aws_load_balancer_controller_role_arn`, `external_dns_role_arn` and `cert_manager_role_arn` (AWS), and `external_dns_service_account_email` and `cert_manager_service_account_email` (GCP). Also set `vpcId` for the load balancer controller from `vpc_id`.
+The values files hold no account IDs, VPC IDs, role ARNs, project IDs or domains. Argo CD supplies them as Helm parameters from the annotations on the cluster's Argo CD Secret (see [`platform/argocd`](../argocd)), which the bootstrap script fills from Terraform outputs. The parameters are: cluster name, region, VPC ID and the IRSA role ARN for the load balancer controller; the IRSA role ARN or Workload Identity service account email for cert-manager and external-dns; the hosted zone ID, project ID and ACME email for the DNS-01 issuers; and the domain for external-dns. For a manual install, pass the same values with `--set-string` (see the [add-ons runbook](../../docs/runbooks/cluster-addons.md)).
 
 ## Disabled until a domain exists
 
-- **external-dns** renders nothing until `externalDns.enabled` is set to `true`.
+- **external-dns** renders nothing until `externalDns.enabled` is `true`. Argo CD sets it only on clusters labelled `platform.example/external-dns=true`.
 - **DNS-01 ClusterIssuers** for Route 53 and Cloud DNS are templates that are off by default (`dns01.*.enabled: false`).
 - The **self-signed** and **internal CA** issuers work without a domain and are on by default.
 
@@ -89,4 +90,4 @@ Service account annotations in `values-aws.yaml` and `values-gcp.yaml` hold `REP
 make addons-check
 ```
 
-For every add-on and each cloud it targets this runs `helm lint --strict`, `helm template` and `kubeconform` (strict mode, with a CRD schema catalog), plus the optional features in `ci/`, then `yamllint`. Schemas are pinned to the Kubernetes version each cluster runs: **1.37** for EKS (the `aws-eks` module default) and **1.36** for GKE (the current default of the Regular release channel, checked 2026-10-26 in the GKE release notes). CustomResourceDefinitions are not schema-checked. The target skips with a message if `helm` or `kubeconform` is not installed.
+For every add-on and each cloud it targets this runs `helm lint --strict`, `helm template` and `kubeconform` (strict mode, with a CRD schema catalog), plus the optional features in `ci/`, then `yamllint`. The CRD schemas come from a pinned commit of the `datreeio/CRDs-catalog`. Schemas are pinned to the Kubernetes version each cluster runs: **1.37** for EKS (the `aws-eks` module default) and **1.36** for GKE (the current default of the Regular release channel, checked 2026-10-26 in the GKE release notes). CustomResourceDefinitions are not schema-checked. The target skips with a message if `helm` or `kubeconform` is not installed.

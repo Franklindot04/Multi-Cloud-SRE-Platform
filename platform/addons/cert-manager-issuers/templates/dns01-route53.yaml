@@ -15,6 +15,6 @@ spec:
     solvers:
       - dns01:
           route53:
-            region: {{ .Values.dns01.route53.region }}
+            region: {{ required "dns01.route53.region is required" .Values.dns01.route53.region }}
             hostedZoneID: {{ required "dns01.route53.hostedZoneId is required" .Values.dns01.route53.hostedZoneId }}
 {{- end }}

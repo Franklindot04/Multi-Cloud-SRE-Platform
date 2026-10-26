@@ -1,0 +1,11 @@
+---
+# Fixture values standing in for the Helm parameters that Argo CD supplies from the cluster secret.
+external-dns:
+  domainFilters:
+    - gke.example.com
+  txtOwnerId: ci-cluster
+  extraArgs:
+    google-project: ci-project
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: extdns@ci-project.iam.gserviceaccount.com

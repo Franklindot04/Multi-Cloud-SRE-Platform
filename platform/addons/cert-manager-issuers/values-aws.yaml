@@ -1,7 +1,5 @@
 ---
-# Route 53 DNS-01 is the AWS option. Credentials come from IRSA on the
-# cert-manager service account (see the cert-manager add-on), never from keys.
-dns01:
-  route53:
-    region: eu-north-1
-    hostedZoneId: ZREPLACEHOSTEDZONEID # terraform output dns_zone_id
+# Route 53 DNS-01 is the AWS option. Credentials come from IRSA on the cert-manager service account
+# (see the cert-manager add-on), never from keys. The hosted zone ID, region and ACME email are
+# supplied by Argo CD from the cluster secret when dns01.route53.enabled is switched on.
+dns01: {}

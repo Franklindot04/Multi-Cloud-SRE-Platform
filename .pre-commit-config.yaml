@@ -10,6 +10,8 @@ repos:
         args: [--fix=lf]
       - id: check-yaml
         args: [--allow-multiple-documents]
+        # Helm templates contain {{ ... }} and are not plain YAML.
+        exclude: ^platform/.*/templates/
       - id: check-merge-conflict
       - id: check-added-large-files
         args: [--maxkb=500]

@@ -6,6 +6,8 @@ ignore: |
   node_modules/
   platform/addons/*/templates/
   platform/addons/*/charts/
+  platform/argocd/install/charts/
+  platform/argocd/install/Chart.lock
   platform/addons/*/Chart.lock
 
 rules:

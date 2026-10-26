@@ -1,0 +1,6 @@
+---
+# Fixture values standing in for the Helm parameters that Argo CD supplies from the cluster secret.
+cert-manager:
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: cert-manager@ci-project.iam.gserviceaccount.com

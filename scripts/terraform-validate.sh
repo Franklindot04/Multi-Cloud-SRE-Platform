@@ -41,7 +41,8 @@ mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
 while IFS= read -r dir; do
   echo "==> validating $dir"
-  export TF_DATA_DIR="$data_dir/$(echo "$dir" | tr '/' '_')"
+  TF_DATA_DIR="$data_dir/$(echo "$dir" | tr '/' '_')"
+  export TF_DATA_DIR
   terraform -chdir="$dir" init -backend=false -input=false > /dev/null
   terraform -chdir="$dir" validate
 done <<< "$dirs"

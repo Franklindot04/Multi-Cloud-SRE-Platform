@@ -1,17 +1,8 @@
 ---
+# Domain, owner ID, project and the Workload Identity annotation are supplied by Argo CD from the
+# cluster secret.
 external-dns:
   provider:
     name: google
   extraArgs:
-    google-project: REPLACE_PROJECT_ID
     google-zone-visibility: public
-
-  # Set to the Cloud DNS subdomain once it exists (never leave this empty).
-  domainFilters:
-    - gke.example.com
-  txtOwnerId: multi-cloud-sre-dev-gcp
-
-  serviceAccount:
-    annotations:
-      # terraform output external_dns_service_account_email
-      iam.gke.io/gcp-service-account: extdns-dev@REPLACE_PROJECT_ID.iam.gserviceaccount.com

@@ -1,0 +1,51 @@
+---
+# metrics-server on EKS only; GKE ships and manages its own.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: metrics-server
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/cloud: aws
+  template:
+    metadata:
+      name: 'metrics-server-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: metrics-server
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/addons/metrics-server
+        helm:
+          releaseName: metrics-server
+          valueFiles:
+            - values.yaml
+            - 'values-{{ index .metadata.labels "platform.example/cloud" }}.yaml'
+      destination:
+        server: '{{ .server }}'
+        namespace: kube-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: 8
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

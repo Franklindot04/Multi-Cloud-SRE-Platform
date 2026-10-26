@@ -1,0 +1,67 @@
+---
+# external-dns on GKE. Off by default: only clusters labelled platform.example/external-dns=true get it.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: external-dns-gcp
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/cloud: gcp
+            platform.example/external-dns: "true"
+  template:
+    metadata:
+      name: 'external-dns-gcp-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: external-dns
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/addons/external-dns
+        helm:
+          releaseName: external-dns
+          valueFiles:
+            - values.yaml
+            - 'values-{{ index .metadata.labels "platform.example/cloud" }}.yaml'
+          parameters:
+            - name: 'externalDns.enabled'
+              value: 'true'
+            - name: 'external-dns.domainFilters[0]'
+              value: '{{ index .metadata.annotations "platform.example/dns-domain" }}'
+              forceString: true
+            - name: 'external-dns.txtOwnerId'
+              value: '{{ index .metadata.annotations "platform.example/cluster-name" }}'
+              forceString: true
+            - name: 'external-dns.extraArgs.google-project'
+              value: '{{ index .metadata.annotations "platform.example/project-id" }}'
+              forceString: true
+            - name: 'external-dns.serviceAccount.annotations.iam\.gke\.io/gcp-service-account'
+              value: '{{ index .metadata.annotations "platform.example/external-dns-sa-email" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: external-dns
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: 8
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m
