@@ -3,7 +3,9 @@
 #
 # Per add-on and cloud this runs: helm lint, helm template, and kubeconform against the
 # Kubernetes version that cloud's cluster runs. Files named ci/<cloud>-*.yaml are extra value
-# sets that switch on optional features so those manifests are checked too. yamllint runs over
+# sets that switch on optional features so those manifests are checked too. A file named
+# ci/<cloud>-params.yaml is layered into every render for that cloud: it holds fixture values for
+# the identifiers that Argo CD supplies from the cluster secret, so charts that require them render. yamllint runs over
 # the values files. Nothing is installed in a cluster.
 #
 # Environment:
@@ -26,7 +28,9 @@ esac
 root="${1:-platform/addons}"
 eks_version="${EKS_KUBERNETES_VERSION:-1.37.0}"
 gke_version="${GKE_KUBERNETES_VERSION:-1.36.0}"
-crd_catalog='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+# CRD schemas are pinned to a commit of the datreeio CRDs-catalog (checked 2026-10-26).
+crd_catalog_ref="${CRD_CATALOG_REF:-3eb90d47aba8d61919d4419dd38301536e32a94b}"
+crd_catalog="https://raw.githubusercontent.com/datreeio/CRDs-catalog/${crd_catalog_ref}/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
 
 missing=""
 for tool in helm kubeconform; do
@@ -64,9 +68,9 @@ for chart_file in "$root"/*/Chart.yaml; do
   [ -n "$clouds" ] || clouds="aws gcp"
 
   if grep -q '^dependencies:' "$chart_file"; then
-    for repo in $(sed -n 's/^ *repository: *//p' "$chart_file"); do
+    while IFS= read -r repo; do
       helm repo add "r$(printf '%s' "$repo" | cksum | cut -d' ' -f1)" "$repo" > /dev/null
-    done
+    done < <(sed -n 's/^ *repository: *//p' "$chart_file")
     if [ "${ADDONS_UPDATE:-0}" = "1" ]; then
       echo "==> $name: updating Chart.lock"
       helm dependency update "$dir" > /dev/null
@@ -80,9 +84,13 @@ for chart_file in "$root"/*/Chart.yaml; do
     base=(-f "$dir/values.yaml")
     [ -f "$dir/values-$cloud.yaml" ] && base+=(-f "$dir/values-$cloud.yaml")
 
+    [ -f "$dir/ci/$cloud-params.yaml" ] && base+=(-f "$dir/ci/$cloud-params.yaml")
+
     variants=("")
     for extra in "$dir"/ci/"$cloud"-*.yaml; do
-      [ -e "$extra" ] && variants+=("$extra")
+      [ -e "$extra" ] || continue
+      [ "$(basename "$extra")" = "$cloud-params.yaml" ] && continue
+      variants+=("$extra")
     done
 
     for extra in "${variants[@]}"; do

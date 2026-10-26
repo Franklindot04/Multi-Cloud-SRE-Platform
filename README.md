@@ -46,7 +46,7 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 ## Status
 
-Phase 0 (foundation) is in progress, and Phases 1 and 2 have started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks, the network and Kubernetes cluster modules for both clouds, and the optional DNS modules are written, tested and validated. The cluster baseline add-ons (AWS Load Balancer Controller, external-dns, cert-manager, metrics-server) are defined as pinned, CI-checked Helm charts in `platform/addons`, with their cloud permissions in Terraform; Argo CD, which will deploy them, comes next. No network, cluster, DNS zone or add-on has been applied yet.
+Phase 0 (foundation) is in progress, and Phases 1 and 2 have started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks, the network and Kubernetes cluster modules for both clouds, and the optional DNS modules are written, tested and validated. The cluster baseline add-ons are defined as pinned, CI-checked Helm charts in `platform/addons`, and the Argo CD hub, its projects, app-of-apps and ApplicationSets are defined in `platform/argocd`, with a bootstrap script that registers cluster identifiers as Argo CD cluster metadata so none are committed. Nothing has been bootstrapped or deployed by this repository's automation yet.
 
 ## Getting started
 

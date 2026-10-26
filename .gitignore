@@ -89,6 +89,7 @@ kubeconfig*
 
 # Helm chart dependencies are downloaded at build time; Chart.lock is committed
 platform/addons/*/charts/
+platform/argocd/install/charts/
 *.tgz
 
 # Local scratch

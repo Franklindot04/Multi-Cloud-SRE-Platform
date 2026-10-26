@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate test addons-check docs
+.PHONY: help fmt lint validate test addons-check argocd-check docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -35,6 +35,9 @@ test: ## Run Terraform module tests (mocked providers, no credentials)
 
 addons-check: ## Lint, render and schema-check the cluster add-ons (skips if helm or kubeconform is missing)
 	@./scripts/addons-check.sh platform/addons
+
+argocd-check: ## Lint, render and schema-check the Argo CD hub and its GitOps definitions (skips missing tools)
+	@./scripts/argocd-check.sh platform/argocd
 
 docs: ## Check that every ADR is listed in the ADR index
 	@status=0; \

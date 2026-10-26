@@ -1,0 +1,95 @@
+---
+# Small, single-replica hub for a non-production environment. See values-ha.yaml for the HA profile.
+argo-cd:
+  global:
+    # Default-deny network policies from the chart (on since chart 10.0.0).
+    networkPolicy:
+      create: true
+
+  # CRDs are installed by the chart with server-side apply and kept on uninstall.
+  crds:
+    install: true
+    keep: true
+
+  configs:
+    cm:
+      # The built-in admin account is kept for bootstrap only. Rotate its password after the first login
+      # (see the runbook) and consider disabling it once SSO exists.
+      admin.enabled: true
+      exec.enabled: false
+      statusbadge.enabled: false
+    params:
+      # Plain HTTP inside the pod: the server is never exposed through an ingress or load balancer and is
+      # reached only through "kubectl port-forward", which is already authenticated and encrypted by the
+      # Kubernetes API. Remove this when an ingress with TLS is added.
+      server.insecure: true
+    rbac:
+      # Anyone authenticated without an explicit role can only read.
+      policy.default: role:readonly
+      policy.csv: ""
+      scopes: "[groups]"
+
+  # No SSO and no notifications for now.
+  dex:
+    enabled: false
+  notifications:
+    enabled: false
+
+  controller:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+  server:
+    replicas: 1
+    # ClusterIP only; there is no ingress.
+    ingress:
+      enabled: false
+    service:
+      type: ClusterIP
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+
+  repoServer:
+    replicas: 1
+    # Builds the add-on wrapper charts (helm dependency build), so it needs some headroom.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  applicationSet:
+    enabled: true
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+
+  redis:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+  redis-ha:
+    enabled: false

@@ -1,6 +1,5 @@
 ---
-# Cloud DNS DNS-01 is the GCP option. Credentials come from Workload Identity
-# on the cert-manager service account (see the cert-manager add-on).
-dns01:
-  cloudDns:
-    project: REPLACE_PROJECT_ID
+# Cloud DNS DNS-01 is the GCP option. Credentials come from Workload Identity on the cert-manager
+# service account (see the cert-manager add-on). The project and ACME email are supplied by Argo CD
+# from the cluster secret when dns01.cloudDns.enabled is switched on.
+dns01: {}

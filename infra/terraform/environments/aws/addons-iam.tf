@@ -3,6 +3,8 @@
 
 data "aws_partition" "current" {}
 
+data "aws_caller_identity" "current" {}
+
 locals {
   # Hosted zone the DNS add-ons may change: an explicit ID, or the zone created by this stack.
   addons_hosted_zone_id = var.addons_hosted_zone_id != "" ? var.addons_hosted_zone_id : module.dns.zone_id

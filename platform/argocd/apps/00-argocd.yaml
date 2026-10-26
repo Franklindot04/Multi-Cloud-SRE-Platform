@@ -1,0 +1,52 @@
+---
+# Argo CD manages its own upgrades: after the first install by scripts/bootstrap-argocd.sh this
+# Application takes over the release, so version bumps happen through Git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform-system
+  source:
+    repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+    targetRevision: main
+    path: platform/argocd/install
+    helm:
+      releaseName: argocd
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      # Never prune Argo CD's own resources automatically.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  # Argo CD rewrites these Secrets at runtime (admin password hash, server signing key, repo
+  # credentials), so syncing the chart's empty values would overwrite them.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: argocd-secret
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: argocd-redis
+      jsonPointers:
+        - /data

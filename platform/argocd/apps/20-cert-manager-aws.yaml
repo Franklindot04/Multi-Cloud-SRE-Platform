@@ -1,0 +1,67 @@
+---
+# cert-manager on EKS. Wave 1: after the priority classes, before the issuers.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: cert-manager-aws
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/cloud: aws
+  template:
+    metadata:
+      name: 'cert-manager-aws-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: cert-manager
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/addons/cert-manager
+        helm:
+          releaseName: cert-manager
+          valueFiles:
+            - values.yaml
+            - 'values-{{ index .metadata.labels "platform.example/cloud" }}.yaml'
+          parameters:
+            - name: 'cert-manager.serviceAccount.annotations.eks\.amazonaws\.com/role-arn'
+              value: '{{ index .metadata.annotations "platform.example/cert-manager-role-arn" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: cert-manager
+      ignoreDifferences:
+        # cainjector writes the CA bundle into the webhook configurations.
+        - group: admissionregistration.k8s.io
+          kind: MutatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+        - group: admissionregistration.k8s.io
+          kind: ValidatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 8
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

@@ -1,0 +1,48 @@
+name: argocd
+
+on:
+  pull_request:
+    paths:
+      - "platform/argocd/**"
+      - "platform/addons/**"
+      - "scripts/**"
+      - ".yamllint.yaml"
+      - ".github/workflows/argocd.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: argocd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KUBECONFORM_VERSION: v0.8.0
+  # The hub runs on EKS.
+  KUBERNETES_VERSION: "1.37.0"
+
+jobs:
+  check:
+    name: Lint, render and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.1.4
+
+      - name: Install kubeconform
+        run: |
+          base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -fsSLO "${base}/kubeconform-linux-amd64.tar.gz"
+          curl -fsSLO "${base}/CHECKSUMS"
+          grep ' kubeconform-linux-amd64.tar.gz$' CHECKSUMS | sha256sum -c -
+          tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+
+      - name: Install yamllint
+        run: pip install --user yamllint
+
+      - name: Argo CD checks
+        run: ./scripts/argocd-check.sh platform/argocd

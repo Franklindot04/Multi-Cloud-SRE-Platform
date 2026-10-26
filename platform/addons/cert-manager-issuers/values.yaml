@@ -16,6 +16,14 @@ ca:
   duration: 87600h # 10 years
   renewBefore: 8760h
 
+# Hook that waits for cert-manager's CRDs and webhook before the issuers are applied, so the issuers
+# chart can be synced right after (or together with) cert-manager without a race.
+waitForCrds:
+  enabled: true
+  image: registry.k8s.io/kubectl:v1.37.1
+  webhookDeployment: cert-manager-webhook
+  timeout: 300s
+
 # Let's Encrypt DNS-01 issuers. Present but disabled: nothing references them
 # and they are not created until a domain exists.
 dns01:
@@ -24,7 +32,7 @@ dns01:
   route53:
     enabled: false
     name: letsencrypt-route53
-    region: eu-north-1
+    region: ""
     hostedZoneId: ""
   cloudDns:
     enabled: false

@@ -1,5 +1,7 @@
 ---
+# Fixture values for rendering the optional Cloud DNS issuer.
 dns01:
   email: platform@example.com
   cloudDns:
     enabled: true
+    project: ci-project

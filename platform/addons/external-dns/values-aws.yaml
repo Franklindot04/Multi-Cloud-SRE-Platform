@@ -1,19 +1,10 @@
 ---
+# Domain, owner ID, region and the IRSA role ARN are supplied by Argo CD from the cluster secret.
 external-dns:
   provider:
     name: aws
   env:
     - name: AWS_DEFAULT_REGION
-      value: eu-north-1
+      value: ""
   extraArgs:
     aws-zone-type: public
-
-  # Set to the Route 53 domain once it exists (never leave this empty).
-  domainFilters:
-    - example.com
-  txtOwnerId: multi-cloud-sre-dev-aws
-
-  serviceAccount:
-    annotations:
-      # terraform output external_dns_role_arn
-      eks.amazonaws.com/role-arn: arn:aws:iam::REPLACE_ACCOUNT_ID:role/multi-cloud-sre-dev-external-dns

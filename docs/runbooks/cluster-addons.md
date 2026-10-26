@@ -17,17 +17,23 @@ Installs and checks the baseline add-ons defined in `platform/addons`. Argo CD i
   ```
 
   The load balancer controller role is enabled by default. The DNS add-on roles are off by default; turn on `enable_external_dns_iam` and `enable_cert_manager_iam` only once a domain and zone exist (see [global DNS](global-dns.md)).
-- Values files updated: replace every `REPLACE_...` placeholder (account ID, VPC ID, project ID) and set the real domain in the external-dns values.
+- The values files contain no account IDs, VPC IDs, role ARNs or domains. Argo CD supplies them from the cluster Secret (see the [Argo CD runbook](argocd.md)); for the manual fallback below you pass them with `--set-string` from the Terraform outputs.
 
 ## How the add-ons are installed
 
-Argo CD deploys them from `platform/addons` using an app-of-apps and ApplicationSets (next change). The order is: `priority-classes`, `cert-manager`, `cert-manager-issuers`, then `aws-load-balancer-controller` and `metrics-server` on EKS, and `external-dns` only when a domain exists.
+Argo CD deploys them from `platform/addons` using an app-of-apps and ApplicationSets (see the [Argo CD runbook](argocd.md)). The order is: `priority-classes`, `cert-manager`, `cert-manager-issuers`, then `aws-load-balancer-controller` and `metrics-server` on EKS, and `external-dns` only when a domain exists.
 
 ### Manual fallback (verification only)
 
-Use these only to verify the charts on a throwaway cluster, then remove them so Argo CD owns the add-ons. Run from the repository root, replacing `aws` with `gcp` on GKE.
+Use these only to verify the charts on a throwaway cluster, then remove them so Argo CD owns the add-ons. Run from the repository root, replacing `aws` with `gcp` on GKE. Set the identifiers from the Terraform outputs first:
 
 ```bash
+TF=infra/terraform/environments/aws
+CLUSTER=$(terraform -chdir=$TF output -raw cluster_name)
+REGION=$(terraform -chdir=$TF output -raw region)
+VPC_ID=$(terraform -chdir=$TF output -raw vpc_id)
+LBC_ROLE=$(terraform -chdir=$TF output -raw aws_load_balancer_controller_role_arn)
+
 cd platform/addons
 for c in priority-classes cert-manager cert-manager-issuers aws-load-balancer-controller metrics-server; do
   [ -f "$c/Chart.lock" ] && helm dependency build "$c"
@@ -42,12 +48,17 @@ helm upgrade --install cert-manager-issuers cert-manager-issuers -n cert-manager
 
 # EKS only
 helm upgrade --install aws-load-balancer-controller aws-load-balancer-controller -n kube-system \
-  -f aws-load-balancer-controller/values.yaml -f aws-load-balancer-controller/values-aws.yaml --wait
+  -f aws-load-balancer-controller/values.yaml -f aws-load-balancer-controller/values-aws.yaml \
+  --set-string "aws-load-balancer-controller.clusterName=$CLUSTER" \
+  --set-string "aws-load-balancer-controller.region=$REGION" \
+  --set-string "aws-load-balancer-controller.vpcId=$VPC_ID" \
+  --set-string 'aws-load-balancer-controller.serviceAccount.annotations.eks\.amazonaws\.com/role-arn'="$LBC_ROLE" \
+  --wait
 helm upgrade --install metrics-server metrics-server -n kube-system \
   -f metrics-server/values.yaml -f metrics-server/values-aws.yaml --wait
 ```
 
-Only after a domain exists, install external-dns with `--set externalDns.enabled=true` (and the real `domainFilters` in the values file) into the `external-dns` namespace.
+Only after a domain exists, install external-dns into the `external-dns` namespace with `--set externalDns.enabled=true` plus `--set-string 'external-dns.domainFilters[0]=<DOMAIN>'`, the owner ID, the region and the role annotation, matching the parameters in `platform/argocd/apps/60-external-dns-aws.yaml`.
 
 Render without installing, at any time:
 
@@ -166,7 +177,7 @@ Delete anything that makes the cloud create load balancers **before** destroying
 
 ## Troubleshooting
 
-- **Load balancer controller crash-loops or says it cannot find the VPC or region:** `clusterName`, `region` and `vpcId` must be set in `values-aws.yaml`.
+- **Load balancer controller crash-loops or says it cannot find the VPC or region:** `clusterName`, `region` and `vpcId` must be passed (Argo CD supplies them from the cluster Secret annotations; for a manual install use `--set-string`).
 - **Ingress has no ADDRESS on EKS:** check the controller logs (`kubectl logs -n kube-system deploy/aws-load-balancer-controller`) and that the public subnets carry `kubernetes.io/role/elb` and the cluster tag.
 - **`no matches for kind ClusterIssuer`:** cert-manager's CRDs are not installed yet; install cert-manager first.
 - **`kubectl top` shows `Metrics API not available`:** wait for metrics-server to be ready; on EKS confirm the pods run and the APIService `v1beta1.metrics.k8s.io` is `Available`.

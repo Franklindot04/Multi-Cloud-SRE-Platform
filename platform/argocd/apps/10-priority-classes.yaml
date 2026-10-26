@@ -1,0 +1,48 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: priority-classes
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+  template:
+    metadata:
+      name: 'priority-classes-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: priority-classes
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/addons/priority-classes
+        helm:
+          releaseName: priority-classes
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: kube-system
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: 8
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

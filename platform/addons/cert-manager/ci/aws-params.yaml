@@ -1,0 +1,6 @@
+---
+# Fixture values standing in for the Helm parameters that Argo CD supplies from the cluster secret.
+cert-manager:
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ci-cert-manager

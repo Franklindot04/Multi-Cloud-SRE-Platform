@@ -1,0 +1,49 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-addons
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Cluster baseline add-ons deployed from platform/addons
+  sourceRepos:
+    - https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+  # Any registered cluster, but only the namespaces the add-ons use.
+  destinations:
+    - server: "*"
+      namespace: cert-manager
+    - server: "*"
+      namespace: external-dns
+    - server: "*"
+      namespace: kube-system
+  # Cluster-scoped kinds the add-on charts create. Anything else is rejected.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+    - group: apiregistration.k8s.io
+      kind: APIService
+    - group: scheduling.k8s.io
+      kind: PriorityClass
+    - group: networking.k8s.io
+      kind: IngressClass
+    - group: elbv2.k8s.aws
+      kind: IngressClassParams
+    - group: cert-manager.io
+      kind: ClusterIssuer
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  orphanedResources:
+    warn: true

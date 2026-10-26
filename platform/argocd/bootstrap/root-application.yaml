@@ -1,0 +1,31 @@
+---
+# App-of-apps root: deploys everything under platform/argocd/apps (Argo CD itself and the add-on
+# ApplicationSets). Applied once by scripts/bootstrap-argocd.sh.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform-system
+  source:
+    repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+    targetRevision: main
+    path: platform/argocd/apps
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

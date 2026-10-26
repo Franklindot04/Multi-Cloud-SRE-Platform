@@ -92,3 +92,13 @@ output "cert_manager_role_arn" {
   description = "IAM role ARN for the cert-manager service account annotation (null when disabled)."
   value       = one(module.cert_manager_irsa[*].role_arn)
 }
+
+output "region" {
+  description = "AWS region of this stack."
+  value       = var.region
+}
+
+output "account_id" {
+  description = "ID of the AWS account this stack runs in. Used by the Argo CD bootstrap to confirm it is talking to the right account."
+  value       = data.aws_caller_identity.current.account_id
+}
