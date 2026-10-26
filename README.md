@@ -46,7 +46,7 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 ## Status
 
-Phase 0 (foundation) is in progress, and Phase 1 has started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks for the state buckets and the network and Kubernetes cluster modules for both clouds (`aws-network`, `aws-eks`, `gcp-network`, `gcp-gke`) are written, tested and validated. No network or cluster has been applied yet. DNS and global traffic management are still to come.
+Phase 0 (foundation) is in progress, and Phase 1 has started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks for the state buckets, the network and Kubernetes cluster modules for both clouds, and the optional DNS and traffic management modules (`aws-dns`, `gcp-dns`, off until a domain is supplied) are written, tested and validated. No network, cluster or DNS zone has been applied yet. Load balancer endpoints for the DNS records arrive with the application phase.
 
 ## Getting started
 

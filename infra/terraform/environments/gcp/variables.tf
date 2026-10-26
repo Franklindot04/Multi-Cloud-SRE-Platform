@@ -32,7 +32,7 @@ variable "owner" {
 }
 
 variable "cluster_name" {
-  description = "GKE cluster name. Defaults to <project>-<environment>. Also used to name the network and its secondary ranges."
+  description = "GKE cluster name, at most 24 characters. Defaults to <project>-<environment>. The network is named <project>-<environment> independently of this value."
   type        = string
   default     = null
 }
@@ -113,4 +113,22 @@ variable "gke_kms_name_suffix" {
   description = "Suffix for the KMS key ring name. Key rings cannot be deleted, so set a new value (for example \"-2\") to re-create the cluster after a destroy."
   type        = string
   default     = ""
+}
+
+variable "dns_name" {
+  description = "DNS name of the Cloud DNS zone, for example gke.example.com, typically a subdomain delegated from the AWS zone. Empty (the default) creates no DNS resources."
+  type        = string
+  default     = ""
+}
+
+variable "dns_enable_dnssec" {
+  description = "Sign the zone with DNSSEC. Add the DS record at the parent zone before enabling."
+  type        = bool
+  default     = false
+}
+
+variable "dns_force_destroy" {
+  description = "Allow destroying the zone while it contains record sets that Terraform does not manage."
+  type        = bool
+  default     = false
 }

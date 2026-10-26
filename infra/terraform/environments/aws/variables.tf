@@ -103,3 +103,68 @@ variable "node_disk_size_gb" {
   type        = number
   default     = 30
 }
+
+variable "domain_name" {
+  description = "Domain for the Route 53 hosted zone, for example example.com. Empty (the default) creates no DNS resources."
+  type        = string
+  default     = ""
+}
+
+variable "delegated_subdomains" {
+  description = "Subdomain label to name servers, delegating the subdomain to another cloud. Use the dns_name_servers output of the GCP stack."
+  type        = map(list(string))
+  default     = {}
+}
+
+variable "dns_endpoints" {
+  description = "Application endpoints keyed aws and gcp, each with fqdn or ip and optional health check settings. Empty creates no records or health checks."
+  type = map(object({
+    fqdn              = optional(string)
+    ip                = optional(string)
+    port              = optional(number, 443)
+    protocol          = optional(string, "HTTPS")
+    path              = optional(string, "/healthz")
+    failure_threshold = optional(number, 3)
+    request_interval  = optional(number, 30)
+  }))
+  default = {}
+}
+
+variable "dns_enable_health_checks" {
+  description = "Create Route 53 health checks for the endpoints. They bill monthly."
+  type        = bool
+  default     = true
+}
+
+variable "app_hostname" {
+  description = "Host label of the application record, for example app for app.example.com."
+  type        = string
+  default     = "app"
+}
+
+variable "routing_policy" {
+  description = "Traffic steering between clouds: weighted (normal operation) or failover (disaster recovery)."
+  type        = string
+  default     = "weighted"
+}
+
+variable "dns_weights" {
+  description = "Relative weights per cloud for the weighted policy."
+  type = object({
+    aws = optional(number, 50)
+    gcp = optional(number, 50)
+  })
+  default = {}
+}
+
+variable "primary_cloud" {
+  description = "Cloud that serves traffic under the failover policy."
+  type        = string
+  default     = "aws"
+}
+
+variable "dns_record_ttl" {
+  description = "TTL in seconds for the application records."
+  type        = number
+  default     = 60
+}

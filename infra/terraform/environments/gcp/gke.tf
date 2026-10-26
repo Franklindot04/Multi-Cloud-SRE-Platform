@@ -1,3 +1,8 @@
+locals {
+  # The cluster keeps the full <project>-<environment> name (at most 24 characters).
+  cluster_name = coalesce(var.cluster_name, "${var.project}-${var.environment}")
+}
+
 module "gke" {
   source = "../../modules/gcp-gke"
 

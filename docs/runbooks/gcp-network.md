@@ -64,7 +64,7 @@ gcloud compute firewall-rules list --filter="network:$(terraform output -raw net
   --format='table(name,direction,priority,sourceRanges.list(),denied[].map().firewall_rule().list(),allowed[].map().firewall_rule().list())'
 ```
 
-Expect `False` and `REGIONAL` for the network, `10.20.0.0/20` with private Google access and the two secondary ranges for the subnet, one NAT (unless disabled) and the four firewall rules with the deny rule at priority 65534.
+The network resources are named `<project>-<environment>`, for example `multi-cloud-sre-dev`. Expect `False` and `REGIONAL` for the network, `10.20.0.0/20` with private Google access and the two secondary ranges for the subnet, one NAT (unless disabled) and the four firewall rules with the deny rule at priority 65534.
 
 ## Change the NAT setting
 

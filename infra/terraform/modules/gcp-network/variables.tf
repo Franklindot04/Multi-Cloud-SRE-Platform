@@ -19,7 +19,7 @@ variable "region" {
 }
 
 variable "name" {
-  description = "Base name for resources created by this module (typically the cluster name)."
+  description = "Base name for resources created by this module, typically the project name. Resources are named <name>-<environment>."
   type        = string
 
   validation {

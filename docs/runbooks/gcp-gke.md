@@ -103,7 +103,7 @@ kubectl wait --for=condition=Ready pod/smoke-test --timeout=180s
 kubectl delete pod smoke-test
 ```
 
-The image comes from a non-Google registry, so it can only be pulled over Cloud NAT. Check the NAT with `gcloud compute routers nats list --router <CLUSTER_NAME> --region europe-north1`.
+The image comes from a non-Google registry, so it can only be pulled over Cloud NAT. Check the NAT with `gcloud compute routers nats list --router "$(terraform output -raw network_name)" --region europe-north1`.
 
 ## Destroy
 
@@ -128,9 +128,9 @@ Confirm that each item is gone or scheduled for destruction:
 
 - [ ] GKE cluster (`gcloud container clusters list`)
 - [ ] Node pool and its VM instances (`gcloud compute instances list`)
-- [ ] KMS key versions scheduled for destruction (`gcloud kms keys versions list --key secrets --keyring <CLUSTER_NAME>-gke --location europe-north1`). The key ring itself cannot be deleted and remains, at no cost.
+- [ ] KMS key versions scheduled for destruction (`gcloud kms keys versions list --key secrets --keyring "$(terraform output -raw cluster_name)-gke" --location europe-north1`). The key ring itself cannot be deleted and remains, at no cost.
 - [ ] Node service account (`gcloud iam service-accounts list`) and its project role bindings
-- [ ] Cloud NAT (`gcloud compute routers nats list --router <CLUSTER_NAME> --region europe-north1`)
+- [ ] Cloud NAT (`gcloud compute routers nats list --router "$(terraform output -raw network_name)" --region europe-north1`)
 - [ ] Cloud Router (`gcloud compute routers list`)
 - [ ] Firewall rules, including any left by Kubernetes load balancers (`gcloud compute firewall-rules list`)
 - [ ] Subnet (`gcloud compute networks subnets list`)

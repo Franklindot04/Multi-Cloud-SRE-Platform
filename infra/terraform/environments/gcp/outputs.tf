@@ -77,3 +77,18 @@ output "get_credentials_command" {
   description = "Command that writes this cluster's credentials into your kubeconfig."
   value       = module.gke.get_credentials_command
 }
+
+output "dns_zone_name" {
+  description = "Name of the Cloud DNS zone (null when no DNS name is set)."
+  value       = module.dns.zone_name
+}
+
+output "dns_zone_id" {
+  description = "ID of the Cloud DNS zone (null when no DNS name is set)."
+  value       = module.dns.zone_id
+}
+
+output "dns_name_servers" {
+  description = "Cloud DNS name servers. Pass these to the AWS stack as delegated_subdomains."
+  value       = module.dns.name_servers
+}
