@@ -98,4 +98,4 @@ Waves order how the ApplicationSets are created; each generated Application then
 make argocd-check
 ```
 
-Runs `helm lint`, `helm template` and `kubeconform` on the install chart (default and HA values), `kubeconform` on every Application, ApplicationSet and AppProject (with Argo CD CRD schemas from the pinned `datreeio/CRDs-catalog` commit `3eb90d47`), `yamllint`, `shellcheck`, and a render test: every referenced path and values file exists, every project is defined, and every templated Helm parameter changes the rendered output of its chart. Missing tools are skipped.
+Runs `helm lint`, `helm template` and `kubeconform` on the install chart (default and HA values), `kubeconform` on every Application, ApplicationSet and AppProject (with Argo CD CRD schemas from the pinned `datreeio/CRDs-catalog` commit `3eb90d47`), `yamllint`, `shellcheck` (through `scripts/shellcheck.sh`: `-S style`, version 0.11.0, the same as CI), and a render test: every referenced path and values file exists, every project is defined, and every templated Helm parameter changes the rendered output of its chart. Missing tools are skipped.

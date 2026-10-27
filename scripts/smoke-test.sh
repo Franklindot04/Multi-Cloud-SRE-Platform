@@ -131,7 +131,9 @@ expect_field status paid "the order is paid"
 expect_field total_minor 2500 "the total is quantity times unit price"
 order_id="$(json_field id)"
 payment_id="$(json_field payment_id)"
-[ -n "$order_id" ] && [ -n "$payment_id" ] || fail "the order response should carry an id and a payment_id"
+if [ -z "$order_id" ] || [ -z "$payment_id" ]; then
+  fail "the order response should carry an id and a payment_id"
+fi
 
 request GET "$GATEWAY_URL/api/orders/$order_id"
 expect_status 200 "get the order back"

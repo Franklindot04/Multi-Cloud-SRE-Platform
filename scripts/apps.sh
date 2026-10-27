@@ -2,7 +2,7 @@
 # Test, build or lint the sample application services.
 #
 #   scripts/apps.sh test    unit and handler tests for every service
-#   scripts/apps.sh lint    go vet and gofmt, ruff, checkstyle
+#   scripts/apps.sh lint    go vet and gofmt, ruff, checkstyle, shellcheck (as CI runs it)
 #   scripts/apps.sh build   container images, tagged sre-sample/<service>:local
 #
 # Each service is skipped with a message when its toolchain is missing. Nothing is pushed anywhere.
@@ -177,6 +177,16 @@ else
     echo "    FAILED: $action payments" >&2
     status=1
   fi
+fi
+
+if [ "$action" = "lint" ]; then
+  # The scripts that run and test the services are linted with the same flags and version as CI.
+  echo "==> lint shell scripts"
+  ran=$((ran + 1))
+  ./scripts/shellcheck.sh || {
+    echo "    FAILED: lint shell scripts" >&2
+    status=1
+  }
 fi
 
 echo
