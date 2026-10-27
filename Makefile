@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack docs
+.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack data-up data-down data-check data-check-manifests docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -61,6 +61,19 @@ smoke-test-stack: ## Start the compose stack, run the smoke test, always stop th
 	fi; \
 	docker compose -f apps/docker-compose.yml down -v --remove-orphans; \
 	exit $$status
+
+data-up: ## Start the local data layer (PostgreSQL, Valkey, RabbitMQ); needs apps/.env, copy apps/.env.example
+	@test -f apps/.env || { echo "apps/.env is missing: cp apps/.env.example apps/.env and change the values" >&2; exit 1; }
+	@docker compose -f apps/docker-compose.data.yml up -d
+
+data-down: ## Stop the local data layer, keeping its volumes (PURGE=1 also removes them)
+	@docker compose -f apps/docker-compose.data.yml down $(if $(PURGE),-v,)
+
+data-check: ## Wait for the local data layer healthchecks and test each component
+	@./scripts/data-check.sh
+
+data-check-manifests: ## Lint, render and schema-check the data layer manifests (skips missing tools)
+	@./scripts/data-manifests-check.sh
 
 docs: ## Check that every ADR is listed in the ADR index
 	@status=0; \

@@ -85,8 +85,12 @@ for chart_file in "$root"/*/Chart.yaml; do
     [ -f "$dir/values-$cloud.yaml" ] && base+=(-f "$dir/values-$cloud.yaml")
 
     [ -f "$dir/ci/$cloud-params.yaml" ] && base+=(-f "$dir/ci/$cloud-params.yaml")
+    # Charts with deployment profiles: the standard profile is part of the base render and the HA profile
+    # is rendered as an extra variant on top of it.
+    [ -f "$dir/values-standard.yaml" ] && base+=(-f "$dir/values-standard.yaml")
 
     variants=("")
+    [ -f "$dir/values-ha.yaml" ] && variants+=("$dir/values-ha.yaml")
     for extra in "$dir"/ci/"$cloud"-*.yaml; do
       [ -e "$extra" ] || continue
       [ "$(basename "$extra")" = "$cloud-params.yaml" ] && continue

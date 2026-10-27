@@ -1,0 +1,7 @@
+apiVersion: v2
+name: data-postgres
+description: The platform PostgreSQL cluster (CloudNativePG) with one database and role per service
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

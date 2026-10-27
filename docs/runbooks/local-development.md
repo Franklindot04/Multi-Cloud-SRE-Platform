@@ -126,6 +126,10 @@ docker compose -f apps/docker-compose.yml start payments
 
 Other simulation settings: `PAYMENT_DECLINE_ABOVE_MINOR` and `PAYMENT_APPROVAL_RATIO` (for example `0.5` declines about half of the order IDs, always the same ones).
 
+## Local data layer
+
+PostgreSQL, Valkey and RabbitMQ can run locally with `make data-up`, `make data-check` and `make data-down` (credentials from the untracked `apps/.env`, copied from `apps/.env.example`). The services are not wired to them yet. See the [data layer runbook](data-layer.md).
+
 ## Troubleshooting
 
 - **Port already in use:** another process holds 8080-8083. Stop it, or change the published ports in `apps/docker-compose.yml`.

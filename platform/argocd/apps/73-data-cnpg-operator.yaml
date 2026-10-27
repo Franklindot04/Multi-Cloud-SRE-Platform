@@ -1,0 +1,70 @@
+---
+# CloudNativePG operator. Wave 6: operators before the custom resources. The operator writes its own CA
+# bundle into its webhook configurations, so that field is ignored.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: data-cnpg-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/data: "true"
+  template:
+    metadata:
+      name: 'data-cnpg-operator-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: data-cnpg-operator
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-data
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/data/cloudnative-pg
+        helm:
+          releaseName: data-cnpg-operator
+          valueFiles:
+            - values.yaml
+            - 'values-{{ default "standard" (index .metadata.labels "platform.example/data-profile") }}.yaml'
+      destination:
+        server: '{{ .server }}'
+        namespace: cnpg-system
+      ignoreDifferences:
+        - group: admissionregistration.k8s.io
+          kind: MutatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+        - group: admissionregistration.k8s.io
+          kind: ValidatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+      syncPolicy:
+        automated:
+          # Pruning never removes data: volume claims and the database resources carry Prune=false,
+          # and PruneLast removes anything else only after everything else is healthy.
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+          - CreateNamespace=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/enforce-version: latest
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

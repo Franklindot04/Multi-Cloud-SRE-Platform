@@ -32,6 +32,10 @@ Options:
                            (needs --acme-email and a Route 53 hosted zone)
   --acme-email EMAIL       contact address for the ACME account
   --hosted-zone-id ID      Route 53 hosted zone ID (defaults to the dns_zone_id Terraform output)
+  --enable-data            label the cluster so the data layer (PostgreSQL, Valkey, RabbitMQ) is deployed;
+                           off by default. Volumes it creates are not managed by Terraform and are not
+                           removed by terraform destroy: see docs/runbooks/data-layer.md
+  --data-profile PROFILE   standard (one instance of each, default) or ha (three); needs --enable-data
   -h, --help               show this help
 EOF
 }
@@ -48,6 +52,8 @@ DRY_RUN=0
 ASSUME_YES=0
 ENABLE_EXTERNAL_DNS=0
 ENABLE_DNS01=0
+ENABLE_DATA=0
+DATA_PROFILE="standard"
 DNS_DOMAIN=""
 ACME_EMAIL=""
 HOSTED_ZONE_ID=""
@@ -85,6 +91,15 @@ while [ "$#" -gt 0 ]; do
     --enable-dns01)
       ENABLE_DNS01=1
       shift
+      ;;
+    --enable-data)
+      ENABLE_DATA=1
+      shift
+      ;;
+    --data-profile)
+      [ "$#" -ge 2 ] || die "--data-profile needs a value"
+      DATA_PROFILE="$2"
+      shift 2
       ;;
     --acme-email)
       [ "$#" -ge 2 ] || die "--acme-email needs a value"
@@ -134,6 +149,13 @@ if [ -n "$missing" ]; then
   fi
 fi
 
+case "$DATA_PROFILE" in
+  standard | ha) ;;
+  *) die "--data-profile must be standard or ha, got '$DATA_PROFILE'" ;;
+esac
+if [ "$ENABLE_DATA" -eq 0 ] && [ "$DATA_PROFILE" != "standard" ]; then
+  die "--data-profile ha needs --enable-data"
+fi
 if [ "$ENABLE_EXTERNAL_DNS" -eq 1 ] && [ -z "$DNS_DOMAIN" ]; then
   die "--enable-external-dns needs --dns-domain"
 fi
@@ -277,6 +299,8 @@ build_cluster_secret() {
   jq -n \
     --arg external_dns "$(bool_word "$ENABLE_EXTERNAL_DNS")" \
     --arg dns01 "$(bool_word "$ENABLE_DNS01")" \
+    --arg data "$(bool_word "$ENABLE_DATA")" \
+    --arg data_profile "$DATA_PROFILE" \
     --arg cluster_name "$CLUSTER_NAME" \
     --arg region "$REGION" \
     --arg account_id "$ACCOUNT_ID" \
@@ -298,7 +322,9 @@ build_cluster_secret() {
           "platform.example/managed": "true",
           "platform.example/cloud": "aws",
           "platform.example/external-dns": $external_dns,
-          "platform.example/dns01": $dns01
+          "platform.example/dns01": $dns01,
+          "platform.example/data": $data,
+          "platform.example/data-profile": $data_profile
         },
         annotations: {
           "platform.example/cluster-name": $cluster_name,
@@ -322,6 +348,9 @@ build_cluster_secret() {
     }'
 }
 
+if [ "$ENABLE_DATA" -eq 1 ]; then
+  info "data layer enabled (profile: $DATA_PROFILE): its volumes are not managed by Terraform; see docs/runbooks/data-layer.md for teardown"
+fi
 info "registering the in-cluster secret (labels and annotations only; no credentials)"
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '[dry-run] kubectl --context %s apply -f - <<< (Secret cluster-in-cluster, built with jq):\n' "$CONTEXT"

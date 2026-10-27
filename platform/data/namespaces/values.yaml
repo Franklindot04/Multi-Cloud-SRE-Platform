@@ -1,0 +1,15 @@
+---
+# enforce is the Pod Security Standards level that is rejected on violation. warn and audit are always
+# "restricted", so any workload that would not pass the strictest level shows up in warnings and audit logs.
+#
+# data: PostgreSQL, Valkey and RabbitMQ. Baseline is enforced, not restricted, because the RabbitMQ pods are
+# created by the RabbitMQ Cluster Operator, whose pod spec cannot be changed here and is not documented as
+# restricted-compliant (the broker needs a writable root filesystem). PostgreSQL (CloudNativePG) and Valkey
+# are configured to meet restricted. Move enforce to restricted once the warnings are clean.
+#
+# shop: the application services, which are written to run under restricted.
+namespaces:
+  data:
+    enforce: baseline
+  shop:
+    enforce: restricted

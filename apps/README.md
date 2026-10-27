@@ -9,7 +9,7 @@ A small order-processing system that gives the platform realistic workloads to o
 | [`payments`](payments) | Java (Spring Boot) | 8082 | **Simulated** payment authorization with strict idempotency |
 | [`notifier`](notifier) | Go | 8083 | Records the notifications that would be sent; delivers nothing |
 
-Storage is in memory behind a repository interface in every service, so the PostgreSQL, Redis and message broker arriving in the next change replace the implementation without touching handlers. Data is lost on restart.
+Storage is in memory behind a repository interface in every service, so real storage replaces the implementation without touching handlers. Data is lost on restart. The data layer (PostgreSQL, a Valkey cache and RabbitMQ) is defined in [`platform/data`](../platform/data) and can be run locally with `make data-up` (see the [data layer runbook](../docs/runbooks/data-layer.md)); the services are wired to it in the next change.
 
 ## Pinned versions
 

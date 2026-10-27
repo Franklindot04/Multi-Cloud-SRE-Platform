@@ -1,0 +1,22 @@
+---
+# Standard (non-production) profile: one replica. See values-ha.yaml for three.
+cluster:
+  name: platform-mq
+  namespace: data
+  replicas: 1
+  image: rabbitmq:4.4.0-management
+  priorityClassName: platform-addons-critical
+  persistence:
+    storage: 2Gi
+    storageClass: platform-data
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # The management UI and AMQP are reachable inside the cluster only.
+  serviceType: ClusterIP
+  additionalConfig: |
+    disk_free_limit.absolute = 500MB

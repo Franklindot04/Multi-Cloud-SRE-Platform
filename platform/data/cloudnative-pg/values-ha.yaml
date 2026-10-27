@@ -1,0 +1,4 @@
+---
+# Two operator replicas (leader election) for production hubs. Use after values.yaml.
+cloudnative-pg:
+  replicaCount: 2

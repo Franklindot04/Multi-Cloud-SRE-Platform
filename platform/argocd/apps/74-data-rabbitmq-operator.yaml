@@ -1,0 +1,62 @@
+---
+# RabbitMQ Cluster Operator (vendored release manifest). Wave 6. Needs cert-manager (wave 1) for its webhook
+# certificates; cert-manager's cainjector writes the CA bundle into the webhook configurations.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: data-rabbitmq-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/data: "true"
+  template:
+    metadata:
+      name: 'data-rabbitmq-operator-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: data-rabbitmq-operator
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-data
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/data/rabbitmq-operator
+        directory:
+          include: 'cluster-operator.yml'
+      destination:
+        server: '{{ .server }}'
+        namespace: rabbitmq-system
+      ignoreDifferences:
+        - group: admissionregistration.k8s.io
+          kind: MutatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+        - group: admissionregistration.k8s.io
+          kind: ValidatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+      syncPolicy:
+        automated:
+          # Pruning never removes data: volume claims and the database resources carry Prune=false,
+          # and PruneLast removes anything else only after everything else is healthy.
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

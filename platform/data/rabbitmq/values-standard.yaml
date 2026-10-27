@@ -1,0 +1,4 @@
+---
+# The standard profile is the shared values.yaml (one replica); this file keeps profile selection uniform.
+cluster:
+  replicas: 1

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: data-storage
+description: StorageClass "platform-data" backed by the cloud's CSI disk driver
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

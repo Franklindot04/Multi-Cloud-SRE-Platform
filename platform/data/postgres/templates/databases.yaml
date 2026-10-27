@@ -1,0 +1,18 @@
+{{- range .Values.databases }}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ $.Values.cluster.name }}-{{ .name }}
+  namespace: {{ $.Values.cluster.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true,Prune=false,Delete=false
+spec:
+  name: {{ .name }}
+  owner: {{ .owner }}
+  cluster:
+    name: {{ $.Values.cluster.name }}
+  ensure: present
+  # Keep the database if this resource is ever deleted.
+  databaseReclaimPolicy: retain
+{{- end }}

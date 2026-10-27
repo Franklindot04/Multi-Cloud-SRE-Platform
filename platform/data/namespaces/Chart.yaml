@@ -1,0 +1,7 @@
+apiVersion: v2
+name: data-namespaces
+description: Namespaces for the data layer and the application services, with Pod Security labels
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

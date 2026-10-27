@@ -11,6 +11,10 @@ ignore: |
   platform/argocd/install/charts/
   platform/argocd/install/Chart.lock
   platform/addons/*/Chart.lock
+  platform/data/*/templates/
+  platform/data/*/charts/
+  platform/data/*/Chart.lock
+  platform/data/rabbitmq-operator/cluster-operator.yml
 
 rules:
   line-length:

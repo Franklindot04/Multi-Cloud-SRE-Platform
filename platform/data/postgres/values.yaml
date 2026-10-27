@@ -1,0 +1,34 @@
+---
+# Standard (non-production) profile: one instance. See values-ha.yaml for three.
+cluster:
+  name: platform-pg
+  namespace: data
+  instances: 1
+  # Pinned PostgreSQL image maintained by the CloudNativePG project (minimal variant, Debian 13).
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.6-minimal-trixie
+  priorityClassName: platform-addons-critical
+  storage:
+    size: 5Gi
+    storageClass: platform-data
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # preferred: spread instances over nodes when possible. The HA profile requires it.
+  podAntiAffinityType: preferred
+  parameters:
+    max_connections: "100"
+    shared_buffers: 128MB
+
+# One database per service. Each owner is a login role whose password is read from the Secret "secret"
+# (type kubernetes.io/basic-auth) created by the data-secrets chart.
+databases:
+  - name: orders
+    owner: orders
+    secret: pg-orders
+  - name: payments
+    owner: payments
+    secret: pg-payments

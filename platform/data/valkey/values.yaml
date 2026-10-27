@@ -1,0 +1,54 @@
+---
+# Standard (non-production) profile: a single Valkey with a small volume. See values-ha.yaml for replicas.
+valkey:
+  fullnameOverride: platform-valkey
+  priorityClassName: platform-addons-critical
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 250m
+      memory: 192Mi
+
+  # Authentication is on. The password is never in Git: it is read from the Secret "valkey-auth" (key
+  # "default") that the data-secrets chart generates in the cluster.
+  auth:
+    enabled: true
+    usersExistingSecret: valkey-auth
+    aclUsers:
+      default:
+        permissions: "~* &* +@all"
+
+  # A cache, not a store: bounded memory with least-recently-used eviction. The volume only lets the data
+  # survive a restart.
+  valkeyConfig: |
+    maxmemory 128mb
+    maxmemory-policy allkeys-lru
+
+  dataStorage:
+    enabled: true
+    requestedSize: 1Gi
+    className: platform-data
+    keepPvc: true
+    annotations:
+      # Argo CD must never prune a volume claim.
+      argocd.argoproj.io/sync-options: Prune=false,Delete=false
+
+  # The chart defaults already meet the restricted Pod Security level; repeated so a chart change cannot
+  # loosen them silently.
+  podSecurityContext:
+    fsGroup: 1000
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    capabilities:
+      drop:
+        - ALL

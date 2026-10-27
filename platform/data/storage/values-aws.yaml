@@ -1,0 +1,9 @@
+---
+# EKS: the EBS CSI driver add-on is installed by the aws-eks module. gp3 volumes, encrypted with the account's
+# default EBS key.
+storageClass:
+  provisioner: ebs.csi.aws.com
+  parameters:
+    type: gp3
+    encrypted: "true"
+    fsType: ext4

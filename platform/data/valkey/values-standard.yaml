@@ -1,0 +1,5 @@
+---
+# The standard profile is the shared values.yaml (a single Valkey); this file keeps profile selection uniform.
+valkey:
+  replica:
+    enabled: false

@@ -1,0 +1,80 @@
+# Local data layer for development: PostgreSQL, Valkey (a Redis-compatible cache) and RabbitMQ, matching
+# the components deployed in Kubernetes. All ports are bound to localhost only. Credentials come from
+# apps/.env (not tracked; copy apps/.env.example). The services are not wired to these yet.
+#
+#   make data-up      start
+#   make data-check   wait for healthchecks and test each component
+#   make data-down    stop (keeps the volumes; make data-down PURGE=1 removes them)
+name: sre-sample-data
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  restart: "no"
+
+services:
+  postgres:
+    <<: *hardening
+    image: postgres:18.6-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in apps/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in apps/.env}
+      POSTGRES_DB: postgres
+      ORDERS_DB_PASSWORD: ${ORDERS_DB_PASSWORD:?set ORDERS_DB_PASSWORD in apps/.env}
+      PAYMENTS_DB_PASSWORD: ${PAYMENTS_DB_PASSWORD:?set PAYMENTS_DB_PASSWORD in apps/.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./data/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username \"$$POSTGRES_USER\" --dbname postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  valkey:
+    <<: *hardening
+    image: valkey/valkey:9.1.2
+    # --requirepass keeps the cache authenticated, like the cluster deployment.
+    command:
+      - sh
+      - -c
+      - exec valkey-server --requirepass "$$VALKEY_PASSWORD" --maxmemory 128mb --maxmemory-policy allkeys-lru --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?set VALKEY_PASSWORD in apps/.env}
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  rabbitmq:
+    <<: *hardening
+    image: rabbitmq:4.4.0-management
+    ports:
+      - "127.0.0.1:5672:5672"
+      # Management UI and HTTP API, localhost only.
+      - "127.0.0.1:15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?set RABBITMQ_DEFAULT_USER in apps/.env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?set RABBITMQ_DEFAULT_PASS in apps/.env}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  postgres-data:
+  valkey-data:
+  rabbitmq-data:

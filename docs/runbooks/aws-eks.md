@@ -107,6 +107,7 @@ Confirm in the console or CLI that each item is gone, since these are what keep 
 - [ ] Elastic IPs released (`aws ec2 describe-addresses`)
 - [ ] Load balancers created by Services or Ingresses (`aws elbv2 describe-load-balancers`)
 - [ ] Unattached EBS volumes (`aws ec2 describe-volumes --filters Name=status,Values=available`)
+- [ ] **EBS volumes created for PersistentVolumeClaims**, such as the data layer's: they are not managed by Terraform and are not removed by `terraform destroy`. Delete the claims first ([data layer teardown](data-layer.md#teardown)), then `aws ec2 describe-volumes --region eu-north-1 --filters Name=tag-key,Values=kubernetes.io/created-for/pvc/name` must list nothing
 - [ ] KMS key in `PendingDeletion` (it bills until the window ends; the default is 7 days; `aws kms list-aliases`)
 - [ ] CloudWatch log groups for the control plane and flow logs (`aws logs describe-log-groups --log-group-name-prefix /aws/eks`; also `/aws/vpc`)
 - [ ] IAM roles for the cluster, nodes and EBS CSI driver, and the OIDC provider
