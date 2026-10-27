@@ -1,6 +1,6 @@
 # Data layer
 
-GitOps-ready definitions of the platform's data components: **PostgreSQL**, a **Redis-compatible cache** and a **message broker**, plus the namespaces, storage class and in-cluster credential generation they need. Argo CD deploys them from this directory to clusters labelled `platform.example/data=true` (off by default). **Nothing is installed by these definitions themselves, and the application services are not changed or wired to them yet.** Design rationale is in [ADR-0014](../../docs/adr/0014-data-layer.md); operations are in the [data layer runbook](../../docs/runbooks/data-layer.md).
+GitOps-ready definitions of the platform's data components: **PostgreSQL**, a **Redis-compatible cache** and a **message broker**, plus the namespaces, storage class and in-cluster credential generation they need. Argo CD deploys them from this directory to clusters labelled `platform.example/data=true` (off by default). **Nothing is installed by these definitions themselves.** The application services use them in their `data` profile ([ADR-0015](../../docs/adr/0015-service-data-integration.md), [ADR-0016](../../docs/adr/0016-service-deployment-model.md)). Design rationale is in [ADR-0014](../../docs/adr/0014-data-layer.md); operations are in the [data layer runbook](../../docs/runbooks/data-layer.md).
 
 ## Components, versions and findings
 
@@ -33,6 +33,7 @@ Checked on **2026-10-27** against each project's chart repository, release page 
 | [`valkey`](valkey) | wrapper chart | The cache, from the official chart |
 | [`rabbitmq-operator`](rabbitmq-operator) | vendored manifest | The RabbitMQ Cluster Operator release manifest |
 | [`rabbitmq`](rabbitmq) | local chart | The `RabbitmqCluster` resource |
+| [`rabbitmq-credentials`](rabbitmq-credentials) | local chart | A PreSync hook Job that copies the broker credentials into `shop` (least-privilege RBAC) |
 
 **Operators and their custom resources are separate charts.** The custom resources need the operator's CRDs and webhooks, so they sync afterwards (Argo CD sync waves, `SkipDryRunOnMissingResource` and retries with backoff) and can be upgraded and rolled back independently. Wrapper charts with committed `Chart.lock` files are used for upstream charts, as for the add-ons.
 
@@ -51,7 +52,7 @@ The HA profiles need at least three schedulable nodes. The standard profile fits
 | Namespace | Holds | Pod Security |
 | --- | --- | --- |
 | `data` | PostgreSQL, Valkey, RabbitMQ | **enforce `baseline`**, warn and audit `restricted` |
-| `shop` | the application services (next change) | enforce `restricted` |
+| `shop` | the application services ([ADR-0016](../../docs/adr/0016-service-deployment-model.md)) | enforce `restricted` |
 | `cnpg-system` | CloudNativePG operator | enforce `restricted` |
 | `rabbitmq-system` | RabbitMQ Cluster Operator | not labelled (created by the vendored manifest) |
 
@@ -70,7 +71,8 @@ One PostgreSQL cluster (`platform-pg`, read-write service `platform-pg-rw.data.s
 | `cache-auth` | `shop` | `password`, `host`, `port` | services using the cache |
 | `pg-orders`, `pg-payments` | `data` | `username`, `password` (type `basic-auth`) | the operator (role passwords) |
 | `valkey-auth` | `data` | `default` | the Valkey chart |
-| `platform-mq-default-user` | `data` | `username`, `password` (created by the RabbitMQ operator) | RabbitMQ; copied to `shop` by the next change |
+| `platform-mq-default-user` | `data` | `username`, `password` (created by the RabbitMQ operator) | RabbitMQ; copied to `shop` as `rabbitmq-auth` by the `rabbitmq-credentials` chart |
+| `rabbitmq-auth` | `shop` | `username`, `password`, `host`, `port` | orders and notifier (data profile) |
 
 This in-cluster generation is the interim mechanism. It is replaced by external secrets management later (ADR-0014): External Secrets would produce the same Secret names and keys from the cloud's secret manager, so consumers do not change.
 

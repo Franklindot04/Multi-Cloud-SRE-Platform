@@ -1,0 +1,7 @@
+apiVersion: v2
+name: data-rabbitmq-credentials
+description: Copies the RabbitMQ default user credentials from the data namespace into the shop namespace, with a narrowly scoped Role
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

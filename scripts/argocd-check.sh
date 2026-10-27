@@ -200,19 +200,25 @@ $val" ;;
       values_args=""
       while IFS= read -r vf; do
         [ -n "$vf" ] || continue
-        # A data-profile placeholder stands for the standard and ha profiles: both files must exist, and the
-        # standard one is used for the render below. Any other placeholder stands for the cloud.
+        # A data-profile placeholder stands for the standard and ha profiles, and an apps-profile placeholder
+        # for the memory and data profiles: every file must exist, and the first one is used for the render
+        # below. Any other placeholder stands for the cloud.
         case "$vf" in
           *data-profile*) profiles="standard ha" ;;
+          *apps-profile*) profiles="memory data" ;;
           *) profiles="-" ;;
         esac
         for profile in $profiles; do
-          resolved="$(printf '%s' "$vf" | sed -e "s/{{[^}]*data-profile[^}]*}}/$profile/g" -e "s/{{[^}]*}}/$cloud/g")"
+          resolved="$(printf '%s' "$vf" | sed -e "s/{{[^}]*data-profile[^}]*}}/$profile/g" -e "s/{{[^}]*apps-profile[^}]*}}/$profile/g" -e "s/{{[^}]*}}/$cloud/g")"
           if [ ! -f "$path/$resolved" ]; then
             echo "    $f: values file '$path/$resolved' does not exist"
             status=1
-          elif [ "$profile" = "-" ] || [ "$profile" = "standard" ]; then
-            values_args="$values_args -f $path/$resolved"
+          else
+            # Value files outside the chart directory (../values/...) must not be hidden by .gitignore either.
+            printf 'f %s\n' "$(printf '%s' "$path/$resolved" | awk -F/ '{ n = 0; for (i = 1; i <= NF; i++) { if ($i == "..") n--; else if ($i != ".") out[++n] = $i } r = out[1]; for (i = 2; i <= n; i++) r = r "/" out[i]; print r }')" >> "$refs"
+            if [ "$profile" = "-" ] || [ "$profile" = "standard" ] || [ "$profile" = "memory" ]; then
+              values_args="$values_args -f $path/$resolved"
+            fi
           fi
         done
       done << EOF

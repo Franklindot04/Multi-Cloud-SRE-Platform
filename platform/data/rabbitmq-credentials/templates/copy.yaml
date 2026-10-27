@@ -1,0 +1,176 @@
+{{- /*
+Everything here is an Argo CD PreSync hook (Helm hooks on a plain `helm install` behave the same way), so the
+service account and the Roles exist only while the Job runs. The permissions are the minimum for the copy:
+
+  data namespace: get on exactly the source Secret
+  shop namespace: get, update and patch on exactly the target Secret, and create on Secrets
+
+The create verb cannot be limited to a name in Kubernetes RBAC, so the copier can create any Secret in the
+shop namespace, but it cannot read or change any other one, and it has no permission anywhere else.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq-credentials-copier
+  namespace: {{ .Values.appNamespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-5"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-credentials-source
+  namespace: {{ .Values.dataNamespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-5"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.sourceSecret | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-credentials-source
+  namespace: {{ .Values.dataNamespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-credentials-source
+subjects:
+  - kind: ServiceAccount
+    name: rabbitmq-credentials-copier
+    namespace: {{ .Values.appNamespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-credentials-target
+  namespace: {{ .Values.appNamespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-5"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.targetSecret | quote }}]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-credentials-target
+  namespace: {{ .Values.appNamespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rabbitmq-credentials-target
+subjects:
+  - kind: ServiceAccount
+    name: rabbitmq-credentials-copier
+    namespace: {{ .Values.appNamespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rabbitmq-credentials-copy
+  namespace: {{ .Values.appNamespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  backoffLimit: {{ .Values.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+  template:
+    metadata:
+      annotations:
+        # This pod needs its service account token to call the API; deploy-check allows that only with this marker.
+        platform.example/api-access: "true"
+    spec:
+      serviceAccountName: rabbitmq-credentials-copier
+      automountServiceAccountToken: true
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: copy
+          image: {{ .Values.image }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              API=https://kubernetes.default.svc
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+              TOKEN="$(cat "$SA/token")"
+              call() { curl -sS --max-time 20 --cacert "$SA/ca.crt" -H "Authorization: Bearer $TOKEN" "$@"; }
+
+              src="$API/api/v1/namespaces/{{ .Values.dataNamespace }}/secrets/{{ .Values.sourceSecret }}"
+              dst="$API/api/v1/namespaces/{{ .Values.appNamespace }}/secrets"
+
+              code="$(call -o /tmp/source -w '%{http_code}' "$src")"
+              if [ "$code" != 200 ]; then
+                echo "source Secret {{ .Values.dataNamespace }}/{{ .Values.sourceSecret }} not available yet (HTTP $code); the Job will retry" >&2
+                exit 1
+              fi
+
+              # The values stay base64 encoded from the source to the target; nothing is decoded or printed.
+              field() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" /tmp/source | head -n 1; }
+              user="$(field username)"
+              pass="$(field password)"
+              if [ -z "$user" ] || [ -z "$pass" ]; then
+                echo "source Secret has no username or password key" >&2
+                exit 1
+              fi
+              host="$(printf '%s' '{{ .Values.host }}' | base64 | tr -d '\n')"
+              port="$(printf '%s' '{{ .Values.port }}' | base64 | tr -d '\n')"
+              data="\"data\":{\"username\":\"$user\",\"password\":\"$pass\",\"host\":\"$host\",\"port\":\"$port\"}"
+
+              code="$(call -o /tmp/response -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+                -d "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"{{ .Values.targetSecret }}\"},\"type\":\"Opaque\",$data}" "$dst")"
+              case "$code" in
+                201) echo "created {{ .Values.appNamespace }}/{{ .Values.targetSecret }}" ;;
+                409)
+                  # Already there: bring it up to date so a changed source Secret propagates.
+                  code="$(call -o /tmp/response -w '%{http_code}' -X PATCH -H 'Content-Type: application/merge-patch+json' \
+                    -d "{$data}" "$dst/{{ .Values.targetSecret }}")"
+                  [ "$code" = 200 ] || { echo "update failed: HTTP $code" >&2; exit 1; }
+                  echo "updated {{ .Values.appNamespace }}/{{ .Values.targetSecret }}"
+                  ;;
+                *) echo "create failed: HTTP $code" >&2; exit 1 ;;
+              esac
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi

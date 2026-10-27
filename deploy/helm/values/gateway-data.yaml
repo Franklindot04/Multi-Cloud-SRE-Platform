@@ -1,0 +1,4 @@
+---
+# Data profile: the gateway has no data layer, so nothing differs.
+env:
+  LOG_LEVEL: info

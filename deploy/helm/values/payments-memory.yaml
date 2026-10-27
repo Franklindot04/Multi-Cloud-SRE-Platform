@@ -1,0 +1,5 @@
+---
+# Memory profile: payments live in the pod's memory and are lost on restart; keep one replica.
+replicas: 1
+env:
+  STORAGE: memory

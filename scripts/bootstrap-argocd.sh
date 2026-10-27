@@ -36,6 +36,11 @@ Options:
                            off by default. Volumes it creates are not managed by Terraform and are not
                            removed by terraform destroy: see docs/runbooks/data-layer.md
   --data-profile PROFILE   standard (one instance of each, default) or ha (three); needs --enable-data
+  --enable-apps            label the cluster so the sample services (gateway, orders, payments, notifier) are
+                           deployed from deploy/helm; off by default. Images must be published first: see
+                           docs/runbooks/service-deployment.md
+  --apps-profile PROFILE   memory (no infrastructure, default) or data (PostgreSQL, Valkey and RabbitMQ in the
+                           data namespace); needs --enable-apps, and data also needs --enable-data
   -h, --help               show this help
 EOF
 }
@@ -53,6 +58,8 @@ ASSUME_YES=0
 ENABLE_EXTERNAL_DNS=0
 ENABLE_DNS01=0
 ENABLE_DATA=0
+ENABLE_APPS=0
+APPS_PROFILE="memory"
 DATA_PROFILE="standard"
 DNS_DOMAIN=""
 ACME_EMAIL=""
@@ -99,6 +106,15 @@ while [ "$#" -gt 0 ]; do
     --data-profile)
       [ "$#" -ge 2 ] || die "--data-profile needs a value"
       DATA_PROFILE="$2"
+      shift 2
+      ;;
+    --enable-apps)
+      ENABLE_APPS=1
+      shift
+      ;;
+    --apps-profile)
+      [ "$#" -ge 2 ] || die "--apps-profile needs a value"
+      APPS_PROFILE="$2"
       shift 2
       ;;
     --acme-email)
@@ -155,6 +171,16 @@ case "$DATA_PROFILE" in
 esac
 if [ "$ENABLE_DATA" -eq 0 ] && [ "$DATA_PROFILE" != "standard" ]; then
   die "--data-profile ha needs --enable-data"
+fi
+case "$APPS_PROFILE" in
+  memory | data) ;;
+  *) die "--apps-profile must be memory or data, got '$APPS_PROFILE'" ;;
+esac
+if [ "$ENABLE_APPS" -eq 0 ] && [ "$APPS_PROFILE" != "memory" ]; then
+  die "--apps-profile data needs --enable-apps"
+fi
+if [ "$APPS_PROFILE" = "data" ] && [ "$ENABLE_DATA" -eq 0 ]; then
+  die "--apps-profile data needs --enable-data (this script sets every label on each run, so the data layer would be switched off otherwise)"
 fi
 if [ "$ENABLE_EXTERNAL_DNS" -eq 1 ] && [ -z "$DNS_DOMAIN" ]; then
   die "--enable-external-dns needs --dns-domain"
@@ -301,6 +327,8 @@ build_cluster_secret() {
     --arg dns01 "$(bool_word "$ENABLE_DNS01")" \
     --arg data "$(bool_word "$ENABLE_DATA")" \
     --arg data_profile "$DATA_PROFILE" \
+    --arg apps "$(bool_word "$ENABLE_APPS")" \
+    --arg apps_profile "$APPS_PROFILE" \
     --arg cluster_name "$CLUSTER_NAME" \
     --arg region "$REGION" \
     --arg account_id "$ACCOUNT_ID" \
@@ -324,7 +352,9 @@ build_cluster_secret() {
           "platform.example/external-dns": $external_dns,
           "platform.example/dns01": $dns01,
           "platform.example/data": $data,
-          "platform.example/data-profile": $data_profile
+          "platform.example/data-profile": $data_profile,
+          "platform.example/apps": $apps,
+          "platform.example/apps-profile": $apps_profile
         },
         annotations: {
           "platform.example/cluster-name": $cluster_name,
@@ -350,6 +380,9 @@ build_cluster_secret() {
 
 if [ "$ENABLE_DATA" -eq 1 ]; then
   info "data layer enabled (profile: $DATA_PROFILE): its volumes are not managed by Terraform; see docs/runbooks/data-layer.md for teardown"
+fi
+if [ "$ENABLE_APPS" -eq 1 ]; then
+  info "services enabled (profile: $APPS_PROFILE): the images in deploy/helm/values/images.yaml must exist in the registry; an enabled ingress creates a billed load balancer"
 fi
 info "registering the in-cluster secret (labels and annotations only; no credentials)"
 if [ "$DRY_RUN" -eq 1 ]; then

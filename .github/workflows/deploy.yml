@@ -1,0 +1,62 @@
+name: deploy
+
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "platform/argocd/**"
+      - "platform/data/rabbitmq-credentials/**"
+      - "scripts/**"
+      - ".yamllint.yaml"
+      - ".github/workflows/deploy.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KUBECONFORM_VERSION: v0.8.0
+  # Kubernetes versions the clusters run, used for schema validation.
+  EKS_KUBERNETES_VERSION: "1.37.0"
+  GKE_KUBERNETES_VERSION: "1.36.0"
+  # scripts/shellcheck.sh expects this version and runs it with -S style, so CI and local runs agree.
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+
+jobs:
+  check:
+    name: Lint, render and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v4.1.4
+
+      - name: Install kubeconform
+        run: |
+          base="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -fsSLO "${base}/kubeconform-linux-amd64.tar.gz"
+          curl -fsSLO "${base}/CHECKSUMS"
+          grep ' kubeconform-linux-amd64.tar.gz$' CHECKSUMS | sha256sum -c -
+          tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+
+      - name: Install shellcheck
+        run: |
+          file="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${file}"
+          echo "${SHELLCHECK_SHA256}  ${file}" | sha256sum -c -
+          tar -xJf "${file}"
+          sudo install -m 0755 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: Install yamllint
+        run: pip install --user yamllint
+
+      - name: Service chart
+        run: ./scripts/deploy-check.sh

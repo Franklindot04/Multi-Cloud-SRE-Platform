@@ -89,8 +89,8 @@ make integration-test            # stack on PostgreSQL, Valkey and RabbitMQ: int
 make smoke-test-integration      # only the smoke test with --integration
 ```
 
-See the [local development runbook](../docs/runbooks/local-development.md).
+See the [local development runbook](../docs/runbooks/local-development.md). Deployment to Kubernetes is described in the [service deployment runbook](../docs/runbooks/service-deployment.md); the chart is in [`deploy/helm`](../deploy/helm).
 
 ## Not in this change
 
-Helm charts, Kubernetes migration Jobs and Secret wiring for the services (next change); backups of the data layer; CI image builds, vulnerability scanning, signing and SBOMs; OpenTelemetry instrumentation; authentication.
+Publishing the images (the CI change; the chart's image tag is a placeholder until then); network policies, autoscaling and progressive delivery; backups of the data layer; CI image builds, vulnerability scanning, signing and SBOMs; OpenTelemetry instrumentation; authentication.

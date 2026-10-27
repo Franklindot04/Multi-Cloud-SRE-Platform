@@ -1,0 +1,18 @@
+---
+# Payments: simulated payment authorization. Java image (distroless, user 65532) that writes to /tmp.
+port: 8082
+runAsUser: 65532
+tmpVolume:
+  enabled: true
+env:
+  PAYMENT_DECLINE_ABOVE_MINOR: "100000"
+  PAYMENT_APPROVAL_RATIO: "1.0"
+  PAYMENT_ALLOWED_CURRENCIES: USD,EUR,GBP,SEK
+  LOG_LEVEL: info
+resources:
+  requests:
+    cpu: 100m
+    memory: 320Mi
+  limits:
+    cpu: 500m
+    memory: 640Mi

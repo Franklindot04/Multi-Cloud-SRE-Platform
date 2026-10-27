@@ -1,0 +1,28 @@
+---
+# A PreSync hook Job copies one Secret from the data namespace to the application namespace. It runs after the
+# RabbitMQ broker (sync wave 8) and can only read that one source Secret and write that one target Secret.
+image: curlimages/curl:8.23.0
+
+dataNamespace: data
+appNamespace: shop
+
+# Created by the RabbitMQ Cluster Operator for the cluster in the rabbitmq chart: keys username and password.
+sourceSecret: platform-mq-default-user
+# The Secret the services read: username, password, host and port.
+targetSecret: rabbitmq-auth
+
+# Service of the RabbitmqCluster in the rabbitmq chart (<cluster>.<namespace>.svc).
+host: platform-mq.data.svc
+port: "5672"
+
+# The Job is retried until the source Secret exists (the operator creates it shortly after the cluster).
+backoffLimit: 20
+activeDeadlineSeconds: 900
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi

@@ -1,0 +1,18 @@
+---
+# Gateway: the public entry point. Stateless, so it runs two replicas in every profile.
+port: 8080
+runAsUser: 65532
+replicas: 2
+env:
+  ORDERS_URL: http://orders:8081
+  PAYMENTS_URL: http://payments:8082
+  UPSTREAM_TIMEOUT_MS: "5000"
+  READINESS_TIMEOUT_MS: "500"
+  LOG_LEVEL: info
+resources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

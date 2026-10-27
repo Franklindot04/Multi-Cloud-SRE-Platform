@@ -19,3 +19,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0013](0013-sample-application-design.md) | Sample application design | Accepted |
 | [0014](0014-data-layer.md) | Data layer | Accepted |
 | [0015](0015-service-data-integration.md) | Service data integration | Accepted |
+| [0016](0016-service-deployment-model.md) | Service deployment model | Accepted |
