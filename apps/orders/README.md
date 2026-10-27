@@ -19,6 +19,45 @@ Order lifecycle (Python, FastAPI). Creating an order stores it as `pending`, aut
 
 If payments times out, refuses the connection or answers 5xx, the order is **kept** as `pending` with `failure_reason: payment_unavailable` and the response is `202`. Repeating the request with the same `Idempotency-Key` retries the authorization, which is safe because the payment key is derived from the order ID. A notification is sent only by the request that settles the order, so retries do not duplicate it. If the notifier is down the order is unaffected and the failure is logged.
 
+## Storage, cache and messaging modes
+
+Three switches select how the service runs; the defaults keep the in-memory behaviour and need no infrastructure. The HTTP API is identical in every mode. Design and trade-offs are in [ADR-0015](../../docs/adr/0015-service-data-integration.md).
+
+| Variable | Values | Default | Effect |
+| --- | --- | --- | --- |
+| `STORAGE` | `memory`, `postgres` | `memory` | Orders and idempotency keys in memory, or in PostgreSQL (pooled, with timeouts) |
+| `CACHE` | `none`, `valkey` | `none` | Cache-aside for `GET /orders/{id}` (30 s TTL, deleted on every state change). Any cache error is a logged, counted miss |
+| `MESSAGING` | `http`, `rabbitmq` | `http` | `http`: the synchronous best-effort notifier call. `rabbitmq`: `order.created`, `order.paid` and `order.failed` events go through a transactional outbox and a relay to RabbitMQ (needs `STORAGE=postgres`) |
+
+Passwords are read from `<NAME>` or `<NAME>_FILE` (a mounted secret); setting both is an error. Invalid or missing settings stop the process at startup with every problem listed (exit code 2).
+
+| Variable | Default | Used when | Description |
+| --- | --- | --- | --- |
+| `DB_HOST`, `DB_PORT` | `postgres`, `5432` | `STORAGE=postgres` | Server |
+| `DB_NAME`, `DB_USER` | `orders`, `orders` | `STORAGE=postgres` | Database and role |
+| `DB_PASSWORD` / `DB_PASSWORD_FILE` | required | `STORAGE=postgres` | Role password |
+| `DB_POOL_MIN`, `DB_POOL_MAX` | `1`, `5` | `STORAGE=postgres` | Pool bounds |
+| `DB_CONN_MAX_IDLE_SECONDS` | `300` | `STORAGE=postgres` | Idle connections are closed after this |
+| `DB_CONNECT_TIMEOUT_MS`, `DB_STATEMENT_TIMEOUT_MS` | `3000`, `5000` | `STORAGE=postgres` | Connect and statement timeouts |
+| `CACHE_HOST`, `CACHE_PORT` | `valkey`, `6379` | `CACHE=valkey` | Server |
+| `CACHE_PASSWORD` / `CACHE_PASSWORD_FILE` | required | `CACHE=valkey` | Password of the `default` user |
+| `CACHE_TTL_SECONDS`, `CACHE_TIMEOUT_MS` | `30`, `200` | `CACHE=valkey` | Entry lifetime and per-call timeout |
+| `AMQP_HOST`, `AMQP_PORT`, `AMQP_VHOST` | `rabbitmq`, `5672`, `/` | `MESSAGING=rabbitmq` | Broker |
+| `AMQP_USER` | `platform` | `MESSAGING=rabbitmq` | User |
+| `AMQP_PASSWORD` / `AMQP_PASSWORD_FILE` | required | `MESSAGING=rabbitmq` | Password |
+| `AMQP_CONNECT_TIMEOUT_MS`, `AMQP_PUBLISH_TIMEOUT_MS` | `3000`, `3000` | `MESSAGING=rabbitmq` | Connect and publish-confirm timeouts |
+| `OUTBOX_BATCH_SIZE` | `20` | `MESSAGING=rabbitmq` | Events published per cycle |
+| `OUTBOX_POLL_INTERVAL_MS` | `500` | `MESSAGING=rabbitmq` | Wait between cycles when idle |
+| `OUTBOX_MAX_BACKOFF_SECONDS` | `30` | `MESSAGING=rabbitmq` | Longest wait after repeated publish failures |
+
+### Migrations
+
+The schema is created by a separate forward-only step, never by the service: `python -m orders.migrate` (same `DB_*` variables, `STORAGE=postgres`). It takes a PostgreSQL advisory lock, applies the numbered files in `src/orders/migrations` each in a transaction, verifies the checksums of those already applied, and exits 0 on success, 1 on a failed migration and 2 on a configuration problem. Run it as a one-shot container, init container or Kubernetes Job before the service starts.
+
+### Readiness
+
+`/readyz` fails (503) when payments or, with `STORAGE=postgres`, PostgreSQL is unreachable. Valkey, RabbitMQ and (in `http` mode) the notifier are reported as `degraded` and do not fail readiness: orders can still be taken. `/healthz` only says the process is alive.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -42,6 +81,28 @@ If payments times out, refuses the connection or answers 5xx, the order is **kep
 
 `http_requests_total{service,method,route,status}`, `http_request_duration_seconds{service,method,route}` and `http_requests_in_flight{service}`. Routes are templates such as `/orders/{order_id}`.
 
+Data layer metrics (always registered, so dashboards do not depend on the mode; label values are fixed sets, never IDs or SQL):
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `db_pool_connections` | `state` = `idle`, `in_use`, `max` | PostgreSQL pool connections |
+| `db_query_duration_seconds` | `operation` = `create_order`, `get_order`, `list_orders`, `transition_order`, `mark_unavailable`, `outbox_relay`, ... | Query latency histogram |
+| `cache_requests_total` | `result` = `hit`, `miss`, `error` | Valkey lookups and writes |
+| `outbox_unpublished_events` | none | Events written but not yet confirmed by the broker |
+| `outbox_oldest_unpublished_age_seconds` | none | Age of the oldest unpublished event, 0 when empty (the outbox lag) |
+| `messages_published_total` | `result` = `ok`, `error` | Publish attempts to RabbitMQ |
+
+Request ID and `traceparent` are written to the database-layer log lines and sent as message headers, so one request can be followed from the gateway through PostgreSQL to the notifier.
+
+## Dependencies
+
+`requirements.in` and `requirements-dev.in` list the direct dependencies. `requirements.txt` and `requirements-dev.txt` are the full, hash-pinned results and are installed with `--require-hashes`, so pip and uv refuse anything that is not listed with a matching hash. They were last regenerated with uv 0.12.5 and Python 3.14. To regenerate (run in `apps/orders`; existing pins are kept unless an input changes):
+
+```bash
+uv pip compile --python-version 3.14 --generate-hashes --no-header requirements.in -o requirements.txt
+uv pip compile --python-version 3.14 --generate-hashes --no-header requirements-dev.in -o requirements-dev.txt
+```
+
 ## Development
 
 ```bash
@@ -52,3 +113,5 @@ uv pip install --python .venv/bin/python --require-hashes -r requirements-dev.tx
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 PAYMENTS_URL=http://localhost:8082 NOTIFIER_URL=http://localhost:8083 PYTHONPATH=src .venv/bin/python -m orders.main
 ```
+
+Integration tests (real PostgreSQL, Valkey and RabbitMQ) are marked `integration` and skipped unless `INTEGRATION=1`; `make integration-test` starts the stack and runs them (see [local development](../../docs/runbooks/local-development.md)). They run in a scratch schema, so they never touch the running service's data.

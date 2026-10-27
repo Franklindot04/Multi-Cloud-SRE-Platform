@@ -21,3 +21,4 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = ["error"]
+markers = ["integration: needs the local data layer (PostgreSQL, Valkey, RabbitMQ); set INTEGRATION=1"]

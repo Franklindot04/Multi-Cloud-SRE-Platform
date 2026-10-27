@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack data-up data-down data-check data-check-manifests docs
+.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack integration-test smoke-test-integration data-up data-down data-check data-check-manifests docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -61,6 +61,12 @@ smoke-test-stack: ## Start the compose stack, run the smoke test, always stop th
 	fi; \
 	docker compose -f apps/docker-compose.yml down -v --remove-orphans; \
 	exit $$status
+
+integration-test: ## Start the stack on PostgreSQL, Valkey and RabbitMQ, run integration, smoke and chaos tests, always tear down (needs apps/.env)
+	@./scripts/integration-test.sh
+
+smoke-test-integration: ## Start the integration stack, run the smoke test with --integration, always tear down (needs apps/.env)
+	@./scripts/integration-test.sh --smoke
 
 data-up: ## Start the local data layer (PostgreSQL, Valkey, RabbitMQ); needs apps/.env, copy apps/.env.example
 	@test -f apps/.env || { echo "apps/.env is missing: cp apps/.env.example apps/.env and change the values" >&2; exit 1; }

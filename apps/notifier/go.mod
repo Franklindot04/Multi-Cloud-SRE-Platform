@@ -2,7 +2,10 @@ module github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier
 
 go 1.27
 
-require github.com/prometheus/client_golang v1.25.0
+require (
+	github.com/prometheus/client_golang v1.25.0
+	github.com/rabbitmq/amqp091-go v1.16.0
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

@@ -107,7 +107,51 @@ make data-down                      # stops; keeps the volumes
 make data-down PURGE=1              # stops and removes the volumes
 ```
 
-`make data-check` verifies that each service role reaches only its own PostgreSQL database, that Valkey refuses unauthenticated commands and round-trips an authenticated SET and GET, and that a message published to RabbitMQ is read back. The application services are not wired to these yet.
+`make data-check` verifies that each service role reaches only its own PostgreSQL database, that Valkey refuses unauthenticated commands and round-trips an authenticated SET and GET, and that a message published to RabbitMQ is read back. To run the application services against this stack, see "Run the services against the data layer" in the [local development runbook](local-development.md) (`make integration-test`).
+
+## How the services use it
+
+The services are connected to this data layer ([ADR-0015](../adr/0015-service-data-integration.md)): orders and payments store their data in the PostgreSQL databases `orders` and `payments`, orders caches reads in Valkey, and order events travel from an outbox in the orders database through the `platform.events` exchange in RabbitMQ to the notifier. Each is optional and off by default (`STORAGE`, `CACHE`, `MESSAGING`). The services need only a host, port and credentials, so the same images run against the in-cluster components or against managed services.
+
+### Migrations
+
+The schema is created by a separate, forward-only step that runs before the service starts. Locally these are the Compose services `orders-migrate` (`python -m orders.migrate`) and `payments-migrate` (`java -jar payments.jar migrate`). Both take a PostgreSQL advisory lock, so running two at once is safe, and both are idempotent: a second run applies nothing. To see what ran: `docker compose ... logs orders-migrate payments-migrate`, or `SELECT * FROM schema_migrations` (orders) and `SELECT * FROM flyway_schema_history` (payments).
+
+**What the Kubernetes migration Jobs will look like (next change, not part of this one):** one Job per service in the `shop` namespace, an Argo CD `PreSync` hook (or a Helm pre-install and pre-upgrade hook) with `hook-delete-policy: BeforeHookCreation`, running the same image as the service with the command above, `restartPolicy: OnFailure` and a small `backoffLimit`, and an `activeDeadlineSeconds`. The credentials come from the existing `orders-db` and `payments-db` Secrets (`username`, `password`, `host`, `port`, `dbname` mapped to `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME`, plus `STORAGE=postgres` for orders), mounted as files with `DB_PASSWORD_FILE` rather than env values. The migration role is the database owner today; later it can be split from a runtime role with DML rights only. A failed Job blocks the sync, so the new application version never starts against a missing schema; an init container is the alternative where hooks are unavailable.
+
+### Dead-letter queue: inspect and replay
+
+Messages that the notifier cannot process end up in `notifier.orders.dlq` with the reason in the `x-failure-reason` header (also `x-attempts` and `x-original-routing-key`). Metrics: `dead_letter_messages_total` and `consumer_queue_messages{queue="dead_letter"}` on the notifier.
+
+Inspect (management UI at `http://localhost:15672` locally, queue `notifier.orders.dlq`, "Get messages" with "Nack message requeue true" so nothing is removed), or with the HTTP API:
+
+```bash
+# load RABBITMQ_DEFAULT_USER / RABBITMQ_DEFAULT_PASS from apps/.env first (never paste them into a shell history)
+curl -s -u "$RABBITMQ_DEFAULT_USER:$RABBITMQ_DEFAULT_PASS" -H 'content-type: application/json' \
+  -X POST http://127.0.0.1:15672/api/queues/%2F/notifier.orders.dlq/get \
+  -d '{"count":10,"ackmode":"ack_requeue_true","encoding":"auto"}'
+```
+
+Decide per message. A message dead-lettered for `invalid_json`, `unknown_event_type` or `unsupported_schema_version_N` is a producer or contract problem: fix the cause, do not replay it as is. A message dead-lettered for `max_attempts_exceeded: ...` failed for a transient reason: replay it once the cause (for example storage in the consumer) is fixed.
+
+Replay moves the message back to the main queue through the default exchange, which is safe because the handler is idempotent on the event ID:
+
+```bash
+# one message: read it (ack_requeue_false removes it), then republish it to the main queue
+curl -s -u "$RABBITMQ_DEFAULT_USER:$RABBITMQ_DEFAULT_PASS" -H 'content-type: application/json' \
+  -X POST http://127.0.0.1:15672/api/queues/%2F/notifier.orders.dlq/get \
+  -d '{"count":1,"ackmode":"ack_requeue_false","encoding":"auto"}' > dead-letter.json
+# republish the "payload" value from that file:
+curl -s -u "$RABBITMQ_DEFAULT_USER:$RABBITMQ_DEFAULT_PASS" -H 'content-type: application/json' \
+  -X POST http://127.0.0.1:15672/api/exchanges/%2F/amq.default/publish \
+  -d '{"properties":{"delivery_mode":2},"routing_key":"notifier.orders","payload":"<payload from the file>","payload_encoding":"string"}'
+```
+
+Or use the "Move messages" feature of the management UI (Queues, the dead-letter queue, Move messages, destination `notifier.orders`) to replay every message at once. On Kubernetes use `kubectl port-forward` to the `platform-mq` service for the same API, or `rabbitmqadmin`. To discard a message instead, read it with `ackmode: ack_requeue_false` and do not republish it; to purge everything, "Purge messages" on the queue. Record why in the incident notes before discarding.
+
+### Stuck or growing outbox
+
+`outbox_unpublished_events` and `outbox_oldest_unpublished_age_seconds` (orders) show the lag. A rising count with `messages_published_total{result="error"}` means the broker is unreachable or refusing messages; the orders logs say which. Nothing needs to be done to the table: the relay retries with backoff and publishes everything once the broker is back, in creation order. Published rows are kept (a retention job is deferred), so the table only grows.
 
 ## Manifest checks
 

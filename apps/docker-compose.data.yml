@@ -68,7 +68,9 @@ services:
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      # Run as the rabbitmq user: a probe running as root can create ~/.erlang.cookie before the broker does,
+      # leaving a file the broker cannot read ("eacces") and the container in a crash loop on a slow start.
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 10s
       retries: 20

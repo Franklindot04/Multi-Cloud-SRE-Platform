@@ -60,4 +60,43 @@ class AppConfigTest {
     void blankValuesFallBackToDefaults() {
         assertThat(load(Map.of("PORT", "  ")).port()).isEqualTo(8082);
     }
+
+    @Test
+    void storageDefaultsToMemoryWithoutDatabaseSettings() {
+        AppConfig c = load(Map.of());
+        assertThat(c.storage()).isEqualTo("memory");
+        assertThat(c.db()).isNull();
+    }
+
+    @Test
+    void postgresNeedsAPasswordAndReportsItClearly() {
+        assertThatThrownBy(() -> load(Map.of("STORAGE", "postgres")))
+                .isInstanceOf(AppConfig.ConfigException.class)
+                .hasMessageContaining("DB_PASSWORD");
+        assertThatThrownBy(() -> load(Map.of("STORAGE", "mysql")))
+                .isInstanceOf(AppConfig.ConfigException.class)
+                .hasMessageContaining("STORAGE");
+    }
+
+    @Test
+    void postgresSettingsAreReadAndThePasswordIsNotPrinted() {
+        AppConfig c = load(Map.of("STORAGE", "postgres", "DB_PASSWORD", "s3cret-value", "DB_HOST", "db.internal", "DB_POOL_MAX", "8"));
+        assertThat(c.db().host()).isEqualTo("db.internal");
+        assertThat(c.db().poolMax()).isEqualTo(8);
+        assertThat(c.db().user()).isEqualTo("payments");
+        assertThat(c.db().toString()).doesNotContain("s3cret-value");
+        assertThat(c.toString()).doesNotContain("s3cret-value");
+    }
+
+    @Test
+    void thePasswordCanComeFromAMountedFile(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) throws Exception {
+        java.nio.file.Path file = dir.resolve("password");
+        java.nio.file.Files.writeString(file, "from-file\n");
+        AppConfig c = load(Map.of("STORAGE", "postgres", "DB_PASSWORD_FILE", file.toString()));
+        assertThat(c.db().password()).isEqualTo("from-file");
+        assertThatThrownBy(() -> load(Map.of("STORAGE", "postgres", "DB_PASSWORD", "x", "DB_PASSWORD_FILE", file.toString())))
+                .hasMessageContaining("both set");
+        assertThatThrownBy(() -> load(Map.of("STORAGE", "postgres", "DB_PASSWORD_FILE", dir.resolve("missing").toString())))
+                .hasMessageContaining("cannot be read");
+    }
 }

@@ -33,6 +33,33 @@ func (e *Env) String(key, def string) string {
 	return def
 }
 
+// Secret returns the value of KEY, or the trimmed content of the file named by KEY_FILE (a mounted
+// secret). Setting both is an error, and so is an unreadable or empty file. It returns "" when neither is
+// set and required is false; when required is true that is an error too.
+func (e *Env) Secret(key string, required bool) string {
+	value, hasValue := e.lookup(key)
+	path, hasFile := e.lookup(key + "_FILE")
+	value, path = strings.TrimSpace(value), strings.TrimSpace(path)
+	hasValue, hasFile = hasValue && value != "", hasFile && path != ""
+	switch {
+	case hasValue && hasFile:
+		e.fail("%s and %s_FILE are both set; use one", key, key)
+	case hasFile:
+		b, err := os.ReadFile(path)
+		content := strings.TrimSpace(string(b))
+		if err != nil || content == "" {
+			e.fail("%s_FILE cannot be read or is empty: %s", key, path)
+			return ""
+		}
+		return content
+	case hasValue:
+		return value
+	case required:
+		e.fail("%s or %s_FILE is required", key, key)
+	}
+	return ""
+}
+
 // Int returns an integer in [min, max].
 func (e *Env) Int(key string, def, min, max int) int {
 	v, ok := e.lookup(key)

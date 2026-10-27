@@ -1,5 +1,8 @@
 package dev.mcsre.payments.config;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -23,7 +26,26 @@ public record AppConfig(
         int shutdownTimeoutSeconds,
         boolean faultEnabled,
         int faultLatencyMs,
-        double faultErrorRate) {
+        double faultErrorRate,
+        String storage,
+        Db db) {
+
+    /** PostgreSQL settings; present only when STORAGE=postgres. The password never appears in toString. */
+    public record Db(
+            String host,
+            int port,
+            String name,
+            String user,
+            String password,
+            int poolMax,
+            int connectTimeoutMs,
+            int statementTimeoutMs) {
+
+        @Override
+        public String toString() {
+            return "Db[host=" + host + ", port=" + port + ", name=" + name + ", user=" + user + "]";
+        }
+    }
 
     /** Thrown with all configuration problems at once. */
     public static class ConfigException extends RuntimeException {
@@ -34,6 +56,7 @@ public record AppConfig(
 
     public static AppConfig load(Function<String, String> env) {
         Reader r = new Reader(env);
+        String storage = r.oneOf("STORAGE", "memory", "memory", "postgres");
         AppConfig config = new AppConfig(
                 r.integer("PORT", 8082, 1, 65535),
                 r.oneOf("LOG_LEVEL", "info", "debug", "info", "warn", "error"),
@@ -46,7 +69,9 @@ public record AppConfig(
                 r.integer("SHUTDOWN_TIMEOUT_SECONDS", 20, 1, 600),
                 r.bool("FAULT_INJECTION_ENABLED", false),
                 r.integer("FAULT_LATENCY_MS", 0, 0, 60000),
-                r.number("FAULT_ERROR_RATE", 0.0, 0.0, 1.0));
+                r.number("FAULT_ERROR_RATE", 0.0, 0.0, 1.0),
+                storage,
+                storage.equals("postgres") ? r.db() : null);
         if (!r.errors.isEmpty()) {
             throw new ConfigException(String.join("\n", r.errors));
         }
@@ -64,6 +89,50 @@ public record AppConfig(
         private String raw(String key) {
             String value = env.apply(key);
             return value == null || value.isBlank() ? null : value.trim();
+        }
+
+        String text(String key, String def) {
+            String raw = raw(key);
+            return raw == null ? def : raw;
+        }
+
+        /** A secret from KEY or, for a mounted secret file, KEY_FILE. Required; never both. */
+        String secret(String key) {
+            String value = raw(key);
+            String file = raw(key + "_FILE");
+            if (value != null && file != null) {
+                errors.add(key + " and " + key + "_FILE are both set; use one");
+                return "";
+            }
+            if (file != null) {
+                try {
+                    String content = Files.readString(Path.of(file)).strip();
+                    if (!content.isEmpty()) {
+                        return content;
+                    }
+                    errors.add(key + "_FILE points to an empty file");
+                } catch (IOException | RuntimeException e) {
+                    errors.add(key + "_FILE cannot be read: " + file);
+                }
+                return "";
+            }
+            if (value == null) {
+                errors.add(key + " or " + key + "_FILE is required when STORAGE=postgres");
+                return "";
+            }
+            return value;
+        }
+
+        Db db() {
+            return new Db(
+                    text("DB_HOST", "postgres"),
+                    integer("DB_PORT", 5432, 1, 65535),
+                    text("DB_NAME", "payments"),
+                    text("DB_USER", "payments"),
+                    secret("DB_PASSWORD"),
+                    integer("DB_POOL_MAX", 5, 1, 100),
+                    integer("DB_CONNECT_TIMEOUT_MS", 3000, 100, 60000),
+                    integer("DB_STATEMENT_TIMEOUT_MS", 5000, 100, 600000));
         }
 
         int integer(String key, int def, int low, int high) {

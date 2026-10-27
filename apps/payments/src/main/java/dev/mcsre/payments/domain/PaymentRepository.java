@@ -24,4 +24,7 @@ public interface PaymentRepository {
     Stored saveIfAbsent(String key, String fingerprint, Supplier<Payment> create);
 
     Optional<Payment> findById(String id);
+
+    /** Throws if the storage cannot serve requests. In-memory storage always can. */
+    default void ready() throws Exception {}
 }

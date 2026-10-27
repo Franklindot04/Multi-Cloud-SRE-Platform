@@ -7,28 +7,41 @@
 #   docker compose -f apps/docker-compose.yml up --build -d
 #   ./scripts/smoke-test.sh
 #
+# With --integration it also checks the data layer wiring of a stack started with the integration override
+# (make smoke-test-integration): a notification arrives through RabbitMQ, the order read is consistent with
+# the Valkey cache, the outbox drains and nothing was dead-lettered. The default checks do not change.
+#
 # Exits non-zero on the first failed check. Needs only curl and a POSIX shell toolbox; it works
 # with bash 3.2.
 #
 # Environment:
 #   GATEWAY_URL   default http://localhost:8080
 #   NOTIFIER_URL  default http://localhost:8083 (checked for a recorded notification)
+#   ORDERS_URL    default http://localhost:8081 (--integration only: orders metrics and readiness)
 #   WAIT_SECONDS  how long to wait for the stack to become ready (default 90)
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0   (see the header of this script for the environment variables)"
+  echo "Usage: $0 [--integration]   (see the header of this script for the environment variables)"
 }
 
+integration=0
 case "${1:-}" in
   -h | --help)
     usage
     exit 0
     ;;
+  --integration) integration=1 ;;
+  "") ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
 esac
 
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
 NOTIFIER_URL="${NOTIFIER_URL:-http://localhost:8083}"
+ORDERS_URL="${ORDERS_URL:-http://localhost:8081}"
 WAIT_SECONDS="${WAIT_SECONDS:-90}"
 
 command -v curl > /dev/null 2>&1 || {
@@ -178,7 +191,9 @@ request GET "$GATEWAY_URL/version"
 expect_status 200 "gateway version"
 
 request GET "$NOTIFIER_URL/metrics"
-if [ "$STATUS" = "200" ]; then
+if [ "$integration" -eq 1 ]; then
+  echo "  skip  notifications arrive over RabbitMQ in this mode, not through POST /notifications (checked below)"
+elif [ "$STATUS" = "200" ]; then
   if body | grep -q 'route="/notifications"'; then
     pass "the notifier recorded notifications"
   else
@@ -186,6 +201,75 @@ if [ "$STATUS" = "200" ]; then
   fi
 else
   echo "  skip  notifier metrics not reachable at $NOTIFIER_URL (HTTP $STATUS)"
+fi
+
+# metric_value URL SERIES prints the value of one series from a /metrics endpoint (0 when it is missing).
+metric_value() {
+  curl -s --max-time 5 "$1/metrics" | awk -v s="$2" 'index($0, s " ") == 1 { print $2; found = 1 } END { if (!found) print 0 }' | head -n 1
+}
+
+# wait_for LABEL SECONDS COMMAND...: polls until the command succeeds.
+wait_for() {
+  local label="$1" seconds="$2" waited_for=0
+  shift 2
+  until "$@" > /dev/null 2>&1; do
+    if [ "$waited_for" -ge "$seconds" ]; then
+      fail "$label (not true after ${seconds}s)"
+      return 1
+    fi
+    sleep 1
+    waited_for=$((waited_for + 1))
+  done
+  pass "$label"
+}
+
+# at_least VALUE MINIMUM: numeric comparison that also works for values like 3.0.
+at_least() { awk -v v="$1" -v m="$2" 'BEGIN { exit !(v + 0 >= m + 0) }'; }
+is_zero() { awk -v v="$1" 'BEGIN { exit !(v + 0 == 0) }'; }
+
+if [ "$integration" -eq 1 ]; then
+  echo
+  echo "Integration (PostgreSQL, Valkey, RabbitMQ)"
+
+  request GET "$ORDERS_URL/readyz"
+  expect_status 200 "orders is ready with its data layer"
+  for dep in postgres valkey rabbitmq; do
+    if body | grep -q "\"$dep\":\"ok\""; then pass "orders reports $dep ok"; else fail "orders should report $dep ok: $(body)"; fi
+  done
+
+  processed_series='messages_consumed_total{result="processed"}'
+  dead_series='messages_consumed_total{result="dead_letter"}'
+  processed_before="$(metric_value "$NOTIFIER_URL" "$processed_series")"
+  dead_before="$(metric_value "$NOTIFIER_URL" "$dead_series")"
+  hits_before="$(metric_value "$ORDERS_URL" 'cache_requests_total{result="hit"}')"
+
+  request POST "$GATEWAY_URL/api/orders" "$order" "$run_id-integration"
+  expect_status 201 "create an order against PostgreSQL"
+  expect_field status paid "the order is paid"
+  created_id="$(json_field id)"
+  created_updated="$(json_field updated_at)"
+
+  # Two events (order.created and order.paid) travel outbox -> RabbitMQ -> notifier.
+  processed_reached() { at_least "$(metric_value "$NOTIFIER_URL" "$processed_series")" "$1"; }
+  wait_for "the notifier consumed the order events from RabbitMQ" 30 processed_reached "$((${processed_before%.*} + 2))" || true
+
+  request GET "$GATEWAY_URL/api/orders/$created_id"
+  expect_status 200 "read the order (cache miss, then stored)"
+  expect_field updated_at "$created_updated" "the read matches the order that was created"
+  request GET "$GATEWAY_URL/api/orders/$created_id"
+  expect_status 200 "read the order again (served from the cache)"
+  expect_field status paid "the cached order is paid"
+  expect_field updated_at "$created_updated" "the cached read is consistent with the stored order"
+  hits_after="$(metric_value "$ORDERS_URL" 'cache_requests_total{result="hit"}')"
+  if at_least "$hits_after" "$((${hits_before%.*} + 1))"; then pass "the second read was a cache hit"; else fail "expected a cache hit (hits $hits_before -> $hits_after)"; fi
+
+  unpublished="$(metric_value "$ORDERS_URL" 'outbox_unpublished_events')"
+  if is_zero "$unpublished"; then pass "the outbox is drained"; else fail "outbox_unpublished_events is $unpublished"; fi
+  if is_zero "$(awk -v a="$(metric_value "$NOTIFIER_URL" "$dead_series")" -v b="$dead_before" 'BEGIN { print a - b }')"; then
+    pass "nothing was dead-lettered"
+  else
+    fail "messages were dead-lettered during the smoke test"
+  fi
 fi
 
 echo
