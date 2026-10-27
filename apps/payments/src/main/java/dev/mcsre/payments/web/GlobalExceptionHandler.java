@@ -1,5 +1,6 @@
 package dev.mcsre.payments.web;
 
+import dev.mcsre.payments.data.StorageUnavailableException;
 import dev.mcsre.payments.obs.ErrorJson;
 import dev.mcsre.payments.obs.ObservabilityFilter;
 import dev.mcsre.payments.obs.RequestIds;
@@ -51,6 +52,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NoResourceFoundException.class)
     ResponseEntity<String> notFound(HttpServletRequest request) {
         return body(HttpStatus.NOT_FOUND, "not_found", "not found", request);
+    }
+
+    @ExceptionHandler(StorageUnavailableException.class)
+    ResponseEntity<String> storageUnavailable(HttpServletRequest request) {
+        return body(HttpStatus.SERVICE_UNAVAILABLE, "unavailable", "storage is temporarily unavailable", request);
     }
 
     @ExceptionHandler(Exception.class)

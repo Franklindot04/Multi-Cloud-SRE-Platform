@@ -128,7 +128,46 @@ Other simulation settings: `PAYMENT_DECLINE_ABOVE_MINOR` and `PAYMENT_APPROVAL_R
 
 ## Local data layer
 
-PostgreSQL, Valkey and RabbitMQ can run locally with `make data-up`, `make data-check` and `make data-down` (credentials from the untracked `apps/.env`, copied from `apps/.env.example`). The services are not wired to them yet. See the [data layer runbook](data-layer.md).
+PostgreSQL, Valkey and RabbitMQ can run on their own with `make data-up`, `make data-check` and `make data-down` (credentials from the untracked `apps/.env`, copied from `apps/.env.example`). See the [data layer runbook](data-layer.md).
+
+## Run the services against the data layer
+
+`apps/docker-compose.integration.yml` is an override that switches the services to `STORAGE=postgres`, `CACHE=valkey` and `MESSAGING=rabbitmq`. It runs the two migration containers (`orders-migrate`, `payments-migrate`) to completion before orders and payments start, and waits for the healthchecks of the data components. It is its own Compose project, `sre-sample-integration`, so it does not touch the volumes of `make data-up`. All ports stay on `127.0.0.1` and the credentials come only from `apps/.env`.
+
+```bash
+cp apps/.env.example apps/.env     # once; fake values, not tracked. Stop `make data-up` first: the ports are the same
+make integration-test              # start, run integration + smoke + chaos tests, always tear down
+make smoke-test-integration        # start, run only smoke-test.sh --integration, always tear down
+```
+
+Both targets print the container logs when something fails and remove the containers, network and volumes afterwards. `make integration-test` runs:
+
+1. the integration suites (`scripts/apps.sh integration`): orders against real PostgreSQL, Valkey and RabbitMQ (migrations applied twice, 30 parallel same-key requests giving one order and one payment, the outbox publishing and surviving a broker outage, two relays never publishing the same event, the cache with the wrong password or no server); payments against PostgreSQL (migrations twice, 32 parallel same-key requests); the notifier consuming a duplicate event once and dead-lettering poison messages with their reason;
+2. `scripts/smoke-test.sh --integration`: the usual checks plus a notification arriving through RabbitMQ, the order read matching the cached read (and a cache hit), an empty outbox and no dead letters;
+3. chaos checks: with **RabbitMQ stopped** orders are still created, the outbox fills, orders stays ready and reports `rabbitmq` as degraded, and everything drains and is consumed after it returns; with **Valkey stopped** orders are created and read, cache errors are counted and readiness is only degraded; with **PostgreSQL stopped** orders and payments become not ready (liveness unaffected) and recover.
+
+To keep the stack up and look around instead:
+
+```bash
+docker compose -p sre-sample-integration --env-file apps/.env \
+  -f apps/docker-compose.yml -f apps/docker-compose.data.yml -f apps/docker-compose.integration.yml up --build -d
+./scripts/smoke-test.sh --integration
+# ... explore, then
+docker compose -p sre-sample-integration --env-file apps/.env \
+  -f apps/docker-compose.yml -f apps/docker-compose.data.yml -f apps/docker-compose.integration.yml down -v
+```
+
+Useful while it runs: `curl -s localhost:8081/readyz` (the dependency checks), `curl -s localhost:8081/metrics | grep -E 'outbox|cache|db_'`, `curl -s localhost:8083/metrics | grep -E 'messages_consumed|dead_letter|consumer_queue'`, and the RabbitMQ management UI at `http://localhost:15672`.
+
+### Resetting local data
+
+- Stack from the override: `docker compose -p sre-sample-integration ... down -v` (above), which `make integration-test` does for you.
+- The standalone data layer: `make data-down PURGE=1`.
+- Only the order tables, keeping the containers: `docker compose -p sre-sample-integration exec postgres psql -U "$POSTGRES_USER" -d orders -c 'TRUNCATE orders, order_items, idempotency_keys, outbox_events CASCADE'` (load the variables from `apps/.env` first). Only for local data; the services never truncate.
+
+### Dead-letter queue
+
+How to inspect and replay is in the [data layer runbook](data-layer.md#dead-letter-queue-inspect-and-replay).
 
 ## Troubleshooting
 
@@ -140,4 +179,9 @@ PostgreSQL, Valkey and RabbitMQ can run locally with `make data-up`, `make data-
 - **`400 missing_idempotency_key`:** add the `Idempotency-Key` header (1-128 printable characters).
 - **Payments tests are skipped or slow:** without a JDK 25 they run in a Maven container and download dependencies on first use (kept in the `sre-sample-m2` Docker volume).
 - **Orders tests skipped:** create the virtual environment with the commands under "Run a single service".
-- **Everything is lost on restart:** storage is in memory by design until the data layer arrives.
+- **Everything is lost on restart:** storage is in memory by default; run with the integration override to keep data in PostgreSQL.
+- **`make integration-test` says apps/.env is missing:** `cp apps/.env.example apps/.env`.
+- **`port is already allocated` on 5432, 6379, 5672 or 15672:** `make data-up` or another database is running. Stop it first.
+- **Orders is not ready with the integration stack:** `curl localhost:8081/readyz` names the failing check (`postgres`, `payments`). `degraded` entries (`valkey`, `rabbitmq`) do not block readiness.
+- **Events are not arriving:** `outbox_unpublished_events` rising means the relay cannot publish (check `rabbitmq`, `messages_published_total{result="error"}` and the orders logs); `consumer_queue_messages` and `dead_letter_messages_total` on the notifier show the other side.
+- **Orders pytest integration tests are skipped:** they need `INTEGRATION=1`, which `scripts/apps.sh integration` sets; run them through `make integration-test`.

@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier/internal/config"
+	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier/internal/events"
 	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier/internal/notifications"
 	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier/internal/platform"
 )
@@ -32,8 +33,24 @@ func main() {
 
 	drain := &platform.Drain{}
 	mux := http.NewServeMux()
-	platform.RegisterOps(mux, drain, reg, 500*time.Millisecond)
-	(&notifications.Handler{Repo: notifications.NewMemoryRepository(cfg.MaxNotifications)}).Register(mux)
+	repo := notifications.NewMemoryRepository(cfg.MaxNotifications)
+
+	var checks []platform.Check
+	var workers []platform.Worker
+	if cfg.Messaging == "rabbitmq" {
+		consumer := &events.Consumer{
+			Config: cfg.AMQP,
+			Log:    log,
+			Proc: &events.Processor{
+				Repo: repo, Dedupe: events.NewDedupe(cfg.AMQP.DedupeSize), MaxAttempts: cfg.AMQP.MaxAttempts,
+				Metrics: events.NewMetrics(reg), Log: log,
+			},
+		}
+		checks = append(checks, consumer.Check()) // required: without the broker nothing is consumed
+		workers = append(workers, consumer)
+	}
+	platform.RegisterOps(mux, drain, reg, 500*time.Millisecond, checks...)
+	(&notifications.Handler{Repo: repo}).Register(mux)
 
 	handler := platform.Wrap(mux, platform.Options{
 		Service: service, Logger: log, Metrics: metrics, MaxBody: cfg.MaxBodyBytes, Fault: cfg.Fault,
@@ -43,7 +60,7 @@ func main() {
 		log.Warn("fault injection is ENABLED",
 			"latency_ms", cfg.Fault.LatencyMs, "error_rate", cfg.Fault.ErrorRate)
 	}
-	if err := platform.Run(":"+strconv.Itoa(cfg.Port), handler, drain, cfg.DrainPeriod, cfg.ShutdownTimeout, log); err != nil {
+	if err := platform.Run(":"+strconv.Itoa(cfg.Port), handler, drain, cfg.DrainPeriod, cfg.ShutdownTimeout, log, workers...); err != nil {
 		log.Error("server failed", "error", err.Error())
 		os.Exit(1)
 	}

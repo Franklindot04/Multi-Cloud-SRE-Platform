@@ -13,8 +13,11 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from orders.cache import NoCache, OrderCache, ValkeyCache
 from orders.clients import HttpNotifierClient, HttpPaymentsClient, NotifierClient, PaymentsClient
 from orders.config import Config
+from orders.messaging import AmqpPublisher, EventPublisher
+from orders.metrics import CacheMetrics, DbMetrics, OutboxMetrics
 from orders.models import IDEMPOTENCY_KEY_PATTERN, CreateOrderRequest, IdempotencyMismatch
 from orders.observability import (
     Drain,
@@ -23,6 +26,8 @@ from orders.observability import (
     ObservabilityMiddleware,
     request_id_var,
 )
+from orders.outbox import OutboxRelay
+from orders.postgres import PostgresOrderRepository, create_pool, pool_sizes
 from orders.repository import MemoryOrderRepository, OrderRepository
 from orders.service import OrderService
 
@@ -49,6 +54,8 @@ def create_app(
     repo: OrderRepository | None = None,
     payments: PaymentsClient | None = None,
     notifier: NotifierClient | None = None,
+    cache: OrderCache | None = None,
+    publisher: EventPublisher | None = None,
     drain: Drain | None = None,
     logger: JsonLogger | None = None,
     registry: CollectorRegistry | None = None,
@@ -56,12 +63,33 @@ def create_app(
     logger = logger or JsonLogger(SERVICE, config.log_level)
     registry = registry or CollectorRegistry()
     metrics = Metrics(SERVICE, registry)
+    db_metrics = DbMetrics(registry)
+    cache_metrics = CacheMetrics(registry)
+    outbox_metrics = OutboxMetrics(registry)
     drain = drain or Drain()
-    repo = repo or MemoryOrderRepository(config.max_orders)
     http_client = httpx.AsyncClient()
     payments = payments or HttpPaymentsClient(http_client, config.payments_url, config.payments_timeout_s)
     notifier = notifier or HttpNotifierClient(http_client, config.notifier_url, config.notifier_timeout_s, logger)
-    service = OrderService(repo, payments, notifier)
+    if cache is None:
+        cache = (
+            ValkeyCache.from_config(config.cache_config, cache_metrics, logger)
+            if config.cache == "valkey"
+            else NoCache()
+        )
+    use_outbox = config.messaging == "rabbitmq"
+    if use_outbox and publisher is None:
+        publisher = AmqpPublisher(config.amqp)
+
+    # The service needs the repository, which for PostgreSQL needs the pool created at startup.
+    ctx: dict[str, Any] = {"repo": repo, "pool": None, "relay_task": None}
+    if repo is None and config.storage == "memory":
+        ctx["repo"] = MemoryOrderRepository(config.max_orders)
+
+    def build_service() -> OrderService:
+        return OrderService(ctx["repo"], payments, notifier, cache, notify_over_http=not use_outbox)
+
+    if ctx["repo"] is not None:
+        ctx["service"] = build_service()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -71,7 +99,39 @@ def create_app(
                 latency_ms=config.fault.latency_ms,
                 error_rate=config.fault.error_rate,
             )
+        stop = asyncio.Event()
+        if ctx["repo"] is None:
+            pool = await create_pool(config.db)
+            ctx["pool"] = pool
+            db_metrics.bind_pool(lambda: pool_sizes(pool))
+            ctx["repo"] = PostgresOrderRepository(pool, db_metrics, logger, emit_events=use_outbox)
+            ctx["service"] = build_service()
+            if use_outbox:
+                assert publisher is not None
+                relay = OutboxRelay(
+                    pool,
+                    publisher,
+                    db_metrics,
+                    outbox_metrics,
+                    logger,
+                    batch_size=config.outbox_batch_size,
+                    poll_interval_s=config.outbox_poll_interval_s,
+                    max_backoff_s=config.outbox_max_backoff_s,
+                )
+                ctx["relay_task"] = asyncio.create_task(relay.run(stop), name="outbox-relay")
         yield
+        stop.set()
+        task = ctx["relay_task"]
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except Exception:
+                task.cancel()
+        if publisher is not None:
+            await publisher.close()
+        await cache.close()
+        if ctx["pool"] is not None:
+            await ctx["pool"].close()
         await http_client.aclose()
 
     app = FastAPI(title="orders", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -109,6 +169,9 @@ def create_app(
         if drain.draining:
             return JSONResponse({"status": "draining"}, status_code=503)
 
+        async def _failed() -> str:
+            return "fail: NotStarted"
+
         async def probe(client: Any) -> str:
             try:
                 await asyncio.wait_for(client.ready(), timeout=config.readiness_timeout_s)
@@ -116,9 +179,24 @@ def create_app(
                 return f"fail: {type(exc).__name__}"
             return "ok"
 
-        pay, note = await asyncio.gather(probe(payments), probe(notifier))
-        checks = {"payments": pay, "notifier": note if note == "ok" else f"degraded: {note.removeprefix('fail: ')}"}
-        if pay != "ok":
+        names = ["payments"]
+        probes = [probe(payments)]
+        if config.storage == "postgres":
+            names.append("postgres")
+            probes.append(probe(ctx["repo"]) if ctx["repo"] is not None else _failed())
+        # Dependencies below degrade the service but do not stop it taking orders.
+        optional: dict[str, Any] = {}
+        if config.messaging == "http":
+            optional["notifier"] = notifier
+        if config.cache == "valkey":
+            optional["valkey"] = cache
+        if config.messaging == "rabbitmq" and publisher is not None:
+            optional["rabbitmq"] = publisher
+        results = await asyncio.gather(*probes, *(probe(c) for c in optional.values()))
+        checks = dict(zip(names, results[: len(names)], strict=True))
+        for name, outcome in zip(optional, results[len(names) :], strict=True):
+            checks[name] = outcome if outcome == "ok" else f"degraded: {outcome.removeprefix('fail: ')}"
+        if any(checks[n] != "ok" for n in names):
             return JSONResponse({"status": "not_ready", "checks": checks}, status_code=503)
         return JSONResponse({"status": "ready", "checks": checks})
 
@@ -140,7 +218,7 @@ def create_app(
         if body.total_minor() <= 0:
             return error_response(422, "validation_error", "the order total must be greater than zero")
         try:
-            result = await service.create(idempotency_key, body)
+            result = await ctx["service"].create(idempotency_key, body)
         except IdempotencyMismatch:
             return error_response(
                 422, "idempotency_key_mismatch", "this Idempotency-Key was used with a different request body"
@@ -152,12 +230,12 @@ def create_app(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> dict[str, Any]:
-        orders, total = service.list(limit, offset)
+        orders, total = await ctx["service"].list(limit, offset)
         return {"items": [o.model_dump(mode="json") for o in orders], "total": total, "limit": limit, "offset": offset}
 
     @app.get("/orders/{order_id}")
     async def get_order(order_id: str) -> JSONResponse:
-        order = service.get(order_id)
+        order = await ctx["service"].get(order_id)
         if order is None:
             return error_response(404, "not_found", "order not found")
         return JSONResponse(order.model_dump(mode="json"))

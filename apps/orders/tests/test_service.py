@@ -43,7 +43,7 @@ async def test_unavailable_payments_keep_the_order_pending_and_do_not_notify() -
     result = await service.create("k1", req())
     assert result.http_status == 202
     assert result.order.status == OrderStatus.PENDING and result.order.failure_reason == "payment_unavailable"
-    assert service.get(result.order.id) is not None  # the order was not lost
+    assert await service.get(result.order.id) is not None  # the order was not lost
     assert notifier.notified == []
 
 

@@ -55,6 +55,8 @@ flowchart TB
 
 The sample application (see [ADR-0013](../adr/0013-sample-application-design.md)) handles an order like this. Request IDs and the W3C `traceparent` header are passed on every call, and the payment is idempotent, so a retry after a payments outage completes the same order.
 
+With the in-memory defaults, orders notifies the notifier directly and best effort:
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -80,6 +82,48 @@ sequenceDiagram
         Note over Client,OR: Retrying with the same Idempotency-Key re-authorizes the same order
     end
     GW-->>Client: status and body relayed unchanged
+```
+
+With the data layer (`STORAGE=postgres`, `CACHE=valkey`, `MESSAGING=rabbitmq`, see [ADR-0015](../adr/0015-service-data-integration.md)), state lives in PostgreSQL and events travel through a transactional outbox. The order change and its event are committed together; a relay publishes the event afterwards, so a broker outage delays the notification but never loses it or blocks the order. Delivery is at least once, and the notifier ignores an event ID it has already handled.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client
+    participant OR as orders
+    participant PG as PostgreSQL
+    participant PAY as payments
+    participant VK as Valkey
+    participant MQ as RabbitMQ
+    participant NOT as notifier
+
+    Client->>OR: POST /orders (Idempotency-Key)
+    OR->>PG: one transaction: idempotency key, order (pending), order.created event
+    OR->>PAY: POST /payments/authorize (key = order id)
+    PAY->>PG: insert payment (unique key makes a replay safe)
+    PAY-->>OR: approved or declined
+    OR->>PG: one transaction: order paid or failed, order.paid or order.failed event
+    OR->>VK: delete order:id (errors are logged and ignored)
+    OR-->>Client: 201 order
+
+    loop relay polls (FOR UPDATE SKIP LOCKED)
+        OR->>PG: select unpublished events
+        OR->>MQ: publish with confirm (persistent, event id, request id, traceparent)
+        MQ-->>OR: confirm
+        OR->>PG: set published_at
+    end
+    MQ->>NOT: deliver (manual ack, prefetch)
+    alt new event
+        NOT->>NOT: record notification, remember event id
+        NOT-->>MQ: ack
+    else duplicate event id
+        NOT-->>MQ: ack, handled once
+    else handling fails
+        NOT->>MQ: republish to the retry queue, then dead-letter queue after the last attempt
+    end
+    Client->>OR: GET /orders/id
+    OR->>VK: get order:id (a miss or an error falls back to PostgreSQL)
+    OR->>PG: select order, then store in Valkey with a short TTL
 ```
 
 ## Multi-cloud rationale

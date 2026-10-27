@@ -4,20 +4,25 @@
 #   scripts/apps.sh test    unit and handler tests for every service
 #   scripts/apps.sh lint    go vet and gofmt, ruff, checkstyle, shellcheck (as CI runs it)
 #   scripts/apps.sh build   container images, tagged sre-sample/<service>:local
+#   scripts/apps.sh integration
+#                           integration tests against the running integration stack (started by
+#                           scripts/integration-test.sh, which also exports the credentials from apps/.env)
 #
 # Each service is skipped with a message when its toolchain is missing. Nothing is pushed anywhere.
 #
 # Environment:
 #   JAVA_IMAGE  Maven image used for payments when no local JDK 25 exists
 #               (default maven:3.9.12-eclipse-temurin-25-noble)
+#   INTEGRATION_NETWORK  compose network of the integration stack (default sre-sample-integration_default);
+#               the payments tests run in a container on it, so they need no JDK 25 and no published port
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 test|lint|build"
+  echo "Usage: $0 test|lint|build|integration"
 }
 
 case "${1:-}" in
-  test | lint | build) action="$1" ;;
+  test | lint | build | integration) action="$1" ;;
   -h | --help)
     usage
     exit 0
@@ -73,6 +78,10 @@ go_check() {
     cd "$apps/$svc"
     case "$action" in
       test) go test -race ./... ;;
+      integration)
+        AMQP_HOST=localhost AMQP_USER="${RABBITMQ_DEFAULT_USER:?}" AMQP_PASSWORD="${RABBITMQ_DEFAULT_PASS:?}" \
+          go test -tags integration -race -count=1 ./...
+        ;;
       lint)
         go vet ./...
         unformatted="$(gofmt -l .)"
@@ -103,6 +112,12 @@ python_check() {
     cd "$dir"
     case "$action" in
       test) .venv/bin/python -m pytest -q ;;
+      integration)
+        INTEGRATION=1 DB_HOST=localhost DB_NAME=orders DB_USER=orders DB_PASSWORD="${ORDERS_DB_PASSWORD:?}" \
+          CACHE_HOST=localhost CACHE_PASSWORD="${VALKEY_PASSWORD:?}" \
+          AMQP_HOST=localhost AMQP_USER="${RABBITMQ_DEFAULT_USER:?}" AMQP_PASSWORD="${RABBITMQ_DEFAULT_PASS:?}" \
+          .venv/bin/python -m pytest -q tests/integration
+        ;;
       lint)
         .venv/bin/ruff check .
         .venv/bin/ruff format --check .
@@ -118,8 +133,15 @@ java_check() {
   case "$action" in
     test) goal="test" ;;
     lint) goal="checkstyle:check" ;;
+    integration) goal="test -Dtest=PostgresPaymentRepositoryTest" ;;
   esac
-  if [ "$(java_major)" -ge 25 ]; then
+  if [ "$action" = "integration" ]; then
+    docker_ready || return 3
+    # shellcheck disable=SC2086 # the goal is a fixed string that must split into Maven arguments
+    docker run --rm --network "${INTEGRATION_NETWORK:-sre-sample-integration_default}" \
+      -e INTEGRATION=1 -e DB_HOST=postgres -e DB_NAME=payments -e DB_USER=payments -e DB_PASSWORD="${PAYMENTS_DB_PASSWORD:?}" \
+      -v "$PWD/$apps/payments":/work -v sre-sample-m2:/root/.m2 -w /work "$java_image" mvn -B -ntp $goal
+  elif [ "$(java_major)" -ge 25 ]; then
     (cd "$apps/payments" && ./mvnw -B -ntp "$goal")
   elif docker_ready; then
     echo "    no JDK 25 locally; using $java_image"
@@ -142,6 +164,9 @@ if [ "$action" = "build" ]; then
   fi
 else
   for svc in gateway notifier; do
+    if [ "$action" = "integration" ] && [ "$svc" = "gateway" ]; then
+      continue # the gateway has no data layer
+    fi
     echo "==> $action $svc"
     if have go; then
       ran=$((ran + 1))

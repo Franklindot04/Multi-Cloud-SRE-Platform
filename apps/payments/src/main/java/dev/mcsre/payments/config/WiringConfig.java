@@ -1,5 +1,9 @@
 package dev.mcsre.payments.config;
 
+import com.zaxxer.hikari.HikariDataSource;
+import dev.mcsre.payments.data.Database;
+import dev.mcsre.payments.data.DbMetrics;
+import dev.mcsre.payments.data.PostgresPaymentRepository;
 import dev.mcsre.payments.domain.AuthorizationService;
 import dev.mcsre.payments.domain.DecisionPolicy;
 import dev.mcsre.payments.domain.InMemoryPaymentRepository;
@@ -11,6 +15,7 @@ import dev.mcsre.payments.obs.ObservabilityFilter;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.time.Clock;
 import java.util.Map;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.context.annotation.Bean;
@@ -44,8 +49,23 @@ public class WiringConfig {
         return new JsonLog(SERVICE, config.logLevel(), System.out);
     }
 
+    @Bean(destroyMethod = "close")
+    @ConditionalOnProperty(name = "STORAGE", havingValue = "postgres")
+    HikariDataSource dataSource(AppConfig config, PrometheusRegistry registry) {
+        HikariDataSource pool = Database.pool(config.db());
+        DbMetrics.bindPool(pool, registry);
+        return pool;
+    }
+
     @Bean
-    PaymentRepository paymentRepository(AppConfig config) {
+    @ConditionalOnProperty(name = "STORAGE", havingValue = "postgres")
+    PaymentRepository postgresPaymentRepository(HikariDataSource dataSource, PrometheusRegistry registry, JsonLog log) {
+        return new PostgresPaymentRepository(dataSource, new DbMetrics(registry), log);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "STORAGE", havingValue = "memory", matchIfMissing = true)
+    PaymentRepository inMemoryPaymentRepository(AppConfig config) {
         return new InMemoryPaymentRepository(config.maxPayments());
     }
 

@@ -75,6 +75,7 @@ public final class ObservabilityFilter extends OncePerRequestFilter {
         request.setAttribute(TRACE_ATTRIBUTE, trace);
         request.setAttribute(RequestIds.ATTRIBUTE, requestId);
         response.setHeader("X-Request-Id", requestId);
+        RequestScope.enter(requestId, trace.traceId());
 
         metrics.started();
         try {
@@ -94,6 +95,7 @@ public final class ObservabilityFilter extends OncePerRequestFilter {
                 reject(response, requestId, 500, "internal_error", "internal error");
             }
         } finally {
+            RequestScope.leave();
             double seconds = (System.nanoTime() - start) / 1_000_000_000.0;
             String route = routeOf(request);
             int status = response.getStatus();

@@ -1,0 +1,99 @@
+# Integration override: runs the sample services against the local data layer instead of memory.
+#
+#   docker compose -p sre-sample-integration \
+#     -f apps/docker-compose.yml -f apps/docker-compose.data.yml -f apps/docker-compose.integration.yml up --build -d
+#
+# or let make do it, including the tests and the teardown: make integration-test (see scripts/integration-test.sh).
+# Credentials come only from apps/.env (not tracked; copy apps/.env.example). Every port stays on localhost.
+#
+# Order of events: the databases, cache and broker become healthy, the two one-shot migration containers
+# run to completion, and only then do orders and payments start. The services never change the schema.
+name: sre-sample-integration
+
+services:
+  orders-migrate:
+    build:
+      context: ./orders
+    entrypoint: ["python", "-m", "orders.migrate"]
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    environment:
+      STORAGE: postgres
+      DB_HOST: postgres
+      DB_NAME: orders
+      DB_USER: orders
+      DB_PASSWORD: ${ORDERS_DB_PASSWORD:?set ORDERS_DB_PASSWORD in apps/.env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  payments-migrate:
+    build:
+      context: ./payments
+    command: ["migrate"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    environment:
+      STORAGE: postgres
+      DB_HOST: postgres
+      DB_NAME: payments
+      DB_USER: payments
+      DB_PASSWORD: ${PAYMENTS_DB_PASSWORD:?set PAYMENTS_DB_PASSWORD in apps/.env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  orders:
+    environment:
+      STORAGE: postgres
+      CACHE: valkey
+      MESSAGING: rabbitmq
+      DB_HOST: postgres
+      DB_NAME: orders
+      DB_USER: orders
+      DB_PASSWORD: ${ORDERS_DB_PASSWORD:?set ORDERS_DB_PASSWORD in apps/.env}
+      CACHE_HOST: valkey
+      CACHE_PASSWORD: ${VALKEY_PASSWORD:?set VALKEY_PASSWORD in apps/.env}
+      AMQP_HOST: rabbitmq
+      AMQP_USER: ${RABBITMQ_DEFAULT_USER:?set RABBITMQ_DEFAULT_USER in apps/.env}
+      AMQP_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?set RABBITMQ_DEFAULT_PASS in apps/.env}
+      OUTBOX_POLL_INTERVAL_MS: "200"
+    depends_on:
+      orders-migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  payments:
+    environment:
+      STORAGE: postgres
+      DB_HOST: postgres
+      DB_NAME: payments
+      DB_USER: payments
+      DB_PASSWORD: ${PAYMENTS_DB_PASSWORD:?set PAYMENTS_DB_PASSWORD in apps/.env}
+    depends_on:
+      payments-migrate:
+        condition: service_completed_successfully
+
+  notifier:
+    environment:
+      MESSAGING: rabbitmq
+      AMQP_HOST: rabbitmq
+      AMQP_USER: ${RABBITMQ_DEFAULT_USER:?set RABBITMQ_DEFAULT_USER in apps/.env}
+      AMQP_PASSWORD: ${RABBITMQ_DEFAULT_PASS:?set RABBITMQ_DEFAULT_PASS in apps/.env}
+      CONSUMER_RETRY_DELAY_MS: "1000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
