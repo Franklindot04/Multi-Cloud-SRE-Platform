@@ -1,0 +1,82 @@
+# Local stack for the sample order-processing application. Every port is bound to localhost only and
+# there are no secrets. Start with: docker compose -f apps/docker-compose.yml up --build
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  stop_grace_period: 30s
+  restart: "no"
+
+x-fault: &fault
+  FAULT_INJECTION_ENABLED: ${FAULT_INJECTION_ENABLED:-false}
+  FAULT_LATENCY_MS: ${FAULT_LATENCY_MS:-0}
+  FAULT_ERROR_RATE: ${FAULT_ERROR_RATE:-0}
+
+services:
+  gateway:
+    <<: *hardening
+    build:
+      context: ./gateway
+      args:
+        VERSION: ${APP_VERSION:-local}
+        COMMIT: ${APP_COMMIT:-local}
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      <<: *fault
+      PORT: "8080"
+      ORDERS_URL: http://orders:8081
+      PAYMENTS_URL: http://payments:8082
+      UPSTREAM_TIMEOUT_MS: "5000"
+      READINESS_TIMEOUT_MS: "500"
+      LOG_LEVEL: info
+    depends_on:
+      - orders
+      - payments
+
+  orders:
+    <<: *hardening
+    build:
+      context: ./orders
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      <<: *fault
+      PORT: "8081"
+      PAYMENTS_URL: http://payments:8082
+      NOTIFIER_URL: http://notifier:8083
+      PAYMENTS_TIMEOUT_MS: "2000"
+      NOTIFIER_TIMEOUT_MS: "1000"
+      LOG_LEVEL: info
+    depends_on:
+      - payments
+      - notifier
+
+  payments:
+    <<: *hardening
+    build:
+      context: ./payments
+    ports:
+      - "127.0.0.1:8082:8082"
+    environment:
+      <<: *fault
+      PORT: "8082"
+      PAYMENT_DECLINE_ABOVE_MINOR: ${PAYMENT_DECLINE_ABOVE_MINOR:-100000}
+      PAYMENT_APPROVAL_RATIO: ${PAYMENT_APPROVAL_RATIO:-1.0}
+      PAYMENT_ALLOWED_CURRENCIES: USD,EUR,GBP,SEK
+      LOG_LEVEL: info
+
+  notifier:
+    <<: *hardening
+    build:
+      context: ./notifier
+    ports:
+      - "127.0.0.1:8083:8083"
+    environment:
+      <<: *fault
+      PORT: "8083"
+      LOG_LEVEL: info

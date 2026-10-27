@@ -46,7 +46,7 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 ## Status
 
-Phase 0 (foundation) is in progress, and Phases 1 and 2 have started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks, the network and Kubernetes cluster modules for both clouds, and the optional DNS modules are written, tested and validated. The cluster baseline add-ons are defined as pinned, CI-checked Helm charts in `platform/addons`, and the Argo CD hub, its projects, app-of-apps and ApplicationSets are defined in `platform/argocd`, with a bootstrap script that registers cluster identifiers as Argo CD cluster metadata so none are committed. Nothing has been bootstrapped or deployed by this repository's automation yet.
+Phase 0 (foundation) is in progress, and Phases 1 to 3 have started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks, the network and cluster modules for both clouds, the optional DNS modules, the cluster baseline add-ons and the Argo CD hub are defined, tested and validated. The first version of the sample order-processing application (gateway, orders, payments, notifier) is implemented with in-memory storage, API contracts in `docs/api`, container images and a local Compose stack; the data layer, Helm charts, CI image builds and OpenTelemetry follow. No network, cluster or add-on has been bootstrapped or deployed by this repository's automation yet.
 
 ## Getting started
 

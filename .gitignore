@@ -92,6 +92,18 @@ platform/addons/*/charts/
 platform/argocd/install/charts/
 *.tgz
 
+# Application build artifacts, virtual environments and dependency caches.
+# go.sum, the hash-pinned requirements*.txt files, mvnw and .mvn/wrapper are committed.
+apps/*/bin/
+apps/*/coverage.out
+apps/orders/.venv/
+apps/orders/.pytest_cache/
+apps/orders/.ruff_cache/
+__pycache__/
+*.py[cod]
+apps/payments/target/
+apps/payments/.mvn/wrapper/maven-wrapper.jar
+
 # Local scratch
 tmp/
 *.log

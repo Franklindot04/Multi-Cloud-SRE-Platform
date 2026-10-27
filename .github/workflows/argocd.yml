@@ -20,6 +20,9 @@ env:
   KUBECONFORM_VERSION: v0.8.0
   # The hub runs on EKS.
   KUBERNETES_VERSION: "1.37.0"
+  # scripts/shellcheck.sh expects this version and runs it with -S style, so CI and local runs agree.
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
 
 jobs:
   check:
@@ -40,6 +43,15 @@ jobs:
           grep ' kubeconform-linux-amd64.tar.gz$' CHECKSUMS | sha256sum -c -
           tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
           sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+
+      - name: Install shellcheck
+        run: |
+          file="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${file}"
+          echo "${SHELLCHECK_SHA256}  ${file}" | sha256sum -c -
+          tar -xJf "${file}"
+          sudo install -m 0755 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
 
       - name: Install yamllint
         run: pip install --user yamllint

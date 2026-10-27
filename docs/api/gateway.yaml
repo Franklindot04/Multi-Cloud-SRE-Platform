@@ -1,0 +1,215 @@
+openapi: 3.0.3
+info:
+  title: gateway
+  version: 1.0.0
+  description: |
+    Public entry point. `/api/orders` and `/api/payments/{id}` are proxied unchanged to the orders and
+    payments services (status code, body and the `Idempotency-Key`, `X-Request-Id` and `traceparent`
+    headers are preserved). The request and response bodies are exactly those in `orders.yaml` and
+    `payments.yaml`. Upstream failures become `502` (cannot connect) or `504` (timeout).
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/orders:
+    post:
+      operationId: createOrder
+      summary: Proxy to POST /orders
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: See `CreateOrderRequest` in orders.yaml.
+      responses:
+        "200":
+          description: Order replay (see orders.yaml).
+        "201":
+          description: Order created (see orders.yaml).
+        "202":
+          description: Order pending because payments was unavailable (see orders.yaml).
+        "400":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "504":
+          $ref: "#/components/responses/Error"
+    get:
+      operationId: listOrders
+      summary: Proxy to GET /orders
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: A page of orders (see orders.yaml).
+        "502":
+          $ref: "#/components/responses/Error"
+        "504":
+          $ref: "#/components/responses/Error"
+  /api/orders/{id}:
+    get:
+      operationId: getOrder
+      summary: Proxy to GET /orders/{id}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: The order (see orders.yaml).
+        "404":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "504":
+          $ref: "#/components/responses/Error"
+  /api/payments/{id}:
+    get:
+      operationId: getPayment
+      summary: Proxy to GET /payments/{id}
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: The payment (see payments.yaml).
+        "404":
+          $ref: "#/components/responses/Error"
+        "502":
+          $ref: "#/components/responses/Error"
+        "504":
+          $ref: "#/components/responses/Error"
+  /version:
+    get:
+      operationId: version
+      summary: Build information
+      responses:
+        "200":
+          description: Version of the running gateway.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Version"
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness (requires orders and payments to answer their /readyz)
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          description: Draining or a downstream service is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+  responses:
+    Error:
+      description: Error (the gateway's own, or relayed from the upstream service).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Version:
+      type: object
+      required: [service, version, commit]
+      properties:
+        service:
+          type: string
+        version:
+          type: string
+        commit:
+          type: string
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, draining, not_ready]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string

@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate test addons-check argocd-check docs
+.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -38,6 +38,29 @@ addons-check: ## Lint, render and schema-check the cluster add-ons (skips if hel
 
 argocd-check: ## Lint, render and schema-check the Argo CD hub and its GitOps definitions (skips missing tools)
 	@./scripts/argocd-check.sh platform/argocd
+
+apps-test: ## Test the sample application services (skips a service whose toolchain is missing)
+	@./scripts/apps.sh test
+
+apps-lint: ## Lint the sample application services (go vet and gofmt, ruff, checkstyle)
+	@./scripts/apps.sh lint
+
+apps-build: ## Build the sample application container images locally (skips if Docker is missing)
+	@./scripts/apps.sh build
+
+smoke-test: ## Smoke-test an ALREADY RUNNING stack (client only; does not start or stop anything)
+	@./scripts/smoke-test.sh
+
+smoke-test-stack: ## Start the compose stack, run the smoke test, always stop the stack (logs on failure)
+	@status=0; \
+	docker compose -f apps/docker-compose.yml up --build -d || status=$$?; \
+	if [ $$status -eq 0 ]; then ./scripts/smoke-test.sh || status=$$?; fi; \
+	if [ $$status -ne 0 ]; then \
+		echo "==> failed (exit $$status); container logs follow" >&2; \
+		docker compose -f apps/docker-compose.yml logs --no-color >&2 || true; \
+	fi; \
+	docker compose -f apps/docker-compose.yml down -v --remove-orphans; \
+	exit $$status
 
 docs: ## Check that every ADR is listed in the ADR index
 	@status=0; \

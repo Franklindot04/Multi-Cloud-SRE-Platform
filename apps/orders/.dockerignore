@@ -1,0 +1,11 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+__pycache__
+tests
+*.md
+Dockerfile
+.dockerignore
+requirements-dev.*
+requirements.in

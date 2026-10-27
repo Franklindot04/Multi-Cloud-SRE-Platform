@@ -98,12 +98,9 @@ fi
 
 # --- 4. shellcheck ---
 
-if have shellcheck; then
-  echo "==> shellcheck scripts"
-  shellcheck scripts/*.sh || status=1
-else
-  echo "shellcheck not installed; skipping shell lint"
-fi
+# Same flags and version as CI: see scripts/shellcheck.sh.
+echo "==> shellcheck scripts"
+./scripts/shellcheck.sh || status=1
 
 # --- 5. render test (references and parameters) ---
 

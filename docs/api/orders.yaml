@@ -1,0 +1,279 @@
+openapi: 3.0.3
+info:
+  title: orders
+  version: 1.0.0
+  description: |
+    Order lifecycle. Creating an order stores it as `pending`, authorizes payment with the payments
+    service, moves it to `paid` or `failed`, and then asks the notifier to record a notification.
+
+    If payments cannot be reached (timeout, connection error or 5xx) the order is **kept** as
+    `pending` with `failure_reason: payment_unavailable` and the response is `202`. Repeating the
+    request with the same `Idempotency-Key` retries the authorization, which is safe because the
+    payment is itself idempotent.
+servers:
+  - url: http://localhost:8081
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      summary: Create an order and authorize payment
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "201":
+          description: Order created and its payment resolved (`paid` or `failed`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "200":
+          description: Replay of an earlier request with the same key and body; the stored order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "202":
+          description: Order stored as `pending` because payments was unavailable. Retry with the same key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+    get:
+      operationId: listOrders
+      summary: List orders, newest first
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: A page of orders.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderList"
+        "422":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      summary: Get an order
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: The order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness (requires payments; the notifier is reported but optional)
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          description: Draining or a required dependency is down.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+  responses:
+    Error:
+      description: Error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    OrderItem:
+      type: object
+      required: [sku, quantity, unit_price_minor]
+      properties:
+        sku:
+          type: string
+          minLength: 1
+          maxLength: 64
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        unit_price_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 1000000000
+          description: Price of one unit in minor units (for example cents).
+    CreateOrderRequest:
+      type: object
+      required: [customer_id, items, currency]
+      properties:
+        customer_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+    Order:
+      type: object
+      required: [id, customer_id, items, currency, total_minor, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        customer_id:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        currency:
+          type: string
+        total_minor:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [pending, paid, failed]
+        payment_id:
+          type: string
+          nullable: true
+        failure_reason:
+          type: string
+          nullable: true
+          enum: [payment_unavailable, amount_exceeds_limit, currency_not_supported, issuer_declined, payment_rejected]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    OrderList:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, draining, not_ready]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string

@@ -1,0 +1,175 @@
+openapi: 3.0.3
+info:
+  title: notifier
+  version: 1.0.0
+  description: |
+    Records the notifications that would be sent. **Nothing is delivered**: there is no email, SMS or
+    webhook integration, only a stored record.
+servers:
+  - url: http://localhost:8083
+paths:
+  /notifications:
+    post:
+      operationId: createNotification
+      summary: Record a notification
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NotificationRequest"
+      responses:
+        "201":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "400":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /notifications/{id}:
+    get:
+      operationId: getNotification
+      summary: Get a recorded notification
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: The notification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          description: Draining or not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+  responses:
+    Error:
+      description: Error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    NotificationRequest:
+      type: object
+      required: [order_id, channel, message]
+      properties:
+        order_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        channel:
+          type: string
+          enum: [email, sms, webhook]
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+    Notification:
+      type: object
+      required: [id, order_id, channel, message, status, created_at]
+      properties:
+        id:
+          type: string
+        order_id:
+          type: string
+        channel:
+          type: string
+          enum: [email, sms, webhook]
+        message:
+          type: string
+        status:
+          type: string
+          enum: [recorded]
+          description: Always `recorded`; nothing is delivered.
+        created_at:
+          type: string
+          format: date-time
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, draining, not_ready]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string

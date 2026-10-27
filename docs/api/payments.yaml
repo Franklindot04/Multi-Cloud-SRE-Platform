@@ -1,0 +1,196 @@
+openapi: 3.0.3
+info:
+  title: payments
+  version: 1.0.0
+  description: |
+    Payment authorization **simulation**. No real payment network, card data or money is involved.
+    Decisions are deterministic: an amount above the configured limit is declined, an unsupported
+    currency is declined, and otherwise the order ID decides approval against a configured approval
+    ratio (default 1.0, always approve).
+servers:
+  - url: http://localhost:8082
+paths:
+  /payments/authorize:
+    post:
+      operationId: authorizePayment
+      summary: Authorize a payment (simulated)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthorizeRequest"
+      responses:
+        "201":
+          description: Created. The payment was approved or declined; check `status`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "200":
+          description: Replay of an earlier request with the same key and body; the original result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "400":
+          $ref: "#/components/responses/Error"
+        "413":
+          $ref: "#/components/responses/Error"
+        "422":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /payments/{id}:
+    get:
+      operationId: getPayment
+      summary: Get a payment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: The payment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "404":
+          $ref: "#/components/responses/Error"
+        "503":
+          $ref: "#/components/responses/Error"
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          description: Draining or not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    RequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+  responses:
+    Error:
+      description: Error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    AuthorizeRequest:
+      type: object
+      required: [order_id, amount_minor, currency]
+      properties:
+        order_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        amount_minor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Amount in minor units (for example cents).
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+    Payment:
+      type: object
+      required: [id, order_id, amount_minor, currency, status, created_at]
+      properties:
+        id:
+          type: string
+        order_id:
+          type: string
+        amount_minor:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        status:
+          type: string
+          enum: [approved, declined]
+        decline_reason:
+          type: string
+          nullable: true
+          enum: [amount_exceeds_limit, currency_not_supported, issuer_declined]
+        created_at:
+          type: string
+          format: date-time
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, draining, not_ready]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string
