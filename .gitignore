@@ -82,7 +82,21 @@ Desktop.ini
 credentials*.json
 service-account*.json
 *-sa-key.json
-secrets/
+# Secret files by type and name. There is deliberately no rule that matches a directory called "secrets":
+# platform/data/secrets is a Helm chart that must be committed (it generates credentials in the cluster and
+# contains none). A local scratch directory for real secrets belongs at the repository root only.
+*.secret
+*.secrets
+*.secret.yaml
+*.secrets.yaml
+*.secret.json
+*.token
+id_rsa
+id_ecdsa
+id_ed25519
+.netrc
+/secrets/
+/.secrets/
 .aws/
 .kube/
 kubeconfig*

@@ -9,6 +9,8 @@
 #   5. a render test: every path and values file an Application or ApplicationSet refers to must
 #      exist, every project must be defined, and every templated Helm parameter must change the
 #      rendered output of the chart it targets (which catches misspelt parameter names)
+#      and none of those paths, nor any file under them, may be matched by a .gitignore rule
+#      (scripts/gitignore-match.sh: file reads and pattern matching only; see its header for the limits)
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
 #
@@ -125,6 +127,15 @@ scan_file() {
 
 echo "==> render test: references and parameters"
 
+# Every path an Application or ApplicationSet refers to (and every file under it) is collected here and then
+# compared with the .gitignore rules, so a rule that hides a chart from Git fails here instead of in CI.
+refs="$work/refs.txt"
+: > "$refs"
+./scripts/gitignore-match.sh --self-test > /dev/null || {
+  echo "    the .gitignore matcher failed its self-test"
+  status=1
+}
+
 if have helm; then
   # Projects that are defined in bootstrap/.
   projects=" "
@@ -177,6 +188,10 @@ $val" ;;
       status=1
       continue
     fi
+
+    printf 'd %s\n' "$path" >> "$refs"
+    # Locally downloaded chart dependencies (charts/) are ignored on purpose and are not committed.
+    find "$path" -type f -not -path '*/charts/*' | sed 's/^/f /' >> "$refs"
 
     # Templated value file names resolve to the cloud(s) the file selects; default to both.
     [ -n "$clouds" ] || clouds=" aws gcp"
@@ -246,6 +261,17 @@ EOF
       done
     done
   done
+  ignored="$(sort -u "$refs" | ./scripts/gitignore-match.sh)"
+  if [ -n "$ignored" ]; then
+    while IFS= read -r line; do
+      echo "    $line"
+    done << EOF
+$ignored
+EOF
+    echo "    the paths above are referenced by an Application or ApplicationSet but matched by .gitignore:"
+    echo "    they would not be committed, and Argo CD could not find them. Narrow the .gitignore rule."
+    status=1
+  fi
   echo "    checked $checked Application and ApplicationSet file(s)"
 else
   echo "helm not installed; skipping the render test"
