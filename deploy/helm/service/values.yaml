@@ -1,0 +1,155 @@
+---
+# Defaults shared by every service. Each service overrides what it needs in deploy/helm/values/<service>.yaml, and
+# one of <service>-memory.yaml or <service>-data.yaml selects the storage profile. The image registry and tag are
+# set in deploy/helm/values/images.yaml, never here.
+
+# The Kubernetes name of the Service, Deployment and so on. Defaults to the release name, so the release for
+# the orders service is called "orders" and other services reach it at http://orders:8081.
+name: ""
+
+image:
+  # PLACEHOLDER: replaced by values/images.yaml. It is only here so that the chart renders on its own.
+  registry: ghcr.io/placeholder-owner
+  # Repository name below the registry; defaults to the service name.
+  name: ""
+  # PLACEHOLDER tag. The CI change that builds the images writes the real tag to values/images.yaml.
+  tag: "0.0.0-placeholder"
+  # A digest (sha256:...) pins the image exactly. When set it is appended to the tag; the tag is then informational.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+# Per-service image digests, written next to the tag by CI: {gateway: "sha256:...", orders: "sha256:..."}.
+digests: {}
+
+imagePullSecrets: []
+
+replicas: 1
+port: 8080
+
+# Numeric user and group the image runs as (see the Dockerfile of the service).
+runAsUser: 65532
+
+# Plain environment variables. Values are always rendered as strings.
+env: {}
+
+# Environment variables read from a Secret key: {ENV_NAME: {secret: name, key: key}}.
+secretEnv: {}
+
+# Passwords are mounted as files, not passed as environment variables. {ENV_NAME: {secret: name, key: key}}
+# mounts the key read-only under /var/run/secrets/<secret>/ and sets ENV_NAME to the file path.
+secretFiles: {}
+
+# The services read SHUTDOWN_DRAIN_SECONDS and SHUTDOWN_TIMEOUT_SECONDS; the chart sets them from here so the
+# pod's grace period can be derived from the same numbers.
+shutdown:
+  # Time between the pod being marked terminating and SIGTERM, so that Service endpoints are removed first.
+  preStopSeconds: 5
+  # Time /readyz fails after SIGTERM before the listener stops (the service's drain period).
+  drainSeconds: 5
+  # Time in-flight requests have to finish after the listener stops.
+  timeoutSeconds: 20
+  # Slack added to the grace period.
+  bufferSeconds: 5
+
+# Needed only by images whose process writes to /tmp (the Java service). Everything else runs with an
+# unwritable root filesystem and no scratch volume.
+tmpVolume:
+  enabled: false
+  sizeLimit: 64Mi
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+probes:
+  startup:
+    path: /healthz
+    periodSeconds: 2
+    # failureThreshold * periodSeconds is the time a slow start (the JVM) is allowed to take.
+    failureThreshold: 60
+  readiness:
+    path: /readyz
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  liveness:
+    path: /healthz
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+# An existing PriorityClass from platform/addons/priority-classes. Empty means the cluster default.
+priorityClassName: platform-apps
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Spread replicas over nodes and zones. ScheduleAnyway keeps pods schedulable on a small or single-zone cluster.
+topologySpread:
+  enabled: true
+  maxSkew: 1
+
+nodeSelector: {}
+tolerations: []
+podAnnotations: {}
+
+service:
+  # ClusterIP only. Nothing else in this chart is exposed to the internet.
+  type: ClusterIP
+
+metrics:
+  # Adds prometheus.io/* annotations to the pods. Off by default.
+  scrapeAnnotations: false
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    # Labels the Prometheus instance selects ServiceMonitors by.
+    labels: {}
+
+# A one-shot Job that runs before the Deployment is updated (an Argo CD PreSync hook). It gets its own
+# environment: only what the migration needs, not the whole service configuration.
+migration:
+  enabled: false
+  command: []
+  args: []
+  env: {}
+  secretEnv: {}
+  secretFiles: {}
+  # The Job is retried until activeDeadlineSeconds, then fails and stops the sync.
+  backoffLimit: 10
+  activeDeadlineSeconds: 900
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+# Off by default. Enabling it creates a billed load balancer (AWS Application Load Balancer or Google Cloud
+# external or internal HTTP(S) load balancer).
+ingress:
+  enabled: false
+  # aws (AWS Load Balancer Controller) or gcp (built-in GKE ingress). Set by values/cloud-<cloud>.yaml.
+  cloud: ""
+  # internet-facing or internal
+  scheme: internet-facing
+  host: ""
+  # AWS only: ACM certificate ARN. An identifier, so it is supplied at deploy time and never committed.
+  certificateArn: ""
+  # GCP only: name of a reserved static address.
+  staticIpName: ""
+  annotations: {}
+
+# A cert-manager Certificate for the ingress host. The AWS load balancer takes its certificate from ACM and
+# cannot use it; it is for the GKE ingress or another controller that reads a TLS Secret.
+certificate:
+  enabled: false
+  secretName: ""
+  issuerName: letsencrypt-staging
+  issuerKind: ClusterIssuer

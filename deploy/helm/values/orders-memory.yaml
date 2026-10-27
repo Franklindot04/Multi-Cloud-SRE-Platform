@@ -1,0 +1,8 @@
+---
+# Memory profile: no database, cache or broker. Orders live in the pod's memory and are lost on restart, so
+# there must be exactly one replica (a second replica would not see the first one's orders).
+replicas: 1
+env:
+  STORAGE: memory
+  CACHE: none
+  MESSAGING: http

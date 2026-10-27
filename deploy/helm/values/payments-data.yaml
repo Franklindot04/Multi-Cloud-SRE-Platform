@@ -1,0 +1,32 @@
+---
+# Data profile: PostgreSQL in the data namespace, credentials from the payments-db Secret.
+replicas: 2
+env:
+  STORAGE: postgres
+secretEnv:
+  DB_HOST: {secret: payments-db, key: host}
+  DB_PORT: {secret: payments-db, key: port}
+  DB_NAME: {secret: payments-db, key: dbname}
+  DB_USER: {secret: payments-db, key: username}
+secretFiles:
+  DB_PASSWORD_FILE: {secret: payments-db, key: password}
+migration:
+  enabled: true
+  # The image's entrypoint is "java -jar payments.jar"; the argument selects the migrate mode.
+  args: [migrate]
+  env:
+    STORAGE: postgres
+  secretEnv:
+    DB_HOST: {secret: payments-db, key: host}
+    DB_PORT: {secret: payments-db, key: port}
+    DB_NAME: {secret: payments-db, key: dbname}
+    DB_USER: {secret: payments-db, key: username}
+  secretFiles:
+    DB_PASSWORD_FILE: {secret: payments-db, key: password}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

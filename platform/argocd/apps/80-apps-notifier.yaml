@@ -1,0 +1,60 @@
+---
+# The notifier service from deploy/helm/service. Wave 20. Deployed to clusters labelled platform.example/apps=true
+# (off by default). The profile comes from the cluster label platform.example/apps-profile: memory (default,
+# no infrastructure) or data (PostgreSQL, Valkey and RabbitMQ in the data namespace).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: apps-notifier
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/apps: "true"
+  template:
+    metadata:
+      name: 'apps-notifier-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: apps-notifier
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-apps
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: deploy/helm/service
+        helm:
+          releaseName: notifier
+          valueFiles:
+            - ../values/images.yaml
+            - ../values/notifier.yaml
+            - '../values/notifier-{{ default "memory" (index .metadata.labels "platform.example/apps-profile") }}.yaml'
+      destination:
+        server: '{{ .server }}'
+        namespace: shop
+      syncPolicy:
+        automated:
+          # The project can only reach the shop namespace, so pruning cannot touch the data namespace or its volumes.
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/enforce-version: latest
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 10m

@@ -12,6 +12,7 @@ ignore: |
   platform/argocd/install/Chart.lock
   platform/addons/*/Chart.lock
   platform/data/*/templates/
+  deploy/helm/*/templates/
   platform/data/*/charts/
   platform/data/*/Chart.lock
   platform/data/rabbitmq-operator/cluster-operator.yml

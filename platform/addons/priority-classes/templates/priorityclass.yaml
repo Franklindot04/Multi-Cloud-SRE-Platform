@@ -8,3 +8,14 @@ value: {{ .Values.platformAddonsCritical.value }}
 globalDefault: false
 preemptionPolicy: PreemptLowerPriority
 description: Platform add-ons (cert-manager, external-dns) that other workloads depend on.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.platformApps.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+value: {{ .Values.platformApps.value }}
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: The sample application services. Below the platform add-ons, above workloads with no priority class.

@@ -31,10 +31,13 @@ platform/argocd/
   bootstrap/      applied once by scripts/bootstrap-argocd.sh:
                     appproject-platform-system.yaml   Argo CD itself and the GitOps definitions
                     appproject-platform-addons.yaml   the add-ons
+                    appproject-platform-apps.yaml     the sample services (shop namespace only)
                     root-application.yaml             app-of-apps, points at apps/
   apps/           synced by the root Application:
                     00-argocd.yaml                    Argo CD manages its own upgrades
                     10-... 61-...                     ApplicationSets for the add-ons
+                    70-... 78-...                     the data layer (and the RabbitMQ credential copy)
+                    80-... 83-...                     the sample services, one ApplicationSet each
 ```
 
 ## How clusters are described
@@ -49,6 +52,8 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `platform.example/dns01` | `true`, `false` | Create the Let's Encrypt DNS-01 ClusterIssuer (default `false`) |
 | `platform.example/data` | `true`, `false` | Deploy the data layer from `platform/data` (default `false`; volumes it creates outlive `terraform destroy`) |
 | `platform.example/data-profile` | `standard`, `ha` | Data layer profile (default `standard`; `ha` needs three nodes) |
+| `platform.example/apps` | `true`, `false` | Deploy the sample services from `deploy/helm` (default `false`; needs published images) |
+| `platform.example/apps-profile` | `memory`, `data` | Service profile (default `memory`; `data` needs the data layer) |
 
 | Annotation (prefix `platform.example/`) | Used for |
 | --- | --- |
@@ -80,6 +85,10 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 5 | `data-namespaces`, `data-storage` (only on clusters labelled `platform.example/data=true`) |
 | 6 | `data-secrets`, `data-cnpg-operator`, `data-rabbitmq-operator` |
 | 7 | `data-postgres`, `data-valkey`, `data-rabbitmq` |
+| 8 | `data-rabbitmq-credentials` (copies the broker credentials into `shop`) |
+| 20 | `apps-notifier`, `apps-payments` (only on clusters labelled `platform.example/apps=true`) |
+| 21 | `apps-orders` |
+| 22 | `apps-gateway` |
 
 Waves order how the ApplicationSets are created; each generated Application then syncs on its own. The one hard dependency, the issuers needing cert-manager's CRDs and webhook, is enforced where it matters:
 
@@ -95,7 +104,7 @@ Waves order how the ApplicationSets are created; each generated Application then
 - No ingress: the server runs in insecure (plain HTTP) mode **inside the pod** because it is reached only through `kubectl port-forward`, which is already authenticated and encrypted by the Kubernetes API. Remove that setting when an ingress with TLS is added.
 - Default RBAC role is read-only (`policy.default: role:readonly`); Dex and notifications are disabled.
 - The built-in `admin` account is kept for bootstrap. Rotate its password after the first login and delete the initial secret (see the runbook).
-- A third AppProject, `platform-data`, restricts the data layer to the namespaces `data`, `shop`, `cnpg-system` and `rabbitmq-system` and an allowlist of cluster-scoped kinds that includes StorageClass.
+- A fourth AppProject, `platform-apps`, restricts the sample services to the `shop` namespace and a short allowlist of namespaced kinds (the only cluster-scoped kind is `Namespace`), so it cannot reach the `data` namespace or its volumes. A third AppProject, `platform-data`, restricts the data layer to the namespaces `data`, `shop`, `cnpg-system` and `rabbitmq-system` and an allowlist of cluster-scoped kinds that includes StorageClass.
 - AppProjects limit sources to this repository, destinations to the namespaces in use, and cluster-scoped kinds to an allowlist, and warn about orphaned resources.
 
 ## Checks

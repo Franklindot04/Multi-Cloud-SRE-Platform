@@ -1,0 +1,10 @@
+---
+# Data profile: consumes order events from RabbitMQ. Its /readyz requires the broker.
+env:
+  MESSAGING: rabbitmq
+secretEnv:
+  AMQP_HOST: {secret: rabbitmq-auth, key: host}
+  AMQP_PORT: {secret: rabbitmq-auth, key: port}
+  AMQP_USER: {secret: rabbitmq-auth, key: username}
+secretFiles:
+  AMQP_PASSWORD_FILE: {secret: rabbitmq-auth, key: password}

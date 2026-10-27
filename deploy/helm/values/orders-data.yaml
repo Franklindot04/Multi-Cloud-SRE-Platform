@@ -1,0 +1,34 @@
+---
+# Data profile: PostgreSQL, Valkey and RabbitMQ in the data namespace. The Secrets are the ones created by
+# platform/data (orders-db and cache-auth by the secrets chart, rabbitmq-auth by the rabbitmq-credentials chart).
+replicas: 2
+env:
+  STORAGE: postgres
+  CACHE: valkey
+  MESSAGING: rabbitmq
+secretEnv:
+  DB_HOST: {secret: orders-db, key: host}
+  DB_PORT: {secret: orders-db, key: port}
+  DB_NAME: {secret: orders-db, key: dbname}
+  DB_USER: {secret: orders-db, key: username}
+  CACHE_HOST: {secret: cache-auth, key: host}
+  CACHE_PORT: {secret: cache-auth, key: port}
+  AMQP_HOST: {secret: rabbitmq-auth, key: host}
+  AMQP_PORT: {secret: rabbitmq-auth, key: port}
+  AMQP_USER: {secret: rabbitmq-auth, key: username}
+secretFiles:
+  DB_PASSWORD_FILE: {secret: orders-db, key: password}
+  CACHE_PASSWORD_FILE: {secret: cache-auth, key: password}
+  AMQP_PASSWORD_FILE: {secret: rabbitmq-auth, key: password}
+migration:
+  enabled: true
+  command: [python, -m, orders.migrate]
+  env:
+    STORAGE: postgres
+  secretEnv:
+    DB_HOST: {secret: orders-db, key: host}
+    DB_PORT: {secret: orders-db, key: port}
+    DB_NAME: {secret: orders-db, key: dbname}
+    DB_USER: {secret: orders-db, key: username}
+  secretFiles:
+    DB_PASSWORD_FILE: {secret: orders-db, key: password}

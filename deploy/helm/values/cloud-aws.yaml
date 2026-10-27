@@ -1,0 +1,5 @@
+---
+# AWS overlay, used by the gateway only. The ingress stays disabled; this selects the AWS Load Balancer
+# Controller annotations when it is enabled.
+ingress:
+  cloud: aws

@@ -1,0 +1,18 @@
+---
+# Orders: order lifecycle. Python image, user 10001. Storage, cache and messaging come from the profile files.
+port: 8081
+runAsUser: 10001
+env:
+  PAYMENTS_URL: http://payments:8082
+  NOTIFIER_URL: http://notifier:8083
+  PAYMENTS_TIMEOUT_MS: "2000"
+  NOTIFIER_TIMEOUT_MS: "1000"
+  READINESS_TIMEOUT_MS: "500"
+  LOG_LEVEL: info
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi

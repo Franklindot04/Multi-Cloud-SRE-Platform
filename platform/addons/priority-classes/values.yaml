@@ -5,3 +5,9 @@
 platformAddonsCritical:
   name: platform-addons-critical
   value: 1000000
+
+# The sample application services (deploy/helm/service). Below the add-ons they depend on, so a node under
+# pressure evicts an application pod before it evicts cert-manager or external-dns.
+platformApps:
+  name: platform-apps
+  value: 100000

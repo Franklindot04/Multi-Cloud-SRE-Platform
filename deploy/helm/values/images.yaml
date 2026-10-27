@@ -1,0 +1,12 @@
+---
+# Image registry, tag and digests for every service. This is the only file CI needs to change to roll out a new
+# build (it is not implemented yet: the CI change that builds and pushes the images will update it).
+#
+# The registry is GitHub Container Registry under the lowercase owner name. The tag below is a PLACEHOLDER:
+# no image has been published, so a cluster that enables the services cannot pull them until CI replaces it.
+image:
+  registry: ghcr.io/franklindot04
+  tag: "0.0.0-placeholder"
+
+# sha256 digests per service, written by CI together with the tag. A digest takes precedence over the tag when pulling.
+digests: {}

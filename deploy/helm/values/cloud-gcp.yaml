@@ -1,0 +1,5 @@
+---
+# GCP overlay, used by the gateway only. The ingress stays disabled; this selects the built-in GKE ingress
+# annotations and BackendConfig when it is enabled.
+ingress:
+  cloud: gcp

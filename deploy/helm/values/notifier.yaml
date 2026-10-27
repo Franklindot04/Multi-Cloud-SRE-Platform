@@ -1,0 +1,15 @@
+---
+# Notifier: records the notifications that would be sent; delivers nothing. One replica in every profile
+# because its duplicate detection is in memory (see ADR-0015).
+port: 8083
+runAsUser: 65532
+replicas: 1
+env:
+  LOG_LEVEL: info
+resources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

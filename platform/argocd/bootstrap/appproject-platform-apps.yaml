@@ -1,0 +1,43 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-apps
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: The sample application services (gateway, orders, payments, notifier) deployed from deploy/helm
+  sourceRepos:
+    - https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+  # Any registered cluster, but only the shop namespace. The data namespace, with its volumes, is not a
+  # destination of this project, so nothing synced or pruned here can touch it.
+  destinations:
+    - server: "*"
+      namespace: shop
+  # The only cluster-scoped kind: the shop namespace itself, created (with Pod Security labels) when the data
+  # layer has not already created it. Everything else the services need is namespaced.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: Service
+    - group: apps
+      kind: Deployment
+    - group: batch
+      kind: Job
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: cert-manager.io
+      kind: Certificate
+    - group: monitoring.coreos.com
+      kind: ServiceMonitor
+    - group: cloud.google.com
+      kind: BackendConfig
+  orphanedResources:
+    warn: true

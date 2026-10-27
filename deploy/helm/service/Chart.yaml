@@ -1,0 +1,8 @@
+apiVersion: v2
+name: service
+description: Shared chart that deploys one of the sample services (gateway, orders, payments or notifier)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+annotations:
+  platform/clouds: "aws,gcp"
