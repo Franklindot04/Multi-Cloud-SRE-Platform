@@ -4,6 +4,8 @@ extends: default
 ignore: |
   .terraform/
   node_modules/
+  apps/orders/.venv/
+  apps/payments/target/
   platform/addons/*/templates/
   platform/addons/*/charts/
   platform/argocd/install/charts/

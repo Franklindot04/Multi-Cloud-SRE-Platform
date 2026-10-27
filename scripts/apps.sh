@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Test, build or lint the sample application services.
+#
+#   scripts/apps.sh test    unit and handler tests for every service
+#   scripts/apps.sh lint    go vet and gofmt, ruff, checkstyle
+#   scripts/apps.sh build   container images, tagged sre-sample/<service>:local
+#
+# Each service is skipped with a message when its toolchain is missing. Nothing is pushed anywhere.
+#
+# Environment:
+#   JAVA_IMAGE  Maven image used for payments when no local JDK 25 exists
+#               (default maven:3.9.12-eclipse-temurin-25-noble)
+set -euo pipefail
+
+usage() {
+  echo "Usage: $0 test|lint|build"
+}
+
+case "${1:-}" in
+  test | lint | build) action="$1" ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+apps="apps"
+java_image="${JAVA_IMAGE:-maven:3.9.12-eclipse-temurin-25-noble}"
+status=0
+ran=0
+skipped=0
+
+have() { command -v "$1" > /dev/null 2>&1; }
+
+skip() {
+  skipped=$((skipped + 1))
+  echo "    skipped: $1"
+}
+
+# run_step LABEL COMMAND...: runs a command and records a failure without stopping the others.
+run_step() {
+  local label="$1"
+  shift
+  ran=$((ran + 1))
+  echo "==> $label"
+  if ! "$@"; then
+    echo "    FAILED: $label" >&2
+    status=1
+  fi
+}
+
+docker_ready() { have docker && docker info > /dev/null 2>&1; }
+
+# Major version of the local JDK, or 0 when there is none.
+java_major() {
+  have java || {
+    echo 0
+    return
+  }
+  java -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -n 1
+}
+
+# --- Go services ---
+
+go_check() {
+  local svc="$1"
+  (
+    cd "$apps/$svc"
+    case "$action" in
+      test) go test -race ./... ;;
+      lint)
+        go vet ./...
+        unformatted="$(gofmt -l .)"
+        if [ -n "$unformatted" ]; then
+          echo "gofmt needed on:" >&2
+          echo "$unformatted" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  )
+}
+
+# --- Python service ---
+
+python_check() {
+  local dir="$apps/orders" py="$apps/orders/.venv/bin/python"
+  if [ ! -x "$py" ]; then
+    if have uv; then
+      echo "    creating $dir/.venv with uv (Python 3.14, hash-checked dependencies)"
+      uv venv --python 3.14 "$dir/.venv" -q
+      uv pip install --python "$py" --require-hashes -r "$dir/requirements-dev.txt" -q
+    else
+      return 3
+    fi
+  fi
+  (
+    cd "$dir"
+    case "$action" in
+      test) .venv/bin/python -m pytest -q ;;
+      lint)
+        .venv/bin/ruff check .
+        .venv/bin/ruff format --check .
+        ;;
+    esac
+  )
+}
+
+# --- Java service ---
+
+java_check() {
+  local goal
+  case "$action" in
+    test) goal="test" ;;
+    lint) goal="checkstyle:check" ;;
+  esac
+  if [ "$(java_major)" -ge 25 ]; then
+    (cd "$apps/payments" && ./mvnw -B -ntp "$goal")
+  elif docker_ready; then
+    echo "    no JDK 25 locally; using $java_image"
+    docker run --rm -v "$PWD/$apps/payments":/work -v sre-sample-m2:/root/.m2 -w /work "$java_image" mvn -B -ntp "$goal"
+  else
+    return 3
+  fi
+}
+
+if [ "$action" = "build" ]; then
+  if docker_ready; then
+    for svc in gateway orders payments notifier; do
+      run_step "build $svc image" docker build -q -t "sre-sample/$svc:local" "$apps/$svc"
+    done
+  else
+    for svc in gateway orders payments notifier; do
+      echo "==> $svc"
+      skip "Docker is not available"
+    done
+  fi
+else
+  for svc in gateway notifier; do
+    echo "==> $action $svc"
+    if have go; then
+      ran=$((ran + 1))
+      go_check "$svc" || {
+        echo "    FAILED: $action $svc" >&2
+        status=1
+      }
+    else
+      skip "go is not installed"
+    fi
+  done
+
+  echo "==> $action orders"
+  ran=$((ran + 1))
+  rc=0
+  python_check || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    ran=$((ran - 1))
+    skip "no apps/orders/.venv and uv is not installed (uv venv --python 3.14 apps/orders/.venv, then uv pip install --require-hashes -r apps/orders/requirements-dev.txt)"
+  elif [ "$rc" -ne 0 ]; then
+    echo "    FAILED: $action orders" >&2
+    status=1
+  fi
+
+  echo "==> $action payments"
+  ran=$((ran + 1))
+  rc=0
+  java_check || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    ran=$((ran - 1))
+    skip "neither a JDK 25 nor a running Docker daemon is available"
+  elif [ "$rc" -ne 0 ]; then
+    echo "    FAILED: $action payments" >&2
+    status=1
+  fi
+fi
+
+echo
+echo "apps $action: $ran run, $skipped skipped"
+exit "$status"
