@@ -8,14 +8,14 @@
 #   - version:  CI installs shellcheck 0.11.0 (see .github/workflows/argocd.yml); a different local
 #               version prints a warning because newer releases report fewer findings than older ones
 #
-# Usage: scripts/shellcheck.sh [file...]   (default: scripts/*.sh)
+# Usage: scripts/shellcheck.sh [file...]   (default: scripts/*.sh apps/data/*.sh)
 set -euo pipefail
 
 pinned="${SHELLCHECK_VERSION:-0.11.0}"
 
 case "${1:-}" in
   -h | --help)
-    echo "Usage: $0 [file...]   (default: scripts/*.sh)"
+    echo "Usage: $0 [file...]   (default: scripts/*.sh apps/data/*.sh)"
     exit 0
     ;;
 esac
@@ -32,6 +32,6 @@ fi
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 if [ "$#" -eq 0 ]; then
-  set -- scripts/*.sh
+  set -- scripts/*.sh apps/data/*.sh
 fi
 exec shellcheck -S style "$@"

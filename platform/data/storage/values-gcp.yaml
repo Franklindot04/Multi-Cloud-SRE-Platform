@@ -1,0 +1,6 @@
+---
+# GKE: the Persistent Disk CSI driver is built in. Balanced persistent disks.
+storageClass:
+  provisioner: pd.csi.storage.gke.io
+  parameters:
+    type: pd-balanced

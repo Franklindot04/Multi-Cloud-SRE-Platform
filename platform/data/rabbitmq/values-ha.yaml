@@ -1,0 +1,17 @@
+---
+# HA profile: three replicas with quorum queues, spread over nodes (needs at least three schedulable nodes).
+# Use after values.yaml.
+cluster:
+  replicas: 3
+  persistence:
+    storage: 10Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  additionalConfig: |
+    disk_free_limit.absolute = 2GB
+    cluster_partition_handling = pause_minority

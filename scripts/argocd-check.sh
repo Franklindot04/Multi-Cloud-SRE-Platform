@@ -185,13 +185,21 @@ $val" ;;
       values_args=""
       while IFS= read -r vf; do
         [ -n "$vf" ] || continue
-        resolved="$(printf '%s' "$vf" | sed "s/{{[^}]*}}/$cloud/g")"
-        if [ ! -f "$path/$resolved" ]; then
-          echo "    $f: values file '$path/$resolved' does not exist"
-          status=1
-        else
-          values_args="$values_args -f $path/$resolved"
-        fi
+        # A data-profile placeholder stands for the standard and ha profiles: both files must exist, and the
+        # standard one is used for the render below. Any other placeholder stands for the cloud.
+        case "$vf" in
+          *data-profile*) profiles="standard ha" ;;
+          *) profiles="-" ;;
+        esac
+        for profile in $profiles; do
+          resolved="$(printf '%s' "$vf" | sed -e "s/{{[^}]*data-profile[^}]*}}/$profile/g" -e "s/{{[^}]*}}/$cloud/g")"
+          if [ ! -f "$path/$resolved" ]; then
+            echo "    $f: values file '$path/$resolved' does not exist"
+            status=1
+          elif [ "$profile" = "-" ] || [ "$profile" = "standard" ]; then
+            values_args="$values_args -f $path/$resolved"
+          fi
+        done
       done << EOF
 $valuefiles
 EOF

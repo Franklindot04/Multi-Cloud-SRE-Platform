@@ -46,7 +46,7 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) for the full 
 
 ## Status
 
-Phase 0 (foundation) is in progress, and Phases 1 to 3 have started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks, the network and cluster modules for both clouds, the optional DNS modules, the cluster baseline add-ons and the Argo CD hub are defined, tested and validated. The first version of the sample order-processing application (gateway, orders, payments, notifier) is implemented with in-memory storage, API contracts in `docs/api`, container images and a local Compose stack; the data layer, Helm charts, CI image builds and OpenTelemetry follow. No network, cluster or add-on has been bootstrapped or deployed by this repository's automation yet.
+Phase 0 (foundation) is in progress, and Phases 1 to 3 have started. The repository structure, conventions, linting and CI are in place; the Terraform bootstrap stacks, the network and cluster modules for both clouds, the optional DNS modules, the cluster baseline add-ons and the Argo CD hub are defined, tested and validated. The sample order-processing application runs with in-memory storage, and the data layer it will move to (PostgreSQL, a Valkey cache and RabbitMQ, with their operators and in-cluster credential generation) is now defined in `platform/data` with a local Compose stack; it is off by default on clusters and the services are not wired to it yet. No network, cluster, add-on or data component has been bootstrapped or deployed by this repository's automation.
 
 ## Getting started
 

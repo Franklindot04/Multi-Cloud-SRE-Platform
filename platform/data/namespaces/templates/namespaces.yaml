@@ -1,0 +1,18 @@
+{{- range $name, $ns := .Values.namespaces }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $name }}
+  labels:
+    pod-security.kubernetes.io/enforce: {{ $ns.enforce }}
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    # A namespace holds volumes and secrets: Argo CD must never delete it.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+{{- end }}

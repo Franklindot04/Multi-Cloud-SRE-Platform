@@ -132,6 +132,7 @@ Confirm that each item is gone or scheduled for destruction:
 - [ ] Node service account (`gcloud iam service-accounts list`) and its project role bindings
 - [ ] Cloud NAT (`gcloud compute routers nats list --router "$(terraform output -raw network_name)" --region europe-north1`)
 - [ ] Cloud Router (`gcloud compute routers list`)
+- [ ] **Persistent disks created for PersistentVolumeClaims**, such as the data layer's: they are not managed by Terraform and are not removed by `terraform destroy`. Delete the claims first ([data layer teardown](data-layer.md#teardown)), then `gcloud compute disks list --filter='name~^pvc-'` must list nothing
 - [ ] Firewall rules, including any left by Kubernetes load balancers (`gcloud compute firewall-rules list`)
 - [ ] Subnet (`gcloud compute networks subnets list`)
 - [ ] VPC network (`gcloud compute networks list`)

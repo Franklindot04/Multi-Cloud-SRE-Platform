@@ -1,0 +1,14 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClass.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+    # StorageClass parameters are immutable and existing volumes depend on the class.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+provisioner: {{ required "storageClass.provisioner is required (set by values-aws.yaml or values-gcp.yaml)" .Values.storageClass.provisioner }}
+parameters:
+  {{- toYaml (required "storageClass.parameters is required" .Values.storageClass.parameters) | nindent 2 }}
+reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
+allowVolumeExpansion: {{ .Values.storageClass.allowVolumeExpansion }}
+volumeBindingMode: WaitForFirstConsumer

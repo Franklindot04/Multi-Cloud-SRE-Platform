@@ -1,0 +1,53 @@
+---
+# Valkey cache. Wave 7. Profile standard or ha from the cluster label platform.example/data-profile.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: data-valkey
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "7"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/data: "true"
+  template:
+    metadata:
+      name: 'data-valkey-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: data-valkey
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-data
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/data/valkey
+        helm:
+          releaseName: data-valkey
+          valueFiles:
+            - values.yaml
+            - 'values-{{ default "standard" (index .metadata.labels "platform.example/data-profile") }}.yaml'
+      destination:
+        server: '{{ .server }}'
+        namespace: data
+      syncPolicy:
+        automated:
+          # Pruning never removes data: volume claims and the database resources carry Prune=false,
+          # and PruneLast removes anything else only after everything else is healthy.
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

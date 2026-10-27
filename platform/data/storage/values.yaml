@@ -1,0 +1,9 @@
+---
+# One class name for every data component, so the charts do not change per cloud. The provisioner and
+# parameters per cloud are in values-aws.yaml and values-gcp.yaml.
+storageClass:
+  name: platform-data
+  # Delete: the cloud disk is removed when its PersistentVolumeClaim is deleted. The data teardown
+  # step deletes the claims explicitly (see docs/runbooks/data-layer.md); disks never outlive them.
+  reclaimPolicy: Delete
+  allowVolumeExpansion: true

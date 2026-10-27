@@ -1,0 +1,12 @@
+apiVersion: v2
+name: valkey
+description: Valkey cache for the platform (the official valkey-helm chart)
+type: application
+version: 0.1.0
+appVersion: 9.1.2
+annotations:
+  platform/clouds: "aws,gcp"
+dependencies:
+  - name: valkey
+    version: 0.12.0
+    repository: https://valkey.io/valkey-helm/

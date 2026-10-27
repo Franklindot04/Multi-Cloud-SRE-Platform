@@ -1,0 +1,18 @@
+---
+# HA profile: three instances, one primary and two replicas, each on a different node (needs at least three
+# schedulable nodes). Use after values.yaml.
+cluster:
+  instances: 3
+  podAntiAffinityType: required
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  storage:
+    size: 20Gi
+  parameters:
+    max_connections: "200"
+    shared_buffers: 256MB

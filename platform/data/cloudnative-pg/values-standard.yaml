@@ -1,0 +1,4 @@
+---
+# The standard profile is the shared values.yaml (one operator replica); this file keeps profile selection uniform.
+cloudnative-pg:
+  replicaCount: 1

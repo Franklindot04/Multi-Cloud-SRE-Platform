@@ -1,0 +1,43 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-data
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Data layer (PostgreSQL, Valkey, RabbitMQ and their operators) deployed from platform/data
+  sourceRepos:
+    - https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+  # Any registered cluster, but only the namespaces the data layer uses.
+  destinations:
+    - server: "*"
+      namespace: data
+    - server: "*"
+      namespace: shop
+    - server: "*"
+      namespace: cnpg-system
+    - server: "*"
+      namespace: rabbitmq-system
+  # Cluster-scoped kinds the data charts and the two operators create. Anything else is rejected.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+    - group: storage.k8s.io
+      kind: StorageClass
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  orphanedResources:
+    warn: true

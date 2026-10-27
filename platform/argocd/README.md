@@ -47,6 +47,8 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `platform.example/cloud` | `aws`, `gcp` | Selects the cloud overlay (`values-aws.yaml` or `values-gcp.yaml`) and cloud-only add-ons |
 | `platform.example/external-dns` | `true`, `false` | Deploy external-dns (default `false`) |
 | `platform.example/dns01` | `true`, `false` | Create the Let's Encrypt DNS-01 ClusterIssuer (default `false`) |
+| `platform.example/data` | `true`, `false` | Deploy the data layer from `platform/data` (default `false`; volumes it creates outlive `terraform destroy`) |
+| `platform.example/data-profile` | `standard`, `ha` | Data layer profile (default `standard`; `ha` needs three nodes) |
 
 | Annotation (prefix `platform.example/`) | Used for |
 | --- | --- |
@@ -75,6 +77,9 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 2 | `cert-manager-issuers` |
 | 3 | `metrics-server`, `aws-load-balancer-controller` |
 | 4 | `external-dns` (only on labelled clusters) |
+| 5 | `data-namespaces`, `data-storage` (only on clusters labelled `platform.example/data=true`) |
+| 6 | `data-secrets`, `data-cnpg-operator`, `data-rabbitmq-operator` |
+| 7 | `data-postgres`, `data-valkey`, `data-rabbitmq` |
 
 Waves order how the ApplicationSets are created; each generated Application then syncs on its own. The one hard dependency, the issuers needing cert-manager's CRDs and webhook, is enforced where it matters:
 
@@ -90,6 +95,7 @@ Waves order how the ApplicationSets are created; each generated Application then
 - No ingress: the server runs in insecure (plain HTTP) mode **inside the pod** because it is reached only through `kubectl port-forward`, which is already authenticated and encrypted by the Kubernetes API. Remove that setting when an ingress with TLS is added.
 - Default RBAC role is read-only (`policy.default: role:readonly`); Dex and notifications are disabled.
 - The built-in `admin` account is kept for bootstrap. Rotate its password after the first login and delete the initial secret (see the runbook).
+- A third AppProject, `platform-data`, restricts the data layer to the namespaces `data`, `shop`, `cnpg-system` and `rabbitmq-system` and an allowlist of cluster-scoped kinds that includes StorageClass.
 - AppProjects limit sources to this repository, destinations to the namespaces in use, and cluster-scoped kinds to an allowlist, and warn about orphaned resources.
 
 ## Checks

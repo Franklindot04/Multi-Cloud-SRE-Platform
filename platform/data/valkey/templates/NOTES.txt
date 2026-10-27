@@ -1,0 +1,1 @@
+Wrapper chart for the official Valkey chart. See this directory README.

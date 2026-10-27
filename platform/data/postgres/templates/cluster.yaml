@@ -1,0 +1,46 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.cluster.name }}
+  namespace: {{ .Values.cluster.namespace }}
+  annotations:
+    # The CRDs come from the operator Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true,Prune=false,Delete=false
+spec:
+  instances: {{ .Values.cluster.instances }}
+  imageName: {{ .Values.cluster.imageName }}
+  priorityClassName: {{ .Values.cluster.priorityClassName }}
+  enableSuperuserAccess: false
+  # A single instance has no replica to fail over to, and a disruption budget would block node drains.
+  enablePDB: {{ gt (int .Values.cluster.instances) 1 }}
+  bootstrap:
+    initdb:
+      database: platform
+      owner: platform
+  storage:
+    size: {{ .Values.cluster.storage.size }}
+    storageClass: {{ .Values.cluster.storage.storageClass }}
+  resources:
+    {{- toYaml .Values.cluster.resources | nindent 4 }}
+  affinity:
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: {{ .Values.cluster.podAntiAffinityType }}
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          cnpg.io/cluster: {{ .Values.cluster.name }}
+  postgresql:
+    parameters:
+      {{- toYaml .Values.cluster.parameters | nindent 6 }}
+  managed:
+    roles:
+      {{- range .Values.databases }}
+      - name: {{ .owner }}
+        ensure: present
+        login: true
+        passwordSecret:
+          name: {{ .secret }}
+      {{- end }}

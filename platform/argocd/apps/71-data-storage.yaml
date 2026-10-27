@@ -1,0 +1,53 @@
+---
+# StorageClass platform-data (EBS gp3 on EKS, Persistent Disk balanced on GKE). Wave 5.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: data-storage
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/data: "true"
+  template:
+    metadata:
+      name: 'data-storage-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: data-storage
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-data
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/data/storage
+        helm:
+          releaseName: data-storage
+          valueFiles:
+            - values.yaml
+            - 'values-{{ index .metadata.labels "platform.example/cloud" }}.yaml'
+      destination:
+        server: '{{ .server }}'
+        namespace: data
+      syncPolicy:
+        automated:
+          # Pruning never removes data: volume claims and the database resources carry Prune=false,
+          # and PruneLast removes anything else only after everything else is healthy.
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

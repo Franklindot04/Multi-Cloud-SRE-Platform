@@ -1,0 +1,34 @@
+---
+cloudnative-pg:
+  replicaCount: 1
+  priorityClassName: platform-addons-critical
+
+  # CRDs are installed and upgraded by the chart.
+  crds:
+    create: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+  # The chart defaults already run non-root with a read-only root filesystem, no privilege escalation, all
+  # capabilities dropped and a RuntimeDefault seccomp profile; they are repeated so a chart change cannot
+  # loosen them silently.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+        - ALL

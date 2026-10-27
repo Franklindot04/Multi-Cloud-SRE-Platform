@@ -1,0 +1,7 @@
+apiVersion: v2
+name: data-rabbitmq
+description: The platform RabbitMQ broker (RabbitMQ Cluster Operator)
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

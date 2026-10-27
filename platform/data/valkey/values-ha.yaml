@@ -1,0 +1,34 @@
+---
+# HA profile: a primary with two replicas, spread over nodes, with a disruption budget. The chart provides
+# replication but no automatic failover (no Sentinel), so a lost primary is replaced by Kubernetes, not
+# promoted. Use after values.yaml.
+valkey:
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  replica:
+    enabled: true
+    replicas: 2
+    persistence:
+      size: 2Gi
+      storageClass: platform-data
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+  valkeyConfig: |
+    maxmemory 256mb
+    maxmemory-policy allkeys-lru
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: valkey

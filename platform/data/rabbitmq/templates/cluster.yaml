@@ -1,0 +1,38 @@
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: {{ .Values.cluster.name }}
+  namespace: {{ .Values.cluster.namespace }}
+  annotations:
+    # The CRD comes from the operator Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true,Prune=false,Delete=false
+spec:
+  replicas: {{ .Values.cluster.replicas }}
+  image: {{ .Values.cluster.image }}
+  persistence:
+    storageClassName: {{ .Values.cluster.persistence.storageClass }}
+    storage: {{ .Values.cluster.persistence.storage }}
+  resources:
+    {{- toYaml .Values.cluster.resources | nindent 4 }}
+  service:
+    type: {{ .Values.cluster.serviceType }}
+  rabbitmq:
+    additionalConfig: |
+      {{- .Values.cluster.additionalConfig | nindent 6 }}
+  override:
+    statefulSet:
+      spec:
+        template:
+          spec:
+            # The CRD schema requires the container list in a pod spec override; an entry that only names the
+            # operator's "rabbitmq" container leaves it unchanged.
+            containers:
+              - name: rabbitmq
+            priorityClassName: {{ .Values.cluster.priorityClassName }}
+            topologySpreadConstraints:
+              - maxSkew: 1
+                topologyKey: kubernetes.io/hostname
+                whenUnsatisfiable: {{ ternary "DoNotSchedule" "ScheduleAnyway" (gt (int .Values.cluster.replicas) 1) }}
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: {{ .Values.cluster.name }}

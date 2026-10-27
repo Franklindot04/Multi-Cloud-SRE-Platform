@@ -156,8 +156,9 @@ Delete everything that makes AWS create load balancers **while the load balancer
    ```bash
    kubectl delete ingress --all -A
    kubectl delete svc -A --field-selector spec.type=LoadBalancer
-   kubectl delete pvc --all -A
    ```
+
+   Do not delete the data layer's volume claims here; follow the [data layer teardown](data-layer.md#teardown), which removes them deliberately and confirms the cloud volumes are gone.
 
 2. **Wait until the ALBs and target groups are gone:**
 
@@ -181,6 +182,7 @@ Delete everything that makes AWS create load balancers **while the load balancer
 ### Teardown checklist
 
 - [ ] Ingress and `LoadBalancer` Services deleted; no PVCs left
+- [ ] If the data layer was enabled: all PersistentVolumeClaims deleted and the cloud volumes confirmed gone ([data layer teardown](data-layer.md#teardown)); volumes are not removed by Terraform
 - [ ] No load balancers or target groups from the cluster (`aws elbv2 ...`)
 - [ ] Root Application and ApplicationSets deleted; Applications gone
 - [ ] Argo CD uninstalled
