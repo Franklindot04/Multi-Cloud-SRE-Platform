@@ -29,7 +29,7 @@ env:
 jobs:
   check:
     name: Lint, render and validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

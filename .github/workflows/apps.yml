@@ -6,12 +6,9 @@ name: apps
 # published by images.yml. See docs/adr/0017-ci-pipeline-and-image-publishing.md.
 
 on:
+  # Every pull request starts the workflow, so the "Apps result" check always reports. The change-detection job
+  # decides what runs; a pull request that touches nothing relevant finishes with every other job skipped.
   pull_request:
-    paths:
-      - "apps/**"
-      - "scripts/**"
-      - "Makefile"
-      - ".github/workflows/apps.yml"
   push:
     branches:
       - main
@@ -37,7 +34,7 @@ env:
 jobs:
   changes:
     name: Detect changed services
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       services: ${{ steps.detect.outputs.services }}
@@ -65,6 +62,9 @@ jobs:
             --all-on scripts/integration-test.sh
             --all-on scripts/smoke-test.sh
             --all-on scripts/shellcheck.sh
+            --all-on scripts/test-scripts.sh
+            --all-on scripts/update-image-values.sh
+            --all-on scripts/tests/
             --all-on apps/docker-compose.yml
             --all-on apps/docker-compose.data.yml
             --all-on apps/docker-compose.integration.yml
@@ -83,7 +83,9 @@ jobs:
 
   scripts:
     name: Helper script tests and shellcheck
-    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -109,7 +111,7 @@ jobs:
     name: Lint and test ${{ matrix.service }}
     needs: changes
     if: needs.changes.outputs.any == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -162,7 +164,7 @@ jobs:
     name: Smoke test (in-memory stack)
     needs: changes
     if: needs.changes.outputs.any == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -178,7 +180,7 @@ jobs:
     name: Integration and smoke test (PostgreSQL, Valkey, RabbitMQ)
     needs: changes
     if: needs.changes.outputs.any == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -224,7 +226,7 @@ jobs:
     # passes when jobs were skipped because nothing under apps/ changed.
     needs: [changes, scripts, test, smoke, integration]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Check the results
