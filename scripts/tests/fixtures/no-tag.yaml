@@ -1,0 +1,5 @@
+---
+# A values file that does not have the structure the helper expects.
+image:
+  registry: ghcr.io/example-owner
+digests: {}

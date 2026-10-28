@@ -38,7 +38,7 @@ The release name is the service name: the chart names the Service, Deployment an
 
 ## Image tags and digests
 
-No image reference is hard-coded. `values/images.yaml` carries the registry (GitHub Container Registry, lower-case owner) and a **placeholder** tag. The CI change that builds and pushes the images will write the real tag and per-service digests to that file; a digest, when set, is appended to the reference.
+No image reference is hard-coded. `values/images.yaml` carries the registry (GitHub Container Registry, lower-case owner) and a **placeholder** tag. The `images` workflow builds and pushes the images on merges to `main` and prints each tag and digest in its job summary; CI does not commit anything. A person updates the file with `scripts/update-image-values.sh --tag <sha> --digest <service>=sha256:...` in a pull request (see [releasing images](../../docs/runbooks/releasing-images.md)). A digest, when set, is appended to the reference. Changes to this file run the chart checks in the `deploy` workflow.
 
 ## Checks
 

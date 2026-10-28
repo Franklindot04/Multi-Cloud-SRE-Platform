@@ -2,7 +2,7 @@
 
 Deploys the four sample services (gateway, orders, payments, notifier) to a cluster through Argo CD, checks them, rolls them back, and removes them. The chart and values are in [`deploy/helm`](../../deploy/helm); the reasoning is in [ADR-0016](../adr/0016-service-deployment-model.md).
 
-> **Prerequisite: published images.** The tag in [`deploy/helm/values/images.yaml`](../../deploy/helm/values/images.yaml) is a placeholder and no image is published yet. Do not enable the services on a cluster until the CI change has pushed the images and updated that file, or the pods stay in `ImagePullBackOff`.
+> **Prerequisite: published images.** The tag in [`deploy/helm/values/images.yaml`](../../deploy/helm/values/images.yaml) stays a placeholder until a release updates it. The `images` workflow publishes the images when changes merge to `main`; then follow [releasing images](releasing-images.md) to put the tag and digests in the values file. Do not enable the services on a cluster before that, or the pods stay in `ImagePullBackOff`.
 >
 > **An enabled ingress creates a billed load balancer** (an AWS Application Load Balancer or a Google Cloud HTTP(S) load balancer). The ingress is off by default. See [Teardown](#teardown) for the order that avoids leaving one behind.
 

@@ -1,0 +1,235 @@
+name: apps
+
+# Lint and test the sample services, then run the integration suite and the integration smoke test against
+# real PostgreSQL, Valkey and RabbitMQ containers. Only the services a change touches get a lint and test job;
+# a change to a shared script, the compose files or this workflow runs every service. Images are built and
+# published by images.yml. See docs/adr/0017-ci-pipeline-and-image-publishing.md.
+
+on:
+  pull_request:
+    paths:
+      - "apps/**"
+      - "scripts/**"
+      - "Makefile"
+      - ".github/workflows/apps.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/**"
+      - "scripts/**"
+      - "Makefile"
+      - ".github/workflows/apps.yml"
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels the superseded run. A run on main is never cancelled.
+concurrency:
+  group: apps-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # scripts/shellcheck.sh expects this version and runs it with -S style, so CI and local runs agree.
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+
+jobs:
+  changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+      any: ${{ steps.detect.outputs.any }}
+    steps:
+      # SHA pinned to the v7.0.1 release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Work out which services changed
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          shared=(
+            --all-on scripts/apps.sh
+            --all-on scripts/changed-services.sh
+            --all-on scripts/integration-test.sh
+            --all-on scripts/smoke-test.sh
+            --all-on scripts/shellcheck.sh
+            --all-on apps/docker-compose.yml
+            --all-on apps/docker-compose.data.yml
+            --all-on apps/docker-compose.integration.yml
+            --all-on apps/.env.example
+            --all-on apps/data/
+            --all-on Makefile
+            --all-on .github/workflows/apps.yml
+          )
+          # Without a usable base commit (a first push, a force push) everything is treated as changed.
+          zeros="0000000000000000000000000000000000000000"
+          if [ -z "$base" ] || [ "$base" = "$zeros" ] || ! git cat-file -e "${base}^{commit}" 2> /dev/null; then
+            printf '' | ./scripts/changed-services.sh --all "${shared[@]}" | tee -a "$GITHUB_OUTPUT"
+          else
+            git diff --name-only "$base" "$HEAD_SHA" | ./scripts/changed-services.sh "${shared[@]}" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  scripts:
+    name: Helper script tests and shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck
+        run: |
+          file="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSLO "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${file}"
+          echo "${SHELLCHECK_SHA256}  ${file}" | sha256sum -c -
+          tar -xJf "${file}"
+          sudo install -m 0755 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: Shellcheck
+        run: ./scripts/shellcheck.sh
+
+      - name: Tests of the CI helper scripts
+        run: ./scripts/test-scripts.sh
+
+  test:
+    name: Lint and test ${{ matrix.service }}
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # Go modules are cached by the toolchain action, keyed on go.sum.
+      # SHA pinned to the v7.0.0 release.
+      - name: Set up Go
+        if: contains(fromJSON('["gateway","notifier"]'), matrix.service)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: apps/${{ matrix.service }}/go.mod
+          cache-dependency-path: apps/${{ matrix.service }}/go.sum
+
+      # uv downloads Python 3.14 and installs the hash-pinned requirements; its cache is keyed on the lock files.
+      # SHA pinned to the v10.3.2 release.
+      - name: Set up uv
+        if: matrix.service == 'orders'
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/orders/requirements*.txt
+
+      # The Maven repository is cached by the Java action, keyed on pom.xml.
+      # SHA pinned to the v6.1.0 release.
+      - name: Set up Java
+        if: matrix.service == 'payments'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
+      - name: Lint
+        env:
+          APPS_SERVICES: ${{ matrix.service }}
+        run: make apps-lint
+
+      - name: Unit tests
+        env:
+          APPS_SERVICES: ${{ matrix.service }}
+        run: make apps-test
+
+  smoke:
+    name: Smoke test (in-memory stack)
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # Starts the four services with Docker Compose, runs the 21 end-to-end checks and always stops the stack.
+      # The container logs are printed on failure.
+      - name: Smoke test
+        run: make smoke-test-stack
+
+  integration:
+    name: Integration and smoke test (PostgreSQL, Valkey, RabbitMQ)
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: apps/notifier/go.mod
+          cache-dependency-path: apps/notifier/go.sum
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/orders/requirements*.txt
+
+      # The values in apps/.env.example are fake and only ever used on this runner.
+      - name: Create the local credentials file
+        run: cp apps/.env.example apps/.env
+
+      # Starts the integration stack, runs the integration suites (orders, payments, notifier), then
+      # smoke-test.sh --integration and the chaos checks (RabbitMQ, Valkey and PostgreSQL stopped), and always
+      # removes the stack and its volumes. On failure it also writes the container logs to INTEGRATION_LOG_DIR.
+      - name: Integration tests
+        env:
+          INTEGRATION_LOG_DIR: ${{ runner.temp }}/integration-logs
+        run: make integration-test
+
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: integration-container-logs
+          path: ${{ runner.temp }}/integration-logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  result:
+    name: Apps result
+    # One stable check name for branch protection: it fails if any job above failed or was cancelled, and
+    # passes when jobs were skipped because nothing under apps/ changed.
+    needs: [changes, scripts, test, smoke, integration]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          printf '%s' "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null
