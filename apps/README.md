@@ -60,7 +60,7 @@ Python dependencies are locked with hashes in `orders/requirements.txt` (and `re
 | Java build | `maven:3.9.12-eclipse-temurin-25-noble` |
 | Java runtime (payments) | `gcr.io/distroless/java25-debian13:nonroot` |
 
-Images are pinned to specific version tags. The distroless `nonroot` tags move with security updates, so they are the least strict pin. **Digest pinning** (`image@sha256:...`) arrives with the CI image build change: the pipeline will resolve each tag to a digest, write it into the Dockerfiles, and let Renovate or a scheduled job propose digest updates, together with signing and SBOMs.
+Images are pinned to specific version tags. CI builds `linux/amd64` images and publishes them to `ghcr.io/<owner>/<service>`. The distroless `nonroot` tags move with security updates, so they are the least strict pin. **Digest pinning** (`image@sha256:...`) arrives with the CI image build change: the pipeline will resolve each tag to a digest, write it into the Dockerfiles, and let Renovate or a scheduled job propose digest updates, together with signing and SBOMs.
 
 ## Conventions shared by every service
 
@@ -89,8 +89,8 @@ make integration-test            # stack on PostgreSQL, Valkey and RabbitMQ: int
 make smoke-test-integration      # only the smoke test with --integration
 ```
 
-See the [local development runbook](../docs/runbooks/local-development.md). Deployment to Kubernetes is described in the [service deployment runbook](../docs/runbooks/service-deployment.md); the chart is in [`deploy/helm`](../deploy/helm).
+See the [local development runbook](../docs/runbooks/local-development.md). CI (`apps` and `images` workflows) and image publishing are described in [ADR-0017](../docs/adr/0017-ci-pipeline-and-image-publishing.md) and the [releasing images runbook](../docs/runbooks/releasing-images.md); `make scripts-test` tests the helper scripts and `APPS_SERVICES=orders make apps-test` runs one service. Deployment to Kubernetes is described in the [service deployment runbook](../docs/runbooks/service-deployment.md); the chart is in [`deploy/helm`](../deploy/helm).
 
 ## Not in this change
 
-Publishing the images (the CI change; the chart's image tag is a placeholder until then); network policies, autoscaling and progressive delivery; backups of the data layer; CI image builds, vulnerability scanning, signing and SBOMs; OpenTelemetry instrumentation; authentication.
+Image signing, vulnerability scanning and SBOMs; digest-pinned base images; network policies, autoscaling and progressive delivery; backups of the data layer; CI image builds, vulnerability scanning, signing and SBOMs; OpenTelemetry instrumentation; authentication.

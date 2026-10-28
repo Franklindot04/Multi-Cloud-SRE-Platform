@@ -1,0 +1,9 @@
+---
+image:
+  registry: ghcr.io/example-owner
+  tag: "0.0.0-placeholder"
+
+digests:
+  # a comment inside the block is not something the helper will guess about
+  gateway: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  note: something else

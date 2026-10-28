@@ -13,6 +13,8 @@
 # Environment:
 #   JAVA_IMAGE  Maven image used for payments when no local JDK 25 exists
 #               (default maven:3.9.12-eclipse-temurin-25-noble)
+#   APPS_SERVICES  space-separated services to act on (gateway notifier orders payments); default all.
+#               The shell script lint step runs only when this is unset. CI uses it for per-service jobs.
 #   INTEGRATION_NETWORK  compose network of the integration stack (default sre-sample-integration_default);
 #               the payments tests run in a container on it, so they need no JDK 25 and no published port
 set -euo pipefail
@@ -41,6 +43,15 @@ ran=0
 skipped=0
 
 have() { command -v "$1" > /dev/null 2>&1; }
+
+# wanted SERVICE: true when APPS_SERVICES is unset or lists the service.
+wanted() {
+  [ -z "${APPS_SERVICES:-}" ] && return 0
+  case " $APPS_SERVICES " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
 
 skip() {
   skipped=$((skipped + 1))
@@ -154,16 +165,19 @@ java_check() {
 if [ "$action" = "build" ]; then
   if docker_ready; then
     for svc in gateway orders payments notifier; do
+      wanted "$svc" || continue
       run_step "build $svc image" docker build -q -t "sre-sample/$svc:local" "$apps/$svc"
     done
   else
     for svc in gateway orders payments notifier; do
+      wanted "$svc" || continue
       echo "==> $svc"
       skip "Docker is not available"
     done
   fi
 else
   for svc in gateway notifier; do
+    wanted "$svc" || continue
     if [ "$action" = "integration" ] && [ "$svc" = "gateway" ]; then
       continue # the gateway has no data layer
     fi
@@ -179,32 +193,36 @@ else
     fi
   done
 
-  echo "==> $action orders"
-  ran=$((ran + 1))
-  rc=0
-  python_check || rc=$?
-  if [ "$rc" -eq 3 ]; then
-    ran=$((ran - 1))
-    skip "no apps/orders/.venv and uv is not installed (uv venv --python 3.14 apps/orders/.venv, then uv pip install --require-hashes -r apps/orders/requirements-dev.txt)"
-  elif [ "$rc" -ne 0 ]; then
-    echo "    FAILED: $action orders" >&2
-    status=1
+  if wanted orders; then
+    echo "==> $action orders"
+    ran=$((ran + 1))
+    rc=0
+    python_check || rc=$?
+    if [ "$rc" -eq 3 ]; then
+      ran=$((ran - 1))
+      skip "no apps/orders/.venv and uv is not installed (uv venv --python 3.14 apps/orders/.venv, then uv pip install --require-hashes -r apps/orders/requirements-dev.txt)"
+    elif [ "$rc" -ne 0 ]; then
+      echo "    FAILED: $action orders" >&2
+      status=1
+    fi
   fi
 
-  echo "==> $action payments"
-  ran=$((ran + 1))
-  rc=0
-  java_check || rc=$?
-  if [ "$rc" -eq 3 ]; then
-    ran=$((ran - 1))
-    skip "neither a JDK 25 nor a running Docker daemon is available"
-  elif [ "$rc" -ne 0 ]; then
-    echo "    FAILED: $action payments" >&2
-    status=1
+  if wanted payments; then
+    echo "==> $action payments"
+    ran=$((ran + 1))
+    rc=0
+    java_check || rc=$?
+    if [ "$rc" -eq 3 ]; then
+      ran=$((ran - 1))
+      skip "neither a JDK 25 nor a running Docker daemon is available"
+    elif [ "$rc" -ne 0 ]; then
+      echo "    FAILED: $action payments" >&2
+      status=1
+    fi
   fi
 fi
 
-if [ "$action" = "lint" ]; then
+if [ "$action" = "lint" ] && [ -z "${APPS_SERVICES:-}" ]; then
   # The scripts that run and test the services are linted with the same flags and version as CI.
   echo "==> lint shell scripts"
   ran=$((ran + 1))

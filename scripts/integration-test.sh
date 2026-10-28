@@ -16,6 +16,8 @@
 #   PostgreSQL down -> orders and payments are not ready, and recover when it returns
 #
 # Environment:
+#   INTEGRATION_LOG_DIR  when set and anything failed, the container logs are also written to
+#                        $INTEGRATION_LOG_DIR/compose.log (CI uploads that directory as an artifact)
 #   READY_SECONDS  how long to wait for the stack (default 240)
 set -euo pipefail
 
@@ -77,6 +79,11 @@ on_exit() {
   if [ "$rc" -ne 0 ] || [ "$failures" -gt 0 ]; then
     echo "==> failed; container logs follow" >&2
     compose logs --no-color --tail 200 >&2 || true
+    if [ -n "${INTEGRATION_LOG_DIR:-}" ]; then
+      mkdir -p "$INTEGRATION_LOG_DIR"
+      compose logs --no-color > "$INTEGRATION_LOG_DIR/compose.log" 2>&1 || true
+      compose ps -a > "$INTEGRATION_LOG_DIR/compose-ps.txt" 2>&1 || true
+    fi
     [ "$rc" -ne 0 ] || rc=1
   fi
   echo "==> removing the stack and its volumes"

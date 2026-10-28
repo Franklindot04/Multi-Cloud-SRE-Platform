@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack integration-test smoke-test-integration data-up data-down data-check data-check-manifests deploy-check docs
+.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack integration-test smoke-test-integration data-up data-down data-check data-check-manifests deploy-check scripts-test docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -83,6 +83,9 @@ data-check-manifests: ## Lint, render and schema-check the data layer manifests 
 
 deploy-check: ## Lint, render, schema-check and security-check the service chart under every profile and cloud (skips missing tools)
 	@./scripts/deploy-check.sh
+
+scripts-test: ## Test the CI helper scripts (image values updater, changed-services detection)
+	@./scripts/test-scripts.sh
 
 docs: ## Check that every ADR is listed in the ADR index
 	@status=0; \

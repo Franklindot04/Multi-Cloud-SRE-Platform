@@ -1,0 +1,305 @@
+name: images
+
+# Builds the container image of every changed sample service for linux/amd64. On a pull request the image is
+# built and nothing is pushed. On a push to main it is pushed to GitHub Container Registry as
+# ghcr.io/<lower-case owner>/<service>, tagged with the full commit SHA and a short SHA (never "latest"), and
+# a job summary lists each image digest with the command that updates deploy/helm/values/images.yaml.
+# This workflow never commits, pushes branches or tags, or opens pull requests: the values file is updated in
+# a normal pull request with scripts/update-image-values.sh. See docs/runbooks/releasing-images.md and
+# docs/adr/0017-ci-pipeline-and-image-publishing.md.
+
+on:
+  pull_request:
+    paths:
+      - "apps/**"
+      - ".github/workflows/images.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/**"
+      - ".github/workflows/images.yml"
+
+permissions:
+  contents: read
+
+# A newer push to a pull request cancels the superseded build. A run on main is never cancelled, so a
+# published commit always gets its images.
+concurrency:
+  group: images-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+      any: ${{ steps.detect.outputs.any }}
+    steps:
+      # SHA pinned to the v7.0.1 release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Work out which images changed
+        id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          # A change to this workflow rebuilds every image. Without a usable base commit (a first push, a force
+          # push) everything is treated as changed.
+          zeros="0000000000000000000000000000000000000000"
+          if [ -z "$base" ] || [ "$base" = "$zeros" ] || ! git cat-file -e "${base}^{commit}" 2> /dev/null; then
+            printf '' | ./scripts/changed-services.sh --all | tee -a "$GITHUB_OUTPUT"
+          else
+            git diff --name-only "$base" "$HEAD_SHA" |
+              ./scripts/changed-services.sh --all-on .github/workflows/images.yml | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  # Pull requests (including from forks): build only. The token is read-only and no registry login happens.
+  build:
+    name: Build ${{ matrix.service }} (no push)
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # SHA pinned to the v4.4.1 release.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      - name: Prepare image metadata
+        id: meta
+        env:
+          SERVICE: ${{ matrix.service }}
+          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "image=ghcr.io/${owner}/${SERVICE}"
+            echo "short=${COMMIT_SHA::7}"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo 'labels<<LABELS_END'
+            echo "org.opencontainers.image.title=sre-sample-${SERVICE}"
+            echo "org.opencontainers.image.description=Sample order-processing service: ${SERVICE}"
+            echo "org.opencontainers.image.source=https://github.com/${REPOSITORY}"
+            echo "org.opencontainers.image.url=https://github.com/${REPOSITORY}"
+            echo "org.opencontainers.image.revision=${COMMIT_SHA}"
+            echo "org.opencontainers.image.version=${COMMIT_SHA}"
+            echo "org.opencontainers.image.licenses=MIT"
+            echo 'LABELS_END'
+            echo 'build_args<<ARGS_END'
+            case "$SERVICE" in
+              gateway | notifier)
+                echo "VERSION=${COMMIT_SHA::7}"
+                echo "COMMIT=${COMMIT_SHA}"
+                ;;
+            esac
+            echo 'ARGS_END'
+          } >> "$GITHUB_OUTPUT"
+
+      # SHA pinned to the v7.4.0 release.
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: apps/${{ matrix.service }}
+          platforms: linux/amd64
+          push: false
+          tags: ${{ steps.meta.outputs.image }}:${{ github.sha }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+          build-args: ${{ steps.meta.outputs.build_args }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: false
+          sbom: false
+
+  # Pushes to main only: the one job with packages: write. It never runs for pull requests, so a pull request
+  # from a fork cannot reach it.
+  publish:
+    name: Publish ${{ matrix.service }}
+    needs: changes
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+
+      # The workflow's built-in token is the only credential; no other secret is used.
+      # SHA pinned to the v4.7.0 release.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Prepare image metadata
+        id: meta
+        env:
+          SERVICE: ${{ matrix.service }}
+          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "image=ghcr.io/${owner}/${SERVICE}"
+            echo "short=${COMMIT_SHA::7}"
+            echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo 'labels<<LABELS_END'
+            echo "org.opencontainers.image.title=sre-sample-${SERVICE}"
+            echo "org.opencontainers.image.description=Sample order-processing service: ${SERVICE}"
+            echo "org.opencontainers.image.source=https://github.com/${REPOSITORY}"
+            echo "org.opencontainers.image.url=https://github.com/${REPOSITORY}"
+            echo "org.opencontainers.image.revision=${COMMIT_SHA}"
+            echo "org.opencontainers.image.version=${COMMIT_SHA}"
+            echo "org.opencontainers.image.licenses=MIT"
+            echo 'LABELS_END'
+            echo 'build_args<<ARGS_END'
+            case "$SERVICE" in
+              gateway | notifier)
+                echo "VERSION=${COMMIT_SHA::7}"
+                echo "COMMIT=${COMMIT_SHA}"
+                ;;
+            esac
+            echo 'ARGS_END'
+          } >> "$GITHUB_OUTPUT"
+
+      # Tags: the full commit SHA (immutable by convention: it is never reused) and the short SHA (a
+      # convenience). There is no "latest" tag. Provenance and SBOM attestations are off for now so the pushed
+      # image is a single manifest whose digest is easy to pin.
+      - name: Build and push the image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: apps/${{ matrix.service }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ github.sha }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
+          build-args: ${{ steps.meta.outputs.build_args }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          provenance: false
+          sbom: false
+
+      # --- Supply chain steps, added in the next change (comments only; nothing below runs) ---
+      # - SBOM: generate an SPDX or CycloneDX SBOM for the pushed digest and attach it to the image.
+      # - Vulnerability scan: scan the pushed digest and fail on fixable high or critical findings.
+      # - Signing: sign the digest keylessly with the workflow's OIDC identity (needs id-token: write on this
+      #   job only) and verify the signature before the values file is updated.
+      # - Provenance: re-enable build provenance attestations once consumers can read them.
+
+      - name: Record the digest
+        env:
+          SERVICE: ${{ matrix.service }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          case "$DIGEST" in
+            sha256:*) ;;
+            *)
+              echo "unexpected digest: $DIGEST" >&2
+              exit 1
+              ;;
+          esac
+          mkdir -p "${RUNNER_TEMP_DIR}/digests"
+          printf '%s=%s\n' "$SERVICE" "$DIGEST" > "${RUNNER_TEMP_DIR}/digests/${SERVICE}.txt"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: digest-${{ matrix.service }}
+          path: ${{ runner.temp }}/digests/${{ matrix.service }}.txt
+          retention-days: 7
+          if-no-files-found: error
+
+  summary:
+    name: Publish summary
+    needs: [changes, publish]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # SHA pinned to the v8.0.2 release.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+
+      - name: Write the summary
+        env:
+          OWNER: ${{ github.repository_owner }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+          args=""
+          tick="$(printf '\140')"
+          fence="${tick}${tick}${tick}"
+          {
+            echo "## Published images"
+            echo
+            echo "Commit ${tick}${COMMIT_SHA}${tick}, platform linux/amd64."
+            echo "Nothing was committed: update the chart values in a pull request."
+            echo
+            echo "| Service | Registry | Tag | Digest |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for file in digests/*.txt; do
+            line="$(cat "$file")"
+            service="${line%%=*}"
+            digest="${line#*=}"
+            image="ghcr.io/${owner}/${service}"
+            printf '| %s | %s%s%s | %s%s%s | %s%s%s |\n' "$service" "$tick" "$image" "$tick" \
+              "$tick" "$COMMIT_SHA" "$tick" "$tick" "$digest" "$tick" >> "$GITHUB_STEP_SUMMARY"
+            args="${args} --digest ${service}=${digest}"
+          done
+          {
+            echo
+            echo "Update the chart values (run from the repository root, then open a pull request):"
+            echo
+            echo "${fence}bash"
+            echo "./scripts/update-image-values.sh --tag ${COMMIT_SHA}${args}"
+            echo "${fence}"
+            echo
+            echo "Services not listed above were not rebuilt; the helper keeps their current digests."
+          } >> "$GITHUB_STEP_SUMMARY"
