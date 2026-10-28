@@ -1,11 +1,15 @@
 ---
 # Image registry, tag and digests for every service. A new build is rolled out by changing this file only.
 #
-# The registry is GitHub Container Registry under the lowercase owner name. The tag below is a placeholder:
-# until images are published, a cluster that enables the services cannot pull them.
+# The registry is GitHub Container Registry under the lowercase owner name. The tag is the commit the images were
+# built from, and each digest pins the exact image for that service.
 image:
   registry: ghcr.io/franklindot04
-  tag: "0.0.0-placeholder"
+  tag: "66beba6c1358325955742f48db6bff9b0370b4d4"
 
 # sha256 digests per service, written together with the tag. A digest takes precedence over the tag when pulling.
-digests: {}
+digests:
+  gateway: "sha256:d0813e39a3049004a68d0486e999245a5a97d9d1734fa8e8119fe0a6aad2deb4"
+  orders: "sha256:8aed84420a7b30417d735eec78839409af33184c0ee91340423bf1cddff976e1"
+  payments: "sha256:bdea696733339006f61d429b7578ff5982e6c1e971cb4fc1e7426474e4443dbb"
+  notifier: "sha256:8ba0ee2d08742e89682b56af19edb1a9b1a8cbad55be8d311318e1e6bdc0aecc"
