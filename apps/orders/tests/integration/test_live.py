@@ -5,7 +5,9 @@ import io
 import json
 import os
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import aio_pika
 import asyncpg
@@ -194,6 +196,27 @@ async def bound_queue(live_config: Config) -> tuple[aio_pika.abc.AbstractRobustC
     return connection, queue
 
 
+async def next_matching(
+    queue: aio_pika.abc.AbstractQueue, matches: Callable[[dict[str, Any]], bool], timeout_s: float = 10.0
+) -> aio_pika.abc.AbstractIncomingMessage:
+    """The first message whose decoded body satisfies `matches`.
+
+    The queue is bound to the real exchange, which the running orders service also publishes to, so events of
+    other orders can arrive here at any time. They are acknowledged and skipped.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while True:
+        message = await queue.get(fail=False, timeout=timeout_s)
+        if message is not None:
+            await message.ack()
+            if matches(json.loads(message.body)):
+                return message
+            continue
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError("no matching message arrived")
+        await asyncio.sleep(0.05)
+
+
 def relay_for(pool: asyncpg.Pool, publisher, metrics: OutboxMetrics, batch: int = 20) -> OutboxRelay:
     return OutboxRelay(
         pool, publisher, DbMetrics(CollectorRegistry()), metrics, JsonLogger("orders", "error", io.StringIO()),
@@ -211,12 +234,11 @@ async def test_the_relay_publishes_persistent_messages_with_correlation_headers(
     publisher = AmqpPublisher(live_config.amqp)
     try:
         assert await relay_for(pool, publisher, outbox_metrics).publish_batch() == 1
-        message = await queue.get(timeout=10)
-        await message.ack()
-        event = json.loads(message.body)
-        assert (
-            event["type"] == "order.created" and event["data"]["order_id"] == order.id and event["schema_version"] == 1
+        message = await next_matching(
+            queue, lambda e: e["type"] == "order.created" and e["data"]["order_id"] == order.id
         )
+        event = json.loads(message.body)
+        assert event["schema_version"] == 1
         assert message.delivery_mode == aio_pika.DeliveryMode.PERSISTENT
         assert message.headers["event_id"] == event["event_id"] == message.message_id
         assert message.headers["event_type"] == "order.created" and message.headers["schema_version"] == 1
@@ -247,12 +269,12 @@ async def test_events_survive_a_broker_outage_and_publish_afterwards(
     working = AmqpPublisher(live_config.amqp)
     try:
         assert await relay_for(pool, working, outbox_metrics).publish_batch() == 3
-        received = []
-        for _ in range(3):
-            message = await queue.get(timeout=10)
-            await message.ack()
-            received.append(json.loads(message.body)["event_id"])
-        assert len(set(received)) == 3
+        wanted = {str(r["id"]) for r in await pool.fetch("SELECT id FROM outbox_events")}
+        assert len(wanted) == 3
+        received: set[str] = set()
+        while received != wanted:
+            message = await next_matching(queue, lambda e: e["event_id"] in wanted - received)
+            received.add(json.loads(message.body)["event_id"])
         assert await count(pool, "outbox_events", "published_at IS NULL") == 0
     finally:
         await working.close()
