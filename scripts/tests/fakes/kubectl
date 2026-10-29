@@ -12,7 +12,16 @@
 #   stuck-pods          a pod in the data namespace never goes away
 #   stuck-pv            a PersistentVolume never goes away
 #   mq-survives         the RabbitMQ StatefulSet outlives the RabbitmqCluster
-# Deleting things creates labels-removed, pg-deleted, mq-deleted, sts-deleted and pvc-deleted.
+#   cnpg-operator-up    a CloudNativePG operator pod is Running (without it the operator is gone)
+#   mq-operator-up      a RabbitMQ Cluster Operator pod is Running
+#   operator-api-error  asking for the operator pods fails
+#   stuck-databases     the Database objects carry cnpg.io/deleteDatabase, which only a running operator removes
+#   stuck-mq            the RabbitmqCluster carries its operator finalizer, which only a running operator removes
+#   odd-finalizer-databases, odd-finalizer-mq
+#                       the object also carries example.com/keep, which nothing here can remove
+# Deleting things creates labels-removed, pg-deleted, sts-deleted and pvc-deleted. Deleting a Database or a
+# RabbitmqCluster creates deleting-<object>; the object is gone once it has no finalizer left (deleted-<object>),
+# and patching out the operator finalizer creates cleared-<object>.
 set -eu
 
 state="${FAKE_STATE:?FAKE_STATE is not set}"
@@ -23,6 +32,49 @@ mark() { : > "$state/$1"; }
 unexpected() {
   echo "fake kubectl: unexpected call: $*" >&2
   exit 99
+}
+
+db_orders=database.postgresql.cnpg.io/platform-pg-orders
+db_payments=database.postgresql.cnpg.io/platform-pg-payments
+mq=rabbitmqcluster.rabbitmq.com/platform-mq
+
+key() { printf '%s' "$1" | tr '/.' '__'; }
+
+operator_up_for() {
+  case "$1" in
+    database.*) flag cnpg-operator-up ;;
+    rabbitmqcluster.*) flag mq-operator-up ;;
+  esac
+}
+
+# remaining OBJECT: the finalizers the object still has, one per line. The operator finalizer is held until a
+# running operator or a patch removes it; the other one is never removed.
+remaining() {
+  local obj="$1" known stuck odd
+  case "$obj" in
+    database.postgresql.cnpg.io/*)
+      known=cnpg.io/deleteDatabase stuck=stuck-databases odd=odd-finalizer-databases
+      ;;
+    rabbitmqcluster.rabbitmq.com/*)
+      known=deletion.finalizers.rabbitmqclusters.rabbitmq.com stuck=stuck-mq odd=odd-finalizer-mq
+      ;;
+    *) return 0 ;;
+  esac
+  if flag "$stuck" && ! flag "cleared-$(key "$obj")" && ! operator_up_for "$obj"; then echo "$known"; fi
+  if flag "$odd"; then echo example.com/keep; fi
+  return 0
+}
+
+# exists OBJECT: succeeds while the object is still there. A deleted object goes once no finalizer is left.
+exists() {
+  local k
+  k="$(key "$1")"
+  if flag "deleted-$k"; then return 1; fi
+  if flag "deleting-$k" && [ -z "$(remaining "$1")" ]; then
+    mark "deleted-$k"
+    return 1
+  fi
+  return 0
 }
 
 if [ "${1:-}" = "--context" ]; then
@@ -57,9 +109,51 @@ case "$*" in
       printf '%s\n' deployment.apps/orders pod/orders-0
     fi
     ;;
-  "get crd clusters.postgresql.cnpg.io -o name" | "get crd rabbitmqclusters.rabbitmq.com -o name")
+  "get crd clusters.postgresql.cnpg.io -o name" | "get crd rabbitmqclusters.rabbitmq.com -o name" | "get crd databases.postgresql.cnpg.io -o name")
     grep -Fxq -- "$3" "$state/crds" || exit 1
     echo "customresourcedefinition.apiextensions.k8s.io/$3"
+    ;;
+  "-n cnpg-system get pods -l app.kubernetes.io/name=cloudnative-pg --field-selector=status.phase=Running -o name")
+    if flag operator-api-error; then
+      echo "Unable to connect to the server" >&2
+      exit 1
+    fi
+    if flag cnpg-operator-up; then echo pod/cnpg-controller-manager-0; fi
+    ;;
+  "-n rabbitmq-system get pods -l app.kubernetes.io/name=rabbitmq-cluster-operator --field-selector=status.phase=Running -o name")
+    if flag operator-api-error; then
+      echo "Unable to connect to the server" >&2
+      exit 1
+    fi
+    if flag mq-operator-up; then echo pod/rabbitmq-cluster-operator-0; fi
+    ;;
+  "-n data get databases.postgresql.cnpg.io -o name")
+    for o in "$db_orders" "$db_payments"; do
+      if exists "$o"; then echo "$o"; fi
+    done
+    ;;
+  "-n data delete database.postgresql.cnpg.io/platform-pg-"*" --wait=false" | "-n data delete $mq --wait=false")
+    mark "deleting-$(key "$4")"
+    echo "${4%%/*} \"${4#*/}\" deleted"
+    ;;
+  "-n data get database.postgresql.cnpg.io/platform-pg-"*" --ignore-not-found -o name" | "-n data get $mq --ignore-not-found -o name")
+    if exists "$4"; then echo "$4"; fi
+    ;;
+  "-n data get database.postgresql.cnpg.io/platform-pg-"*" -o jsonpath="* | "-n data get $mq -o jsonpath="*)
+    exists "$4" || exit 1
+    remaining "$4"
+    ;;
+  "-n data patch database.postgresql.cnpg.io/platform-pg-"*" --type=json -p "* | "-n data patch $mq --type=json -p "*)
+    # Only the exact patch the script is expected to send: test the finalizer at its index, then remove it.
+    value="$(printf '%s' "$*" | sed -n 's/.*"op":"test","path":"[^"]*","value":"\([^"]*\)".*/\1/p')"
+    position="$(printf '%s' "$*" | sed -n 's/.*"op":"test","path":"\/metadata\/finalizers\/\([0-9]*\)".*/\1/p')"
+    current="$(remaining "$4" | sed -n "$((position + 1))p")"
+    if [ -z "$value" ] || [ "$value" != "$current" ]; then
+      echo "fake kubectl: the patch test failed: expected '$value' at index '$position', found '$current'" >&2
+      exit 1
+    fi
+    mark "cleared-$(key "$4")"
+    echo "${4%%/*}/${4#*/} patched"
     ;;
   "-n data get cluster.postgresql.cnpg.io -o name")
     flag pg-deleted || echo cluster.postgresql.cnpg.io/platform-pg
@@ -69,11 +163,7 @@ case "$*" in
     echo 'cluster.postgresql.cnpg.io "platform-pg" deleted'
     ;;
   "-n data get rabbitmqclusters.rabbitmq.com -o name")
-    flag mq-deleted || echo rabbitmqcluster.rabbitmq.com/platform-mq
-    ;;
-  "-n data delete rabbitmqcluster.rabbitmq.com/platform-mq --wait=true --timeout="*)
-    mark mq-deleted
-    echo 'rabbitmqcluster.rabbitmq.com "platform-mq" deleted'
+    if exists "$mq"; then echo "$mq"; fi
     ;;
   "-n data get statefulset/platform-mq-server -o name")
     if flag mq-survives && ! flag sts-deleted; then
@@ -91,7 +181,7 @@ case "$*" in
       echo pod/stuck-0
     else
       flag pg-deleted || echo pod/platform-pg-1
-      if ! flag sts-deleted && { ! flag mq-deleted || flag mq-survives; }; then
+      if ! flag sts-deleted && { exists "$mq" || flag mq-survives; }; then
         echo pod/platform-mq-server-0
       fi
     fi

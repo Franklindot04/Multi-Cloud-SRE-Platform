@@ -9,29 +9,46 @@
 #
 #    1. remove the cluster Secret labels platform.example/apps and platform.example/data (the label keys are
 #       deleted, not set to false), so the ApplicationSets stop recreating Applications
-#    2. wait until the apps-* and data-* Applications are gone
+#    2. wait until the apps-* and data-* Applications are gone (this also removes the CloudNativePG and the
+#       RabbitMQ Cluster operators)
 #    3. wait until the shop namespace holds no workloads
-#    4. delete the CloudNativePG Clusters in the data namespace
-#    5. delete the RabbitmqClusters in the data namespace, then their StatefulSets if those survive
-#       (the operator does not remove them)
-#    6. wait until no pods are left in the data namespace
-#    7. delete the PersistentVolumeClaims in the data namespace (including platform-valkey)
-#    8. confirm kubectl get pv is empty
-#    9. AWS: confirm no EBS volume tagged kubernetes.io/created-for/pvc/name remains, so only node root
+#    4. delete the CloudNativePG Database objects in the data namespace and wait for them
+#    5. delete the CloudNativePG Clusters in the data namespace
+#    6. delete the RabbitmqClusters in the data namespace and wait for them, then their StatefulSets if those
+#       survive (the operator does not remove them)
+#    7. wait until no pods are left in the data namespace
+#    8. delete the PersistentVolumeClaims in the data namespace (including platform-valkey)
+#    9. confirm kubectl get pv is empty
+#   10. AWS: confirm no EBS volume tagged kubernetes.io/created-for/pvc/name remains, so only node root
 #       volumes are left
-#   10. AWS: confirm no load balancer created by the AWS Load Balancer Controller remains
-#   11. AWS: confirm no security group created by the AWS Load Balancer Controller remains
+#   11. AWS: confirm no load balancer created by the AWS Load Balancer Controller remains
+#   12. AWS: confirm no security group created by the AWS Load Balancer Controller remains
 #
-# Deletions name the resource and the namespace (argocd, shop and data are the only namespaces touched).
-# Nothing is forced: a deletion that does not finish is reported and the script stops. It does not delete
-# namespaces, the storage class, Argo CD or any cloud resource; terraform destroy is a separate, manual step.
+# Deletions name the resource and the namespace (argocd, shop and data are the only namespaces changed;
+# cnpg-system and rabbitmq-system are only read, to see whether an operator is still running). Nothing is
+# forced: a deletion that does not finish is reported and the script stops. It does not delete namespaces, the
+# storage class, Argo CD or any cloud resource; terraform destroy is a separate, manual step.
+#
+# Finalizers of operators that are gone. Step 2 removes the operators, and a Database or a RabbitmqCluster
+# carries a finalizer that only its operator removes. For these two kinds, and only these, steps 4 and 6 look
+# at whether the operator is running while they wait:
+#
+#   Database          finalizer cnpg.io/deleteDatabase
+#                     operator  pods labelled app.kubernetes.io/name=cloudnative-pg in cnpg-system
+#   RabbitmqCluster   finalizer deletion.finalizers.rabbitmqclusters.rabbitmq.com
+#                     operator  pods labelled app.kubernetes.io/name=rabbitmq-cluster-operator in rabbitmq-system
+#
+# If the operator has no running pod and the object, already deleted, is stuck on exactly that finalizer, the
+# script removes that one finalizer from that one object, prints what it removed and why, and goes on. Any
+# other finalizer, on these or on any other resource, is never touched: the script waits, times out and names
+# what is holding the object. With the operator running it only waits.
 #
 # Options:
 #   --context CONTEXT     kubectl context of the cluster to prepare; required
-#   --region REGION       AWS region for steps 9 to 11 (default: AWS_REGION, then AWS_DEFAULT_REGION)
+#   --region REGION       AWS region for steps 10 to 12 (default: AWS_REGION, then AWS_DEFAULT_REGION)
 #   --cluster-name NAME   only count load balancers and security groups tagged for this cluster (default: any
 #                         created by the controller in the region)
-#   --skip-aws            stop after step 8 (GKE, or no AWS credentials yet)
+#   --skip-aws            stop after step 9 (GKE, or no AWS credentials yet)
 #   --timeout SECONDS     time each step may take (default 600)
 #   --dry-run             print what would run, run no change, make no AWS call; read-only kubectl
 #                         queries are still used to name the resources
@@ -53,6 +70,12 @@ ARGO_NS="argocd"
 CLUSTER_SECRET="cluster-in-cluster"
 DATA_NS="data"
 SHOP_NS="shop"
+CNPG_NS="cnpg-system"
+CNPG_SELECTOR="app.kubernetes.io/name=cloudnative-pg"
+CNPG_DB_FINALIZER="cnpg.io/deleteDatabase"
+MQ_NS="rabbitmq-system"
+MQ_SELECTOR="app.kubernetes.io/name=rabbitmq-cluster-operator"
+MQ_FINALIZER="deletion.finalizers.rabbitmqclusters.rabbitmq.com"
 LB_TAG="elbv2.k8s.aws/cluster"
 PVC_TAG="kubernetes.io/created-for/pvc/name"
 
@@ -122,8 +145,8 @@ fi
 
 k() { kubectl --context "$CONTEXT" "$@"; }
 
-TOTAL=11
-[ "$SKIP_AWS" -eq 0 ] || TOTAL=8
+TOTAL=12
+[ "$SKIP_AWS" -eq 0 ] || TOTAL=9
 n=0
 DETAIL=""
 
@@ -288,6 +311,87 @@ $names
 EOF
 }
 
+# operator_running NAMESPACE SELECTOR: succeeds when an operator pod is Running there and fails when there is
+# none. If the cluster cannot be asked, the script stops: an operator that cannot be seen is not one that is gone.
+operator_running() {
+  local out
+  out="$(k -n "$1" get pods -l "$2" --field-selector=status.phase=Running -o name 2>&1)" ||
+    fail "could not check whether the operator ($2) is running in namespace $1: $out"
+  [ -n "$out" ]
+}
+
+# The object delete_owned is waiting for, and the operator that owns its finalizer. owned_gone reads them.
+OWNED=""
+OWNED_FINALIZER=""
+OWNED_OPERATOR=""
+OWNED_NS=""
+OWNED_SELECTOR=""
+OWNED_CLEARED=0
+
+# Check used by wait_for: the object is gone. While it is not, and its operator is not running, remove the one
+# finalizer that operator would have removed (once) and say so.
+owned_gone() {
+  local present finalizers position running
+  present="$(k -n "$DATA_NS" get "$OWNED" --ignore-not-found -o name 2>&1)" || {
+    DETAIL="could not query $OWNED: $present"
+    return 1
+  }
+  [ -n "$present" ] || return 0
+  finalizers="$(k -n "$DATA_NS" get "$OWNED" -o 'jsonpath={range .metadata.finalizers[*]}{@}{"\n"}{end}' 2> /dev/null || true)"
+  position="$(printf '%s\n' "$finalizers" | grep -nFx -- "$OWNED_FINALIZER" | head -n 1 | cut -d: -f1 || true)"
+  running="not running"
+  if operator_running "$OWNED_NS" "$OWNED_SELECTOR"; then running="running"; fi
+  if [ "$OWNED_CLEARED" -eq 0 ] && [ -n "$position" ] && [ "$running" = "not running" ]; then
+    echo "  the $OWNED_OPERATOR is not running, so nothing is left to run the finalizer $OWNED_FINALIZER on $OWNED."
+    echo "  Removing that finalizer from $OWNED only; no other finalizer or object is changed."
+    run k -n "$DATA_NS" patch "$OWNED" --type=json -p \
+      "[{\"op\":\"test\",\"path\":\"/metadata/finalizers/$((position - 1))\",\"value\":\"$OWNED_FINALIZER\"},{\"op\":\"remove\",\"path\":\"/metadata/finalizers/$((position - 1))\"}]"
+    OWNED_CLEARED=1
+    DETAIL="$OWNED: the finalizer $OWNED_FINALIZER was just removed"
+    return 1
+  fi
+  DETAIL="$OWNED
+Finalizers: $(printf '%s' "$finalizers" | tr '\n' ' ')
+The $OWNED_OPERATOR is $running.
+This script removes only the finalizer $OWNED_FINALIZER, and only when that operator is not running. It changed nothing else on $OWNED."
+  return 1
+}
+
+# delete_owned KIND CRD FINALIZER OPERATOR OPERATOR_NS OPERATOR_SELECTOR: delete every object of KIND in the data
+# namespace by name and wait for each to go. The delete request returns at once (the finalizer holds the object);
+# owned_gone does the waiting and deals with a finalizer whose operator is gone.
+delete_owned() {
+  local kind="$1" crd="$2" names name
+  OWNED_FINALIZER="$3"
+  OWNED_OPERATOR="$4"
+  OWNED_NS="$5"
+  OWNED_SELECTOR="$6"
+  if ! crd_present "$crd"; then
+    echo "  the $crd CRD is not installed: nothing to delete"
+    return 0
+  fi
+  names="$(names_in "$DATA_NS" "$kind")" || fail "could not list $kind in the $DATA_NS namespace"
+  if [ -z "$names" ]; then
+    echo "  no $kind in the $DATA_NS namespace"
+    return 0
+  fi
+  while IFS= read -r name; do
+    OWNED="$name"
+    OWNED_CLEARED=0
+    run k -n "$DATA_NS" delete "$name" --wait=false
+    if [ "$DRY_RUN" -eq 1 ]; then
+      if operator_running "$OWNED_NS" "$OWNED_SELECTOR"; then
+        echo "  dry run: the $OWNED_OPERATOR is running; would wait for $name to be deleted"
+      else
+        echo "  dry run: the $OWNED_OPERATOR is not running; if $name stays stuck on the finalizer $OWNED_FINALIZER, would remove that one finalizer"
+      fi
+    fi
+    wait_for "$name is deleted" owned_gone
+  done << EOF
+$names
+EOF
+}
+
 echo "Teardown preparation for the cluster in kubectl context: $CONTEXT"
 [ "$DRY_RUN" -eq 0 ] || echo "DRY RUN: no change is made and no AWS call is made."
 
@@ -311,6 +415,9 @@ wait_for "no apps-* or data-* Application remains" apps_gone
 step "Wait for the $SHOP_NS namespace to empty"
 wait_for "the $SHOP_NS namespace has no workloads" shop_empty
 
+step "Delete the CloudNativePG Database objects in the $DATA_NS namespace, before their Cluster"
+delete_owned databases.postgresql.cnpg.io databases.postgresql.cnpg.io "$CNPG_DB_FINALIZER" "CloudNativePG operator" "$CNPG_NS" "$CNPG_SELECTOR"
+
 step "Delete the CloudNativePG Clusters in the $DATA_NS namespace (this removes their pods and claims)"
 delete_all cluster.postgresql.cnpg.io clusters.postgresql.cnpg.io
 
@@ -319,10 +426,11 @@ if crd_present rabbitmqclusters.rabbitmq.com; then
   mq_names="$(names_in "$DATA_NS" rabbitmqclusters.rabbitmq.com)" || fail "could not list RabbitmqClusters"
   if [ -z "$mq_names" ]; then
     echo "  no RabbitmqCluster in the $DATA_NS namespace"
+  else
+    delete_owned rabbitmqclusters.rabbitmq.com rabbitmqclusters.rabbitmq.com "$MQ_FINALIZER" "RabbitMQ Cluster Operator" "$MQ_NS" "$MQ_SELECTOR"
   fi
   while IFS= read -r mq; do
     [ -n "$mq" ] || continue
-    run k -n "$DATA_NS" delete "$mq" --wait=true --timeout="${TIMEOUT}s"
     # Observed on EKS: deleting the RabbitmqCluster leaves <name>-server and its pod running.
     sts="statefulset/${mq##*/}-server"
     if [ "$DRY_RUN" -eq 1 ]; then

@@ -172,7 +172,29 @@ scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --dry-run    
 scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-name <CLUSTER_NAME>
 ```
 
-`--context` is required (the script never uses the current context). It runs the steps below in order, waits for each (`--timeout`, 600 seconds a step by default) and stops at the first one that does not finish, so it is safe to run again after fixing the cause. It deletes only the named resources in the `argocd`, `shop` and `data` namespaces, never forces a deletion, and does not delete namespaces, the storage class, Argo CD or anything in the cloud. `--skip-aws` stops after step 8 (GKE, or no AWS credentials). It was tested against a fake `kubectl` and a fake `aws`, not against a real cluster: run `--dry-run` first and read the output.
+`--context` is required (the script never uses the current context). It waits for each step (`--timeout`, 600 seconds a step by default) and stops at the first one that does not finish, so it is safe to run again after fixing the cause. It deletes only the named resources in the `argocd`, `shop` and `data` namespaces, never forces a deletion, and does not delete namespaces, the storage class, Argo CD or anything in the cloud. `--skip-aws` stops after step 9 (GKE, or no AWS credentials). It was tested against a fake `kubectl` and a fake `aws`, not against a real cluster: run `--dry-run` first and read the output.
+
+The steps, in order:
+
+1. Remove the cluster Secret label keys.
+2. Wait for the `apps-*` and `data-*` Applications to go. This also removes the CloudNativePG and RabbitMQ Cluster operators.
+3. Wait for the `shop` namespace to empty.
+4. Delete the CloudNativePG `Database` objects (`platform-pg-orders`, `platform-pg-payments`) and wait for them.
+5. Delete the CloudNativePG `Cluster`.
+6. Delete the `RabbitmqCluster` and wait for it, then its StatefulSet if that survives.
+7. Wait for the pods in `data` to go.
+8. Delete the PersistentVolumeClaims, including `platform-valkey`.
+9. Confirm `kubectl get pv` is empty.
+10. to 12. AWS: no leftover tagged volumes, load balancers or security groups.
+
+**Operators that are already gone.** Step 2 removes the operators, but a `Database` and a `RabbitmqCluster` carry a finalizer that only their operator can remove, so their deletion would otherwise hang until the timeout. In steps 4 and 6 the script deletes the object and, while it waits, checks whether the operator still has a running pod (`cnpg-system` and `rabbitmq-system` are only read). With the operator running it just waits. With the operator gone it removes the one finalizer the operator would have removed, from that one object, prints what it removed and why, and carries on:
+
+| Object | Finalizer the script may remove | Operator it looks for |
+| --- | --- | --- |
+| `Database` (`databases.postgresql.cnpg.io`) | `cnpg.io/deleteDatabase` | pods labelled `app.kubernetes.io/name=cloudnative-pg` in `cnpg-system` |
+| `RabbitmqCluster` (`rabbitmqclusters.rabbitmq.com`) | `deletion.finalizers.rabbitmqclusters.rabbitmq.com` | pods labelled `app.kubernetes.io/name=rabbitmq-cluster-operator` in `rabbitmq-system` |
+
+Nothing else is ever changed. An object stuck on any other finalizer is left alone: the script times out and prints the finalizers it found. If it cannot ask the cluster whether the operator runs, it stops. The `Database` objects use `databaseReclaimPolicy: retain`, so removing them does not drop the databases; they go with the `Cluster` in step 5. Under `--dry-run` it says, per object, whether it would only wait or would remove the finalizer.
 
 ### By hand
 
@@ -190,7 +212,7 @@ scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-nam
    kubectl --context <EKS_CONTEXT> -n shop get deployments,statefulsets,jobs,ingresses,pods     # nothing
    ```
 
-3. **Delete the CloudNativePG `Cluster` and the `RabbitmqCluster`** (the resources marked `Prune=false,Delete=false` deliberately stay when the Applications go). Deleting the `Cluster` removes its pod and claim. Deleting the `RabbitmqCluster` does **not** remove its StatefulSet or pod, so the claim stays `Bound`: delete the StatefulSet (named `<cluster>-server`) as well:
+3. **Delete the CloudNativePG `Database` objects, the `Cluster` and the `RabbitmqCluster`**, in that order. If the operators are already gone, the `Database` and `RabbitmqCluster` deletions hang on an operator finalizer; see [namespace stuck in Terminating](#troubleshooting). (The resources marked `Prune=false,Delete=false` deliberately stay when the Applications go). Deleting the `Cluster` removes its pod and claim. Deleting the `RabbitmqCluster` does **not** remove its StatefulSet or pod, so the claim stays `Bound`: delete the StatefulSet (named `<cluster>-server`) as well:
 
    ```bash
    kubectl --context <EKS_CONTEXT> -n data delete cluster.postgresql.cnpg.io platform-pg
@@ -256,7 +278,7 @@ scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-nam
 ### Data teardown checklist
 
 - [ ] The cluster Secret labels `platform.example/apps` and `platform.example/data` removed first; their Applications gone (not deleted by hand); the `shop` namespace empty
-- [ ] `Cluster` and `RabbitmqCluster` deleted, the RabbitMQ StatefulSet deleted by hand, the Valkey claim deleted
+- [ ] `Database` objects, `Cluster` and `RabbitmqCluster` deleted (an operator finalizer cleared only where its operator was gone), the RabbitMQ StatefulSet deleted by hand, the Valkey claim deleted
 - [ ] `kubectl -n data get pvc` shows nothing and `kubectl get pv` is empty
 - [ ] AWS: no `kubernetes.io/created-for/pvc/name` volumes (only node root volumes remain) and no `available` volumes in the region
 - [ ] AWS: no load balancer and no security group tagged `elbv2.k8s.aws/cluster` for this cluster
@@ -265,6 +287,30 @@ scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-nam
 
 ## Troubleshooting
 
+- **The `data` namespace is stuck in `Terminating`** (or a delete in it hangs): something in it still has a finalizer. Find out what, in this order:
+
+  ```bash
+  kubectl --context <CONTEXT> get namespace data -o jsonpath='{range .status.conditions[*]}{.type}{": "}{.message}{"\n"}{end}'
+  kubectl --context <CONTEXT> api-resources --verbs=list --namespaced -o name \
+    | xargs -n 1 kubectl --context <CONTEXT> -n data get --ignore-not-found --show-kind --no-headers
+  kubectl --context <CONTEXT> -n data get <KIND>/<NAME> -o jsonpath='{.metadata.deletionTimestamp}{"\n"}{.metadata.finalizers}{"\n"}'
+  ```
+
+  The namespace conditions name what remains (`NamespaceContentRemaining`, `NamespaceFinalizersRemaining`). The second command lists every object left, and the third shows the finalizers of one. Then ask who owns the finalizer and whether that owner still runs. Safe to clear, by hand, only when the owner is gone for good and the object is already being deleted:
+
+  | Object | Finalizer | Owner | Check before clearing |
+  | --- | --- | --- | --- |
+  | `Database` | `cnpg.io/deleteDatabase` | CloudNativePG operator | `kubectl -n cnpg-system get pods` shows no operator pod |
+  | `RabbitmqCluster` | `deletion.finalizers.rabbitmqclusters.rabbitmq.com` | RabbitMQ Cluster Operator | `kubectl -n rabbitmq-system get pods` shows no operator pod |
+
+  Clear one finalizer from one object, testing its value first so nothing else is removed (this is what the teardown script does; here the finalizer is at index 0):
+
+  ```bash
+  kubectl --context <CONTEXT> -n data patch database.postgresql.cnpg.io/<NAME> --type=json \
+    -p '[{"op":"test","path":"/metadata/finalizers/0","value":"cnpg.io/deleteDatabase"},{"op":"remove","path":"/metadata/finalizers/0"}]'
+  ```
+
+  Do not clear a finalizer while its operator is running (it removes it itself, and clearing early skips the cleanup it does), do not clear a finalizer you cannot attribute to an owner, and do not use `--force` or `--grace-period=0`. The same applies when `teardown-prep.sh` times out on a `Database` or `RabbitmqCluster`: it prints the finalizers and says whether the operator is running, and it clears only the two above. Running it again continues from where it stopped.
 - **`data-postgres` stays `Progressing`:** the operator or the `pg-orders` and `pg-payments` Secrets are not ready yet. Check `kubectl -n cnpg-system get pods`, `kubectl -n argocd get application data-secrets-*`, and `kubectl -n data describe cluster.postgresql.cnpg.io platform-pg`; retries continue with backoff.
 - **PVC stuck `Pending`:** the `platform-data` class is missing (check `data-storage`) or no node can take the volume's zone; see `kubectl describe pvc`.
 - **Pods rejected by Pod Security:** `kubectl -n data describe` shows the violated rule. `data` enforces `baseline`; a violation means a chart changed its security context.

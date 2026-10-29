@@ -148,7 +148,7 @@ new_cluster() {
   rm -rf "$state"
   mkdir -p "$state"
   printf '%s\n' test-cluster other-cluster > "$state/contexts"
-  printf '%s\n' clusters.postgresql.cnpg.io rabbitmqclusters.rabbitmq.com > "$state/crds"
+  printf '%s\n' clusters.postgresql.cnpg.io rabbitmqclusters.rabbitmq.com databases.postgresql.cnpg.io > "$state/crds"
 }
 
 # teardown ARGS...: run the script with the fakes first on PATH; output in $work/tdout, status in $rc.
@@ -175,13 +175,85 @@ check "the volume query uses the pvc name tag" grep -q 'Name=tag-key,Values=kube
 check "the load balancer query uses the controller tag" grep -q 'Key=elbv2.k8s.aws/cluster ' "$state/aws.log"
 check "every deletion names its namespace" test "$(grep ' delete ' "$state/kubectl.log" | grep -vc -e '-n data delete')" = 0
 check "no call uses --force" test "$(cat "$state/kubectl.log" "$state/aws.log" | grep -c -e '--force')" = 0
-check "it never touches a namespace other than argocd, shop and data" test "$(grep -e '-n ' "$state/kubectl.log" | grep -vc -e '-n argocd' -e '-n shop' -e '-n data')" = 0
+check "it changes nothing outside argocd, shop and data, and only lists operator pods elsewhere" test "$(grep -e '-n ' "$state/kubectl.log" | grep -v -e '-n argocd' -e '-n shop' -e '-n data' | grep -vc -e '^-n cnpg-system get pods -l ' -e '^-n rabbitmq-system get pods -l ')" = 0
+check "the Database objects are deleted before the Cluster" test "$(line_of 'delete database.postgresql.cnpg.io/platform-pg-payments')" -lt "$(line_of 'delete cluster.postgresql')"
 check "the output says it finished" grep -q 'Teardown preparation finished' "$work/tdout"
+check "an ordinary run removes no finalizer" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
 
 new_cluster
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "a RabbitMQ StatefulSet that did not survive is not deleted" test "$(grep -c 'delete statefulset' "$state/kubectl.log")" = 0
 check "and the run still succeeds" test "$rc" -eq 0
+
+# Operators running: the finalizers are removed by the operators, so the script only waits.
+new_cluster
+touch "$state/cnpg-operator-up" "$state/mq-operator-up" "$state/stuck-databases" "$state/stuck-mq" "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "with the operators running the run exits 0" test "$rc" -eq 0
+check "with the operators running no finalizer is removed" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "with the operators running the output does not claim a finalizer was removed" test "$(grep -c 'Removing that finalizer' "$work/tdout")" = 0
+
+# Operators gone, objects stuck on exactly their operator finalizer: the script removes those and goes on.
+new_cluster
+touch "$state/stuck-databases" "$state/stuck-mq" "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "with the operators gone and the finalizers stuck the run exits 0" test "$rc" -eq 0
+check "three finalizers are removed: two Databases and the RabbitmqCluster" test "$(grep -c ' patch ' "$state/kubectl.log")" = 3
+check "each patch names one object in the data namespace" test "$(grep ' patch ' "$state/kubectl.log" | grep -c -e '-n data patch database.postgresql.cnpg.io/platform-pg-orders --type=json' -e '-n data patch database.postgresql.cnpg.io/platform-pg-payments --type=json' -e '-n data patch rabbitmqcluster.rabbitmq.com/platform-mq --type=json')" = 3
+check "the Database patch removes cnpg.io/deleteDatabase and tests it first" grep -q '"op":"test","path":"/metadata/finalizers/0","value":"cnpg.io/deleteDatabase"},{"op":"remove","path":"/metadata/finalizers/0"}' "$state/kubectl.log"
+check "the RabbitmqCluster patch removes its operator finalizer" grep -q '"value":"deletion.finalizers.rabbitmqclusters.rabbitmq.com"}' "$state/kubectl.log"
+check "the output says what was removed and why" grep -q 'the CloudNativePG operator is not running, so nothing is left to run the finalizer cnpg.io/deleteDatabase on database.postgresql.cnpg.io/platform-pg-orders' "$work/tdout"
+check "and says the same for RabbitMQ" grep -q 'the RabbitMQ Cluster Operator is not running, so nothing is left to run the finalizer deletion.finalizers.rabbitmqclusters.rabbitmq.com' "$work/tdout"
+check "the object is deleted before its finalizer is removed" test "$(line_of 'delete rabbitmqcluster')" -lt "$(line_of 'patch rabbitmqcluster')"
+check "the Database finalizers go before the Cluster is deleted" test "$(line_of 'patch database.postgresql.cnpg.io/platform-pg-payments')" -lt "$(line_of 'delete cluster.postgresql')"
+check "the StatefulSet is still deleted after the RabbitmqCluster" test "$(line_of 'patch rabbitmqcluster')" -lt "$(line_of 'delete statefulset')"
+check "nothing is forced and no grace period is set" test "$(cat "$state/kubectl.log" | grep -c -e '--force' -e 'grace-period')" = 0
+check "no object other than the three is patched" test "$(grep -c -e ' patch ' -e ' annotate ' -e ' edit ' -e ' replace ' "$state/kubectl.log")" = 3
+
+# Run it again on the finished cluster: nothing is left to do and nothing is removed.
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "a repeat run exits 0" test "$rc" -eq 0
+check "a repeat run removes no further finalizer" test "$(grep -c ' patch ' "$state/kubectl.log")" = 3
+check "a repeat run finds no Database objects" grep -q 'no databases.postgresql.cnpg.io in the data namespace' "$work/tdout"
+
+# A finalizer that is not the operator's: left alone, the script stops and names it.
+new_cluster
+touch "$state/odd-finalizer-mq" "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a RabbitmqCluster stuck on another finalizer stops the script with exit 1" test "$rc" -eq 1
+check "no finalizer is removed from it" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "the message names the finalizer and the object" grep -q 'Finalizers: example.com/keep' "$work/tdout"
+check "the timeout message names the object that is stuck" grep -q 'timed out after 2s waiting until rabbitmqcluster.rabbitmq.com/platform-mq is deleted' "$work/tdout"
+check "nothing after that step runs: no StatefulSet, claim or AWS call" test "$(grep -c -e 'delete statefulset' -e 'persistentvolumeclaim' "$state/kubectl.log")" = 0 -a ! -e "$state/aws.log"
+
+new_cluster
+touch "$state/odd-finalizer-databases"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a Database stuck on another finalizer stops the script with exit 1" test "$rc" -eq 1
+check "no finalizer is removed from the Database" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "the Cluster is not deleted after that" test "$(grep -c 'delete cluster.postgresql' "$state/kubectl.log")" = 0
+
+new_cluster
+touch "$state/stuck-mq" "$state/odd-finalizer-mq" "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "with both finalizers only the operator's is removed" test "$(grep -c ' patch ' "$state/kubectl.log")" = 1
+check "and the run then stops on the other one" test "$rc" -eq 1
+check "and names it" grep -q 'Finalizers: example.com/keep' "$work/tdout"
+
+# The operator's own finalizer, but its operator is running and has not finished: only wait, never patch.
+new_cluster
+touch "$state/mq-operator-up" "$state/odd-finalizer-mq"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a running operator with a stuck object is waited for, not patched" test "$rc" -eq 1 -a "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "and the message says the operator is running" grep -q 'The RabbitMQ Cluster Operator is running' "$work/tdout"
+
+# If the operator cannot be looked up, nothing is assumed.
+new_cluster
+touch "$state/stuck-databases" "$state/operator-api-error"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "an operator lookup that fails stops the script" test "$rc" -eq 1
+check "and no finalizer is removed" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "and the message says the lookup failed" grep -q 'could not check whether the operator' "$work/tdout"
 
 new_cluster
 touch "$state/stuck-shop"
@@ -246,6 +318,14 @@ check "a dry run runs no label, delete or other change" test "$(grep -c -e ' del
 check "a dry run makes no AWS call" test ! -e "$state/aws.log"
 check "a dry run prints the commands it would run" grep -q '+ kubectl --context test-cluster -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-' "$work/tdout"
 check "and says nothing was changed" grep -q 'Nothing was changed' "$work/tdout"
+check "a dry run with the operators gone says it would remove only the operator finalizer" test "$(grep -c 'dry run: the .* is not running; if .* stays stuck on the finalizer' "$work/tdout")" = 3
+
+new_cluster
+touch "$state/cnpg-operator-up" "$state/mq-operator-up" "$state/stuck-databases" "$state/stuck-mq"
+run_teardown --context test-cluster --region eu-north-1 --dry-run
+check "a dry run with the operators running exits 0 and changes nothing" test "$rc" -eq 0 -a "$(grep -c -e ' delete ' -e ' label ' -e ' patch ' "$state/kubectl.log")" = 0
+check "and says it would only wait" test "$(grep -c 'dry run: the .* is running; would wait for' "$work/tdout")" = 3
+check "the dry run prints the Database delete it would run" grep -q '+ kubectl --context test-cluster -n data delete database.postgresql.cnpg.io/platform-pg-orders --wait=false' "$work/tdout"
 
 new_cluster
 run_teardown --context test-cluster --region eu-north-1 --bogus
