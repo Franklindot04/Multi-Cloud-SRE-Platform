@@ -21,3 +21,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0015](0015-service-data-integration.md) | Service data integration | Accepted |
 | [0016](0016-service-deployment-model.md) | Service deployment model | Accepted |
 | [0017](0017-ci-pipeline-and-image-publishing.md) | CI pipeline and image publishing | Accepted |
+| [0018](0018-secret-generation-and-ordering.md) | Secret generation, ordering and teardown | Accepted |

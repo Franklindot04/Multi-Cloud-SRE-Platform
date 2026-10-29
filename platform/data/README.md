@@ -27,15 +27,17 @@ Checked on **2026-10-27** against each project's chart repository, release page 
 | --- | --- | --- |
 | [`namespaces`](namespaces) | local chart | Namespaces `data` and `shop` with Pod Security labels |
 | [`storage`](storage) | local chart | StorageClass `platform-data` (EBS gp3 on EKS, Persistent Disk balanced on GKE) |
-| [`secrets`](secrets) | local chart | In-cluster generation of credentials (a PreSync hook Job) |
+| [`secrets`](secrets) | local chart | In-cluster generation of credentials (ordinary RBAC objects and a Sync hook Job) |
 | [`cloudnative-pg`](cloudnative-pg) | wrapper chart | The PostgreSQL operator |
 | [`postgres`](postgres) | local chart | The PostgreSQL `Cluster` and `Database` resources |
 | [`valkey`](valkey) | wrapper chart | The cache, from the official chart |
 | [`rabbitmq-operator`](rabbitmq-operator) | vendored manifest | The RabbitMQ Cluster Operator release manifest |
 | [`rabbitmq`](rabbitmq) | local chart | The `RabbitmqCluster` resource |
-| [`rabbitmq-credentials`](rabbitmq-credentials) | local chart | A PreSync hook Job that copies the broker credentials into `shop` (least-privilege RBAC) |
+| [`rabbitmq-credentials`](rabbitmq-credentials) | local chart | Ordinary RBAC objects and a Sync hook Job that copies the broker credentials into `shop` (least privilege) |
 
 **Operators and their custom resources are separate charts.** The custom resources need the operator's CRDs and webhooks, so they sync afterwards (Argo CD sync waves, `SkipDryRunOnMissingResource` and retries with backoff) and can be upgraded and rolled back independently. Wrapper charts with committed `Chart.lock` files are used for upstream charts, as for the add-ons.
+
+**Ordering is not enforced between Applications.** The waves in `platform/argocd/apps` give the intended order (secrets, then PostgreSQL, Valkey and RabbitMQ, then the credential copy), but Argo CD does not make one generated Application wait for another, so each consumer waits for what it needs: the PostgreSQL chart has a PreSync gate that holds back the `Cluster` until the role Secrets exist, Valkey's pod waits in `Init` for its Secret, the credential copy waits for the operator's Secret, and the migrations wait for the database. What this guarantees and what it does not is in [ADR-0018](../../docs/adr/0018-secret-generation-and-ordering.md). A chart under this directory must also render at least one ordinary resource (a chart with only hooks never syncs), and `make data-check-manifests` fails otherwise.
 
 Profiles are values files: `values.yaml` (shared, the standard profile) + `values-standard.yaml`, or + `values-ha.yaml`. The profile comes from the cluster label `platform.example/data-profile` (`standard` by default).
 
@@ -62,7 +64,7 @@ The HA profiles need at least three schedulable nodes. The standard profile fits
 
 One PostgreSQL cluster (`platform-pg`, read-write service `platform-pg-rw.data.svc:5432`) with **a database and a login role per service**, created declaratively: `orders` and `payments`. The operator creates them from `spec.managed.roles` and `Database` resources.
 
-**No credential is ever committed.** Passwords are generated inside the cluster by the [`secrets`](secrets) chart's hook Job, once, and never modified afterwards. The conventions the services consume:
+**No credential is ever committed.** Passwords are generated inside the cluster by the [`secrets`](secrets) chart's Job, once, and never modified afterwards. The conventions the services consume:
 
 | Secret | Namespace | Keys | Used by |
 | --- | --- | --- | --- |
@@ -80,6 +82,10 @@ This in-cluster generation is the interim mechanism. It is replaced by external 
 
 Every data component uses the StorageClass `platform-data`, so the charts are identical on both clouds. `reclaimPolicy: Delete` removes the cloud disk when its claim is deleted. **The volumes are not managed by Terraform and are not removed by `terraform destroy`; they keep billing until the claims are deleted.** To keep Argo CD from deleting data, the `Cluster`, `RabbitmqCluster`, the Valkey claim, the namespaces and the StorageClass carry `Prune=false,Delete=false`, so neither pruning nor deleting the Application removes them. Deleting them is a deliberate teardown step.
 
+## Teardown
+
+Volumes outlive `terraform destroy`. Before destroying the cluster run `scripts/teardown-prep.sh --context <CONTEXT> --region <REGION> --dry-run`, read it, then run it without `--dry-run`: it removes the `platform.example/apps` and `platform.example/data` cluster Secret labels, waits for the Applications and the `shop` namespace to go, deletes the `Cluster`, the `RabbitmqCluster`, its StatefulSet if it survives and the remaining claims (including `platform-valkey`), and checks `kubectl get pv`, the EBS volumes, and the load balancers and security groups of the AWS Load Balancer Controller. The steps by hand are in the [data layer runbook](../../docs/runbooks/data-layer.md#teardown).
+
 ## Backups
 
 **There are no backups yet.** They arrive with the disaster recovery change. Today the data is protected only by volume encryption and, in the HA profiles, replication; the standard profile loses data if its disk or node is lost. See ADR-0014 for what is and is not protected.
@@ -90,4 +96,4 @@ Every data component uses the StorageClass `platform-data`, so the charts are id
 make data-check-manifests
 ```
 
-Runs `helm lint --strict`, `helm template` and `kubeconform` for every chart and cloud with the standard profile as the base and the HA profile as an extra render; verifies the vendored RabbitMQ manifest against its SHA-256; validates the CloudNativePG `Cluster` and `Database` and the `RabbitmqCluster` strictly against CRD schemas from the pinned catalog commit; validates the local compose file; runs `yamllint` and `shellcheck`. Local development: `make data-up`, `make data-check`, `make data-down` (see the runbook).
+Runs the contract checks of `scripts/chart-contract-check.py` (no chart renders only hooks, no Helm-hook Job creates Secrets, the PostgreSQL chart has its PreSync gate), then `helm lint --strict`, `helm template` and `kubeconform` for every chart and cloud with the standard profile as the base and the HA profile as an extra render; verifies the vendored RabbitMQ manifest against its SHA-256; validates the CloudNativePG `Cluster` and `Database` and the `RabbitmqCluster` strictly against CRD schemas from the pinned catalog commit; validates the local compose file; runs `yamllint` and `shellcheck`. Local development: `make data-up`, `make data-check`, `make data-down` (see the runbook).

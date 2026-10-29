@@ -335,3 +335,106 @@ def test_duplicate_or_misnamed_migrations_are_rejected(tmp_path: Path) -> None:
     (tmp_path / "0001_b.sql").write_text("SELECT 1;")
     with pytest.raises(MigrationError):
         discover(tmp_path)
+
+
+# --- migrate: waiting for a database that is not ready yet ---
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def a_db():
+    from orders.config import DbConfig
+
+    return DbConfig(
+        host="h", port=5432, name="orders", user="orders", password="x", pool_min=1, pool_max=2,
+        max_inactive_lifetime_s=1, connect_timeout_s=1, statement_timeout_ms=1000,
+    )  # fmt: skip
+
+
+async def test_migrate_waits_while_the_database_is_not_ready_then_connects() -> None:
+    import asyncpg
+
+    from orders.migrate import connect_when_ready
+
+    clock, messages, calls = FakeClock(), [], []
+
+    async def connect(**_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionRefusedError("refused")
+        if len(calls) == 2:
+            raise asyncpg.InvalidPasswordError("password authentication failed")
+        return "connection"
+
+    result = await connect_when_ready(
+        a_db(), 60, 5, connect=connect, sleep=clock.sleep, clock=clock, log=messages.append
+    )
+    assert result == "connection" and clock.slept == [5, 5]
+    assert len(messages) == 2 and "retrying in 5s" in messages[0] and "InvalidPasswordError" in messages[1]
+
+
+async def test_migrate_gives_up_at_the_deadline_and_default_does_not_wait() -> None:
+    import asyncpg
+    import pytest
+
+    from orders.migrate import connect_when_ready
+
+    clock = FakeClock()
+
+    async def never_ready(**_kwargs):
+        raise asyncpg.InvalidCatalogNameError('database "orders" does not exist')
+
+    with pytest.raises(asyncpg.InvalidCatalogNameError):
+        await connect_when_ready(
+            a_db(), 12, 5, connect=never_ready, sleep=clock.sleep, clock=clock, log=lambda _m: None
+        )
+    assert clock.slept == [5, 5]  # two waits fit in 12 seconds, the third would not
+
+    clock = FakeClock()
+    with pytest.raises(asyncpg.InvalidCatalogNameError):
+        await connect_when_ready(a_db(), 0, 5, connect=never_ready, sleep=clock.sleep, clock=clock, log=lambda _m: None)
+    assert clock.slept == []
+
+
+async def test_migrate_does_not_retry_errors_that_are_not_about_readiness() -> None:
+    import pytest
+
+    from orders.migrate import connect_when_ready
+
+    calls = []
+
+    async def broken(**_kwargs):
+        calls.append(1)
+        raise ValueError("bad argument")
+
+    with pytest.raises(ValueError, match="bad argument"):
+        await connect_when_ready(a_db(), 60, 5, connect=broken, sleep=FakeClock().sleep, log=lambda _m: None)
+    assert calls == [1]
+
+
+def test_migrate_wait_settings_are_validated(monkeypatch) -> None:
+    import pytest
+
+    from orders.migrate import _wait_settings
+
+    monkeypatch.delenv("MIGRATE_WAIT_SECONDS", raising=False)
+    assert _wait_settings() == (0, 5.0)
+    monkeypatch.setenv("MIGRATE_WAIT_SECONDS", "600")
+    assert _wait_settings() == (600, 5.0)
+    monkeypatch.setenv("MIGRATE_WAIT_SECONDS", "99999")
+    with pytest.raises(ConfigError):
+        _wait_settings()
+    monkeypatch.setenv("MIGRATE_WAIT_SECONDS", "soon")
+    with pytest.raises(ConfigError):
+        _wait_settings()

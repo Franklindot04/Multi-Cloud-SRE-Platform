@@ -39,7 +39,7 @@ kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platfo
 kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/data-profile=standard --overwrite
 ```
 
-Setting `platform.example/data` back to `false` stops Argo CD managing the data Applications, but **it does not delete the data** (see teardown).
+Removing the `platform.example/data` label (or setting it to `false`) stops Argo CD managing the data Applications, but **it does not delete the data** (see teardown).
 
 ## Verify
 
@@ -163,51 +163,66 @@ See the data layer README for what it covers.
 
 ## Teardown
 
-Do this **before `terraform destroy`**, in this order. The aim is zero leftover cloud volumes.
+Do this **before `terraform destroy`**, in this order. The aim is zero leftover cloud volumes, load balancers and controller-created security groups. The order comes from the first teardown on a real EKS cluster; the reasons are in [ADR-0018](../adr/0018-secret-generation-and-ordering.md).
 
-1. **Stop the services using the data** (the application Applications, once they exist).
-2. **Stop Argo CD managing the data layer.** Set the cluster label to `false` so the Applications are deleted (their `Delete=false` resources stay):
+### With the script
 
-   ```bash
-   kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/data=false --overwrite
-   kubectl -n argocd get applications | grep data-        # wait until they are gone
-   ```
+```bash
+scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --dry-run     # print every step, change nothing
+scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-name <CLUSTER_NAME>
+```
 
-3. **Delete the data resources, which are deliberately kept:**
+`--context` is required (the script never uses the current context). It runs the steps below in order, waits for each (`--timeout`, 600 seconds a step by default) and stops at the first one that does not finish, so it is safe to run again after fixing the cause. It deletes only the named resources in the `argocd`, `shop` and `data` namespaces, never forces a deletion, and does not delete namespaces, the storage class, Argo CD or anything in the cloud. `--skip-aws` stops after step 8 (GKE, or no AWS credentials). It was tested against a fake `kubectl` and a fake `aws`, not against a real cluster: run `--dry-run` first and read the output.
 
-   ```bash
-   kubectl -n data delete cluster.postgresql.cnpg.io --all
-   kubectl -n data delete rabbitmqcluster --all
-   kubectl -n data delete deployment,statefulset --all    # Valkey, if any remains
-   ```
+### By hand
 
-4. **Delete every PersistentVolumeClaim in the data namespace, then confirm none remain:**
+1. **Remove the cluster Secret labels.** Delete the label keys; this is what stops the ApplicationSets from recreating Applications. Deleting an Application by hand does not work for as long as the labels select the cluster, and the Applications' finalizers delete what they own:
 
    ```bash
-   kubectl -n data delete pvc --all
-   kubectl -n data get pvc                                 # No resources found
-   kubectl get pv                                          # none with claim data/...
+   kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-
+   kubectl --context <EKS_CONTEXT> -n argocd get applications | grep -E 'apps-|data-'     # wait until none remain
    ```
 
-   With the `platform-data` storage class (`reclaimPolicy: Delete`) the cloud disks are removed with their claims. A volume stuck in `Terminating` means a pod still uses it; delete the pod's owner first.
-5. **Delete the namespaces and the storage class** (they are not pruned by Argo CD):
+   Setting the labels to `false` also works (the selectors match the value `"true"`; verified against the ApplicationSet controller on a throwaway cluster, see the ADR), and the bootstrap script writes `false`. Deleting the keys is preferred because nothing then depends on the value. Delete the services' Ingress first if one was ever enabled ([service deployment runbook](service-deployment.md#teardown)).
+2. **Wait for the `shop` namespace to empty:**
 
    ```bash
-   kubectl delete namespace data shop cnpg-system rabbitmq-system
-   kubectl delete storageclass platform-data
+   kubectl --context <EKS_CONTEXT> -n shop get deployments,statefulsets,jobs,ingresses,pods     # nothing
    ```
 
-6. **Confirm the cloud volumes are gone.** Both commands must list nothing from this cluster.
+3. **Delete the CloudNativePG `Cluster` and the `RabbitmqCluster`** (the resources marked `Prune=false,Delete=false` deliberately stay when the Applications go). Deleting the `Cluster` removes its pod and claim. Deleting the `RabbitmqCluster` does **not** remove its StatefulSet or pod, so the claim stays `Bound`: delete the StatefulSet (named `<cluster>-server`) as well:
+
+   ```bash
+   kubectl --context <EKS_CONTEXT> -n data delete cluster.postgresql.cnpg.io platform-pg
+   kubectl --context <EKS_CONTEXT> -n data delete rabbitmqcluster.rabbitmq.com platform-mq
+   kubectl --context <EKS_CONTEXT> -n data get statefulset                                 # platform-mq-server survives
+   kubectl --context <EKS_CONTEXT> -n data delete statefulset platform-mq-server
+   kubectl --context <EKS_CONTEXT> -n data get pods                                        # wait until none remain
+   ```
+
+4. **Delete the remaining PersistentVolumeClaims**, including `platform-valkey`, whose claim is kept on purpose, then confirm no volume is left in the cluster:
+
+   ```bash
+   kubectl --context <EKS_CONTEXT> -n data get pvc
+   kubectl --context <EKS_CONTEXT> -n data delete pvc platform-valkey                      # and any other claim listed
+   kubectl --context <EKS_CONTEXT> -n data get pvc                                         # No resources found
+   kubectl --context <EKS_CONTEXT> get pv                                                  # No resources found
+   ```
+
+   With the `platform-data` storage class (`reclaimPolicy: Delete`) the cloud disks are removed with their claims. A claim stuck in `Terminating` means a pod still uses it: find the pod with `kubectl -n data get pods` and delete its owner (the StatefulSet) first. Do not force-delete a claim.
+5. **Confirm with the cloud CLI that only the node root volumes remain.** Both commands must list nothing from this cluster.
 
    AWS (EKS):
 
    ```bash
-   aws ec2 describe-volumes --region eu-north-1 \
+   aws ec2 describe-volumes --region <REGION> \
      --filters Name=tag-key,Values=kubernetes.io/created-for/pvc/name \
      --query 'Volumes[].[VolumeId,State,Size,Tags[?Key==`kubernetes.io/created-for/pvc/namespace`]|[0].Value,Tags[?Key==`kubernetes.io/created-for/pvc/name`]|[0].Value]' \
      --output table
-   aws ec2 describe-volumes --region eu-north-1 --filters Name=status,Values=available --query 'Volumes[].VolumeId'
+   aws ec2 describe-volumes --region <REGION> --filters Name=status,Values=available --query 'Volumes[].VolumeId'
    ```
+
+   Node root volumes carry no `kubernetes.io/created-for/pvc/name` tag, so the first command lists nothing when only they remain. Delete any survivor by hand after checking it is not in use (`aws ec2 delete-volume --volume-id <ID>`).
 
    GCP (GKE):
 
@@ -218,16 +233,35 @@ Do this **before `terraform destroy`**, in this order. The aim is zero leftover 
    gcloud compute disks list --project <PROJECT_ID> --filter='-users:*' --format='value(name,zone.basename())'
    ```
 
-   Delete any survivor by hand (`aws ec2 delete-volume --volume-id <ID>`, `gcloud compute disks delete <NAME> --zone <ZONE>`) after checking it is not in use.
-7. Continue with the [Argo CD](argocd.md#teardown) and [EKS](aws-eks.md#destroy-checklist) or [GKE](gcp-gke.md#destroy-checklist) teardown.
+6. **AWS: check for load balancers and security groups created by the AWS Load Balancer Controller.** The controller tags what it creates with `elbv2.k8s.aws/cluster` (the cluster name). Both queries must come back empty; a security group can take a few minutes to go after its load balancer:
+
+   ```bash
+   aws resourcegroupstaggingapi get-resources --region <REGION> \
+     --resource-type-filters elasticloadbalancing:loadbalancer \
+     --tag-filters Key=elbv2.k8s.aws/cluster,Values=<CLUSTER_NAME> \
+     --query 'ResourceTagMappingList[].ResourceARN'
+   aws ec2 describe-security-groups --region <REGION> \
+     --filters Name=tag:elbv2.k8s.aws/cluster,Values=<CLUSTER_NAME> \
+     --query 'SecurityGroups[].[GroupId,GroupName]'
+   ```
+
+   A security group left behind blocks deletion of the VPC. Delete a survivor only after its load balancer and network interfaces are gone.
+7. **Delete the namespaces and the storage class** (Argo CD does not prune them), then continue with the [Argo CD](argocd.md#teardown) and [EKS](aws-eks.md#destroy) or [GKE](gcp-gke.md#destroy-checklist) teardown and `terraform destroy`:
+
+   ```bash
+   kubectl --context <EKS_CONTEXT> delete namespace data shop cnpg-system rabbitmq-system
+   kubectl --context <EKS_CONTEXT> delete storageclass platform-data
+   ```
 
 ### Data teardown checklist
 
-- [ ] Data Applications deleted; `Cluster`, `RabbitmqCluster` and Valkey resources deleted
-- [ ] `kubectl -n data get pvc` shows nothing and `kubectl get pv` has no `data/` claims
-- [ ] Namespaces and the `platform-data` storage class deleted
-- [ ] AWS: no `kubernetes.io/created-for/pvc/name` volumes and no `available` volumes in `eu-north-1`
+- [ ] The cluster Secret labels `platform.example/apps` and `platform.example/data` removed first; their Applications gone (not deleted by hand); the `shop` namespace empty
+- [ ] `Cluster` and `RabbitmqCluster` deleted, the RabbitMQ StatefulSet deleted by hand, the Valkey claim deleted
+- [ ] `kubectl -n data get pvc` shows nothing and `kubectl get pv` is empty
+- [ ] AWS: no `kubernetes.io/created-for/pvc/name` volumes (only node root volumes remain) and no `available` volumes in the region
+- [ ] AWS: no load balancer and no security group tagged `elbv2.k8s.aws/cluster` for this cluster
 - [ ] GCP: no `pvc-` disks and no disks without users
+- [ ] Namespaces and the `platform-data` storage class deleted
 
 ## Troubleshooting
 
@@ -236,4 +270,12 @@ Do this **before `terraform destroy`**, in this order. The aim is zero leftover 
 - **Pods rejected by Pod Security:** `kubectl -n data describe` shows the violated rule. `data` enforces `baseline`; a violation means a chart changed its security context.
 - **RabbitMQ pods `Pending` on HA:** the HA profile needs three nodes.
 - **Secret changes ignored:** the generator never overwrites existing Secrets. To rotate a credential, delete the Secret, let the next sync recreate it, and update the database role (rotation is an operator task until external secrets arrive).
-- **Hook Job failed:** `kubectl -n data logs job/data-secrets-generator`; it needs the API reachable and RBAC to create Secrets in `data` and `shop`.
+- **Secrets missing (`valkey-auth`, `pg-orders`, `orders-db`, `rabbitmq-auth`...):** the generator Jobs run during a sync. Check `kubectl -n argocd get application data-secrets-<cluster> -o jsonpath='{.status.operationState.phase}'`; an empty phase means no sync ever ran, so start one: `kubectl -n argocd patch application data-secrets-<cluster> --type merge -p '{"operation":{"sync":{}}}'`. A failed Job is kept for an hour: `kubectl -n data logs job/data-secrets-generator`; it needs the API reachable and its Role (get, create on Secrets in `data` and `shop`; patch on the two `pg-` Secrets).
+- **`data-postgres` stuck in PreSync:** the gate Job is waiting for the role Secrets: `kubectl -n data logs job/platform-pg-secrets-gate`. It names the Secret it is waiting for; fix `data-secrets` as above. It gives up after 15 minutes and Argo CD retries.
+- **PostgreSQL roles `pending-reconciliation`** (`kubectl -n data get cluster platform-pg -o jsonpath='{.status.managedRolesStatus}'` shows `cannotReconcile` with a missing Secret): normally the PreSync gate prevents it. If the Secret was created late, CloudNativePG retries on its own within about two minutes. To make it look now, nudge the Cluster with an annotation; it is safe, and Argo CD ignores it:
+
+  ```bash
+  kubectl -n data annotate cluster.postgresql.cnpg.io/platform-pg platform.example/reconcile-nudge="$(date +%s)" --overwrite
+  ```
+
+- **A migration Job logs `database not ready`:** expected while PostgreSQL, a role or a password comes up. It retries every five seconds for up to 13 minutes without using the Job's retries, then fails with the last error. See the [service deployment runbook](service-deployment.md#migrations).

@@ -32,3 +32,10 @@ databases:
   - name: payments
     owner: payments
     secret: pg-payments
+
+# A PreSync gate: the sync waits until the role Secrets above exist before the Cluster is applied, so the managed
+# roles never start out pending. See ADR-0018.
+gate:
+  enabled: true
+  image: curlimages/curl:8.23.0
+  waitSeconds: 900

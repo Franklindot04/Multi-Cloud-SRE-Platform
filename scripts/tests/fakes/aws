@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# A fake AWS CLI for scripts/test-scripts.sh. Every call is appended to $FAKE_STATE/aws.log. The text of the
+# files aws-volumes, aws-load-balancers and aws-security-groups in $FAKE_STATE is what the three queries
+# print; a missing or empty file means an empty result. Any other call exits 99.
+set -eu
+
+state="${FAKE_STATE:?FAKE_STATE is not set}"
+echo "$*" >> "$state/aws.log"
+
+show() { if [ -s "$state/$1" ]; then cat "$state/$1"; fi; }
+
+case "$*" in
+  "--region "*" ec2 describe-volumes --filters Name=tag-key,Values=kubernetes.io/created-for/pvc/name "*) show aws-volumes ;;
+  "--region "*" resourcegroupstaggingapi get-resources --resource-type-filters elasticloadbalancing:loadbalancer "*) show aws-load-balancers ;;
+  "--region "*" ec2 describe-security-groups --filters "*) show aws-security-groups ;;
+  *)
+    echo "fake aws: unexpected call: $*" >&2
+    exit 99
+    ;;
+esac

@@ -15,9 +15,12 @@ targetSecret: rabbitmq-auth
 host: platform-mq.data.svc
 port: "5672"
 
-# The Job is retried until the source Secret exists (the operator creates it shortly after the cluster).
-backoffLimit: 20
-activeDeadlineSeconds: 900
+# The Job runs during a sync (an Argo CD Sync hook) and is removed when it succeeds. It waits up to waitSeconds
+# for the operator to create the source Secret; the deadline leaves room for that plus the copy.
+waitSeconds: 1500
+backoffLimit: 3
+activeDeadlineSeconds: 1800
+ttlSecondsAfterFinished: 3600
 
 resources:
   requests:

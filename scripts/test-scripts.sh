@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests for the helper scripts used by CI: scripts/update-image-values.sh and scripts/changed-services.sh.
+# Tests for the helper scripts: scripts/update-image-values.sh and scripts/changed-services.sh (used by CI) and
+# scripts/teardown-prep.sh (against a fake kubectl and a fake aws, scripts/tests/fakes).
 # Plain bash (3.2 compatible), no framework, no network. Fixtures are in scripts/tests/fixtures.
 #
 #   scripts/test-scripts.sh
@@ -133,6 +134,123 @@ check "--all forces every service" test "$(run_changed 'README.md' --all | head 
 check "paths with .. are ignored" test "$(run_changed 'apps/gateway/../orders/x' "${shared[@]}" | tail -1)" = 'any=false'
 check "a leading ./ is accepted" test "$(run_changed './apps/orders/x.py' "${shared[@]}" | head -1)" = 'services=["orders"]'
 check "an unknown option is rejected" test "$(run_changed 'x' --bogus > /dev/null 2>&1; echo $?)" = 2
+
+echo "teardown-prep.sh"
+
+teardown="./scripts/teardown-prep.sh"
+fakes="$PWD/scripts/tests/fakes"
+
+# new_cluster: a fresh fake cluster state in $state with both operators installed and an AWS account that
+# still shows leftovers until the script has cleaned up (the fakes keep the leftovers listed only when a
+# file says so).
+new_cluster() {
+  state="$work/state"
+  rm -rf "$state"
+  mkdir -p "$state"
+  printf '%s\n' test-cluster other-cluster > "$state/contexts"
+  printf '%s\n' clusters.postgresql.cnpg.io rabbitmqclusters.rabbitmq.com > "$state/crds"
+}
+
+# teardown ARGS...: run the script with the fakes first on PATH; output in $work/tdout, status in $rc.
+run_teardown() {
+  rc=0
+  PATH="$fakes:$PATH" FAKE_STATE="$state" TEARDOWN_POLL_SECONDS=1 "$teardown" "$@" > "$work/tdout" 2>&1 || rc=$?
+}
+
+line_of() { grep -n -m1 -e "$1" "$state/kubectl.log" | cut -d: -f1; }
+
+new_cluster
+touch "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "the happy path exits 0" test "$rc" -eq 0
+check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data-$' "$state/kubectl.log"
+check "labels come before the Cluster deletion" test "$(line_of 'label secret')" -lt "$(line_of 'delete cluster.postgresql')"
+check "the Cluster is deleted before the RabbitmqCluster" test "$(line_of 'delete cluster.postgresql')" -lt "$(line_of 'delete rabbitmqcluster')"
+check "the surviving StatefulSet is deleted after the RabbitmqCluster" test "$(line_of 'delete rabbitmqcluster')" -lt "$(line_of 'delete statefulset')"
+check "claims are deleted after the StatefulSet" test "$(line_of 'delete statefulset')" -lt "$(line_of 'delete persistentvolumeclaim/platform-valkey')"
+check "platform-valkey is deleted" grep -q 'delete persistentvolumeclaim/platform-valkey' "$state/kubectl.log"
+check "kubectl get pv is checked after the claims are deleted" test "$(line_of 'get pv')" -gt "$(line_of 'delete persistentvolumeclaim/platform-valkey')"
+check "the AWS checks run after kubectl get pv: volumes, load balancers, security groups" test "$(sed -n 's/^--region eu-north-1 \([a-z0-9]*\) \([a-z-]*\).*/\2/p' "$state/aws.log" | tr '\n' ' ')" = "describe-volumes get-resources describe-security-groups "
+check "the volume query uses the pvc name tag" grep -q 'Name=tag-key,Values=kubernetes.io/created-for/pvc/name' "$state/aws.log"
+check "the load balancer query uses the controller tag" grep -q 'Key=elbv2.k8s.aws/cluster ' "$state/aws.log"
+check "every deletion names its namespace" test "$(grep ' delete ' "$state/kubectl.log" | grep -vc -e '-n data delete')" = 0
+check "no call uses --force" test "$(cat "$state/kubectl.log" "$state/aws.log" | grep -c -e '--force')" = 0
+check "it never touches a namespace other than argocd, shop and data" test "$(grep -e '-n ' "$state/kubectl.log" | grep -vc -e '-n argocd' -e '-n shop' -e '-n data')" = 0
+check "the output says it finished" grep -q 'Teardown preparation finished' "$work/tdout"
+
+new_cluster
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "a RabbitMQ StatefulSet that did not survive is not deleted" test "$(grep -c 'delete statefulset' "$state/kubectl.log")" = 0
+check "and the run still succeeds" test "$rc" -eq 0
+
+new_cluster
+touch "$state/stuck-shop"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a step that times out exits 1" test "$rc" -eq 1
+check "the timeout message names the step and what remains" grep -q 'timed out after 2s waiting until the shop namespace has no workloads' "$work/tdout"
+check "nothing is deleted after a timeout" test "$(grep -c ' delete ' "$state/kubectl.log")" = 0
+check "no AWS call is made after a timeout" test ! -e "$state/aws.log"
+
+new_cluster
+touch "$state/stuck-pods"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "pods that never go away stop the script before claims are deleted" test "$rc" -eq 1 -a "$(grep -c 'persistentvolumeclaim' "$state/kubectl.log")" = 0
+
+new_cluster
+printf 'vol-0123456789abcdef0\n' > "$state/aws-volumes"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a leftover EBS volume fails the run" test "$rc" -eq 1
+check "and the volume is named" grep -q 'vol-0123456789abcdef0' "$work/tdout"
+check "the security group check does not run after that" test "$(grep -c 'describe-security-groups' "$state/aws.log")" = 0
+
+new_cluster
+printf 'arn:aws:elasticloadbalancing:eu-north-1:000000000000:loadbalancer/app/example/abc\n' > "$state/aws-load-balancers"
+run_teardown --context test-cluster --region eu-north-1 --cluster-name platform --timeout 2
+check "a leftover load balancer fails the run" test "$rc" -eq 1
+check "--cluster-name narrows the load balancer query" grep -q 'Key=elbv2.k8s.aws/cluster,Values=platform' "$state/aws.log"
+
+new_cluster
+printf 'sg-0123456789abcdef0\n' > "$state/aws-security-groups"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a leftover security group fails the run" test "$rc" -eq 1
+
+new_cluster
+run_teardown --region eu-north-1
+check "a missing --context is rejected with exit 2" test "$rc" -eq 2
+check "and the message says so" grep -q -e '--context is required' "$work/tdout"
+check "and kubectl is never called" test ! -e "$state/kubectl.log"
+
+new_cluster
+run_teardown --context no-such-context --region eu-north-1
+check "an unknown context is rejected with exit 2" test "$rc" -eq 2
+check "and nothing is changed" test "$(grep -c -e ' delete ' -e ' label ' "$state/kubectl.log")" = 0
+
+new_cluster
+touch "$state/no-secret"
+run_teardown --context test-cluster --region eu-north-1
+check "a cluster without the Argo CD cluster Secret is refused" test "$rc" -eq 1
+
+new_cluster
+run_teardown --context test-cluster
+check "AWS checks without a region are rejected with exit 2" test "$rc" -eq 2
+
+new_cluster
+run_teardown --context test-cluster --skip-aws --timeout 5
+check "--skip-aws stops after kubectl get pv and exits 0" test "$rc" -eq 0 -a ! -e "$state/aws.log"
+
+new_cluster
+touch "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --dry-run
+check "a dry run exits 0" test "$rc" -eq 0
+check "a dry run runs no label, delete or other change" test "$(grep -c -e ' delete ' -e ' label ' -e ' patch ' -e ' apply ' -e ' annotate ' "$state/kubectl.log")" = 0
+check "a dry run makes no AWS call" test ! -e "$state/aws.log"
+check "a dry run prints the commands it would run" grep -q '+ kubectl --context test-cluster -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-' "$work/tdout"
+check "and says nothing was changed" grep -q 'Nothing was changed' "$work/tdout"
+
+new_cluster
+run_teardown --context test-cluster --region eu-north-1 --bogus
+check "an unknown option is rejected with exit 2" test "$rc" -eq 2
+check "the script never uses --force or runs version control" test "$(grep -Ec -e '--force|(^|[;&| ])git( |$)' "$teardown")" = 0
 
 echo
 echo "$passed passed, $failed failed"

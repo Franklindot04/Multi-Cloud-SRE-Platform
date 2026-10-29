@@ -7,13 +7,21 @@ advisory lock, so two copies running at once (for example two replicas starting 
 racing; applies each pending file in its own transaction and records it in schema_migrations with a checksum;
 and refuses to continue if an applied file was edited. Running it again applies nothing. There are no down
 migrations: a mistake is fixed by a new migration.
+
+If the database is not ready yet (not reachable, the role or its password not reconciled, the database not created),
+the command waits and retries for MIGRATE_WAIT_SECONDS (default 0: fail at once) with a message on every attempt,
+instead of exiting. Waiting happens inside the process, so a Kubernetes Job's retry budget is not used up while the
+database comes up. Errors that are not about readiness (a bad migration, a changed checksum) fail at once.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import sys
+import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import asyncpg
@@ -81,19 +89,76 @@ async def migrate(conn: asyncpg.Connection, migrations: list[tuple[str, str, str
         await conn.execute("SELECT pg_advisory_unlock($1)", ADVISORY_LOCK_ID)
 
 
-async def run(db: DbConfig) -> list[str]:
-    conn = await asyncpg.connect(
-        host=db.host, port=db.port, user=db.user, password=db.password, database=db.name, timeout=db.connect_timeout_s
-    )
+# Errors that mean "the database or its role is not ready yet": the server is unreachable or starting, the role
+# does not exist (or its password is not set) yet, or the database has not been created.
+NOT_READY = (
+    OSError,
+    asyncpg.PostgresConnectionError,
+    asyncpg.CannotConnectNowError,
+    asyncpg.InvalidPasswordError,
+    asyncpg.InvalidAuthorizationSpecificationError,
+    asyncpg.InvalidCatalogNameError,
+)
+
+
+async def connect_when_ready(
+    db: DbConfig,
+    wait_s: int,
+    interval_s: float = 5.0,
+    *,
+    connect: Callable[..., Awaitable[asyncpg.Connection]] = asyncpg.connect,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    log: Callable[[str], None] = print,
+) -> asyncpg.Connection:
+    """Connect, retrying while the database is not ready, for at most wait_s seconds."""
+    start = clock()
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return await connect(
+                host=db.host,
+                port=db.port,
+                user=db.user,
+                password=db.password,
+                database=db.name,
+                timeout=db.connect_timeout_s,
+            )
+        except NOT_READY as exc:
+            waited = clock() - start
+            if waited + interval_s > wait_s:
+                raise
+            log(
+                f"database not ready (attempt {attempt}: {type(exc).__name__}: {exc}); "
+                f"retrying in {interval_s:g}s ({waited:.0f}s of {wait_s}s)"
+            )
+            await sleep(interval_s)
+
+
+async def run(db: DbConfig, wait_s: int = 0, interval_s: float = 5.0) -> list[str]:
+    conn = await connect_when_ready(db, wait_s, interval_s)
     try:
         return await migrate(conn, discover())
     finally:
         await conn.close()
 
 
+def _wait_settings() -> tuple[int, float]:
+    try:
+        wait_s = int(os.environ.get("MIGRATE_WAIT_SECONDS", "0"))
+        interval_s = float(os.environ.get("MIGRATE_RETRY_INTERVAL_SECONDS", "5"))
+    except ValueError as exc:
+        raise ConfigError(f"MIGRATE_WAIT_SECONDS and MIGRATE_RETRY_INTERVAL_SECONDS must be numbers: {exc}") from exc
+    if not 0 <= wait_s <= 3600 or not 0.1 <= interval_s <= 60:
+        raise ConfigError("MIGRATE_WAIT_SECONDS must be 0-3600 and MIGRATE_RETRY_INTERVAL_SECONDS 0.1-60")
+    return wait_s, interval_s
+
+
 def main() -> int:
     try:
         config = Config.load()
+        wait_s, interval_s = _wait_settings()
     except ConfigError as exc:
         print(f"invalid configuration:\n{exc}", file=sys.stderr)
         return 2
@@ -101,9 +166,9 @@ def main() -> int:
         print("nothing to migrate: STORAGE is not postgres", file=sys.stderr)
         return 2
     try:
-        applied = asyncio.run(run(config.db))
+        applied = asyncio.run(run(config.db, wait_s, interval_s))
     except (MigrationError, OSError, asyncpg.PostgresError) as exc:
-        print(f"migration failed: {exc}", file=sys.stderr)
+        print(f"migration failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     print(f"applied {len(applied)} migration(s): {', '.join(applied) or 'none, already up to date'}")
     return 0

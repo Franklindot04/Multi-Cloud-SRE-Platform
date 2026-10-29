@@ -12,10 +12,14 @@ secretFiles:
   DB_PASSWORD_FILE: {secret: payments-db, key: password}
 migration:
   enabled: true
+  # Wait for the database (and the role and its password) instead of failing at once: the command retries
+  # inside the pod until this many seconds have passed, which is shorter than the Job's 900 s deadline, so the
+  # Job's retries are not used up while PostgreSQL comes up.
   # The image's entrypoint is "java -jar payments.jar"; the argument selects the migrate mode.
   args: [migrate]
   env:
     STORAGE: postgres
+    MIGRATE_WAIT_SECONDS: "780"
   secretEnv:
     DB_HOST: {secret: payments-db, key: host}
     DB_PORT: {secret: payments-db, key: port}

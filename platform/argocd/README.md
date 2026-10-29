@@ -90,7 +90,7 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 21 | `apps-orders` |
 | 22 | `apps-gateway` |
 
-Waves order how the ApplicationSets are created; each generated Application then syncs on its own. The one hard dependency, the issuers needing cert-manager's CRDs and webhook, is enforced where it matters:
+Waves order how the ApplicationSets are created; each generated Application then syncs on its own, and Argo CD does not wait for one Application before starting another. Consumers therefore wait for what they need (the PostgreSQL chart has a PreSync gate for the role Secrets, the credential copy waits for the broker's Secret); see [ADR-0018](../../docs/adr/0018-secret-generation-and-ordering.md). The one hard dependency, the issuers needing cert-manager's CRDs and webhook, is enforced where it matters:
 
 - The issuers chart has a PreSync hook Job that waits for the cert-manager CRDs to exist and be established, and for the webhook Deployment to roll out, before any ClusterIssuer is applied.
 - The issuer manifests use `SkipDryRunOnMissingResource=true`, and every Application retries with exponential backoff, so a race self-heals.

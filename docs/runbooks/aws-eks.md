@@ -82,12 +82,23 @@ aws eks describe-cluster --name "$(terraform output -raw cluster_name)" \
 
 ## Destroy
 
-1. Delete anything created in the cluster that provisions AWS resources outside Terraform: `Service` objects of type `LoadBalancer`, `Ingress` resources, and `PersistentVolumeClaim`s. Otherwise load balancers, volumes and network interfaces are left behind and block deletion of the subnets.
+1. Delete anything created in the cluster that provisions AWS resources outside Terraform: load balancers (`Ingress` and `Service` of type `LoadBalancer`), the security groups the AWS Load Balancer Controller creates for them, and the volumes behind `PersistentVolumeClaim`s. Otherwise load balancers, volumes, security groups and network interfaces are left behind and block deletion of the subnets and the VPC. The order matters, and deleting Argo CD Applications by hand does not work (they come back). The script does the whole sequence with waits and stops at the first step that does not finish; read the dry run first:
 
    ```bash
-   kubectl delete svc,ingress --all-namespaces --all
-   kubectl delete pvc --all --all-namespaces
+   scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-name <CLUSTER_NAME> --dry-run
+   scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-name <CLUSTER_NAME>
    ```
+
+   What it does, and the commands to run by hand, are in the [data layer teardown](data-layer.md#teardown): remove the cluster Secret labels (`kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-`, deleting the keys, not setting them to `false`), wait for the `shop` namespace to empty, delete the `Cluster` and the `RabbitmqCluster` and then the RabbitMQ StatefulSet if its pod survives, delete the remaining claims including `platform-valkey`, confirm `kubectl get pv` is empty, and confirm with the AWS CLI that only the node root volumes remain. Then check for load balancers and for security groups created by the load balancer controller:
+
+   ```bash
+   aws resourcegroupstaggingapi get-resources --region <REGION> --resource-type-filters elasticloadbalancing:loadbalancer \
+     --tag-filters Key=elbv2.k8s.aws/cluster,Values=<CLUSTER_NAME> --query 'ResourceTagMappingList[].ResourceARN'
+   aws ec2 describe-security-groups --region <REGION> --filters Name=tag:elbv2.k8s.aws/cluster,Values=<CLUSTER_NAME> \
+     --query 'SecurityGroups[].[GroupId,GroupName]'
+   ```
+
+   Both must be empty. Continue with the [Argo CD teardown](argocd.md#teardown). Do not rely on `kubectl delete pvc --all -A` alone: a claim stays `Bound` while a pod still uses it.
 
 2. Destroy the stack:
 

@@ -1,5 +1,6 @@
 ---
-# PostgreSQL cluster and databases (custom resources). Wave 7: after the operator. Profile standard (one
+# PostgreSQL cluster and databases (custom resources). Wave 7: after the operator. A PreSync gate in the chart waits
+# for the role Secrets from data-secrets before the Cluster is applied (ADR-0018). Profile standard (one
 # instance) or ha (three) comes from the cluster label platform.example/data-profile.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
