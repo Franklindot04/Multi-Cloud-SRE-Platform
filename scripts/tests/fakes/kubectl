@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# A fake kubectl for scripts/test-scripts.sh. It answers only the exact calls scripts/teardown-prep.sh is
+# expected to make and exits 99 for anything else, so a new or changed call shows up as a test failure.
+#
+# State lives in the directory $FAKE_STATE. Every call is appended to $FAKE_STATE/kubectl.log (with the
+# --context argument). Marker files model the cluster:
+#   contexts            one context name per line
+#   crds                one CRD name per line
+#   no-secret           the Argo CD cluster Secret does not exist
+#   stuck-apps          Applications never go away
+#   stuck-shop          the shop namespace never empties
+#   stuck-pods          a pod in the data namespace never goes away
+#   stuck-pv            a PersistentVolume never goes away
+#   mq-survives         the RabbitMQ StatefulSet outlives the RabbitmqCluster
+# Deleting things creates labels-removed, pg-deleted, mq-deleted, sts-deleted and pvc-deleted.
+set -eu
+
+state="${FAKE_STATE:?FAKE_STATE is not set}"
+echo "$*" >> "$state/kubectl.log"
+
+flag() { [ -e "$state/$1" ]; }
+mark() { : > "$state/$1"; }
+unexpected() {
+  echo "fake kubectl: unexpected call: $*" >&2
+  exit 99
+}
+
+if [ "${1:-}" = "--context" ]; then
+  shift 2
+fi
+
+case "$*" in
+  "config get-contexts -o name")
+    cat "$state/contexts"
+    ;;
+  "-n argocd get secret cluster-in-cluster -o name")
+    if flag no-secret; then
+      echo 'Error from server (NotFound): secrets "cluster-in-cluster" not found' >&2
+      exit 1
+    fi
+    echo secret/cluster-in-cluster
+    ;;
+  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-")
+    mark labels-removed
+    echo "secret/cluster-in-cluster unlabeled"
+    ;;
+  "-n argocd get applications.argoproj.io -o name")
+    if flag labels-removed && ! flag stuck-apps; then
+      echo "application.argoproj.io/cert-manager-in-cluster"
+    else
+      printf '%s\n' application.argoproj.io/apps-orders-in-cluster application.argoproj.io/data-postgres-in-cluster \
+        application.argoproj.io/cert-manager-in-cluster
+    fi
+    ;;
+  "-n shop get deployments,statefulsets,jobs,ingresses,pods -o name")
+    if ! flag labels-removed || flag stuck-shop; then
+      printf '%s\n' deployment.apps/orders pod/orders-0
+    fi
+    ;;
+  "get crd clusters.postgresql.cnpg.io -o name" | "get crd rabbitmqclusters.rabbitmq.com -o name")
+    grep -Fxq -- "$3" "$state/crds" || exit 1
+    echo "customresourcedefinition.apiextensions.k8s.io/$3"
+    ;;
+  "-n data get cluster.postgresql.cnpg.io -o name")
+    flag pg-deleted || echo cluster.postgresql.cnpg.io/platform-pg
+    ;;
+  "-n data delete cluster.postgresql.cnpg.io/platform-pg --wait=true --timeout="*)
+    mark pg-deleted
+    echo 'cluster.postgresql.cnpg.io "platform-pg" deleted'
+    ;;
+  "-n data get rabbitmqclusters.rabbitmq.com -o name")
+    flag mq-deleted || echo rabbitmqcluster.rabbitmq.com/platform-mq
+    ;;
+  "-n data delete rabbitmqcluster.rabbitmq.com/platform-mq --wait=true --timeout="*)
+    mark mq-deleted
+    echo 'rabbitmqcluster.rabbitmq.com "platform-mq" deleted'
+    ;;
+  "-n data get statefulset/platform-mq-server -o name")
+    if flag mq-survives && ! flag sts-deleted; then
+      echo statefulset.apps/platform-mq-server
+    else
+      exit 1
+    fi
+    ;;
+  "-n data delete statefulset/platform-mq-server --wait=true --timeout="*)
+    mark sts-deleted
+    echo 'statefulset.apps "platform-mq-server" deleted'
+    ;;
+  "-n data get pods -o name")
+    if flag stuck-pods; then
+      echo pod/stuck-0
+    else
+      flag pg-deleted || echo pod/platform-pg-1
+      if ! flag sts-deleted && { ! flag mq-deleted || flag mq-survives; }; then
+        echo pod/platform-mq-server-0
+      fi
+    fi
+    ;;
+  "-n data get persistentvolumeclaims -o name")
+    flag pvc-deleted || printf '%s\n' persistentvolumeclaim/platform-pg-1 persistentvolumeclaim/platform-valkey
+    ;;
+  "-n data delete persistentvolumeclaim/"*" --wait=true --timeout="*)
+    mark pvc-deleted
+    echo "$4 deleted"
+    ;;
+  "get pv -o name")
+    if flag stuck-pv || ! flag pvc-deleted; then
+      echo persistentvolume/pvc-0123
+    fi
+    ;;
+  *) unexpected "$@" ;;
+esac

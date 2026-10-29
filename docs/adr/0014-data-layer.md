@@ -27,8 +27,14 @@ One cluster, many databases
 
 Credential handling and the path to external secrets
 
-- **No credential is committed or passed through Git, Argo CD parameters or Terraform.** A pre-sync hook Job generates random passwords inside the cluster, once, and creates the Secrets only if they do not exist (never overwriting them). The services read Secrets in the `shop` namespace with a documented, stable shape (`orders-db`, `payments-db`, `cache-auth`). RabbitMQ and CloudNativePG-managed credentials follow the same idea.
+- **No credential is committed or passed through Git, Argo CD parameters or Terraform.** A Job run by Argo CD during the sync (an Argo CD Sync hook; see [ADR-0018](0018-secret-generation-and-ordering.md)) generates random passwords inside the cluster, once, and creates the Secrets only if they do not exist (never overwriting them). The services read Secrets in the `shop` namespace with a documented, stable shape (`orders-db`, `payments-db`, `cache-auth`). RabbitMQ and CloudNativePG-managed credentials follow the same idea.
 - The interim has known limits: it does not rotate, and the password exists as a Kubernetes Secret (base64, not encrypted beyond the cluster's own encryption at rest). The path forward is External Secrets Operator reading the cloud's secret manager and producing the same Secret names and keys, after which the generator is removed and consumers do not change. Rotation then becomes a secret-manager operation plus role password updates by the operator.
+
+Ordering, hooks and teardown (revised by [ADR-0018](0018-secret-generation-and-ordering.md))
+
+- The first run on a real cluster showed that a chart containing only hooks never syncs under Argo CD, so the credential charts now render ordinary RBAC resources next to the Sync hook Job, and a check fails if a data chart renders only hooks or a Job that creates Secrets is a Helm hook.
+- Sync waves order resources inside one Application and do not make one Application wait for another. The data waves (secrets 6, then PostgreSQL, Valkey and RabbitMQ 7, then the credential copy 8) state the intended order, and the consumers enforce what they need: a PreSync gate in the PostgreSQL chart holds back the `Cluster` until the role Secrets exist. In the real run the managed roles stayed pending for about 17 minutes after the Secrets appeared and needed a manual nudge; that could not be reproduced locally, so the gate is the primary fix and the annotation nudge a fallback.
+- Teardown starts by deleting the `platform.example/apps` and `platform.example/data` labels from the cluster Secret, deletes the kept `Cluster`, `RabbitmqCluster`, RabbitMQ StatefulSet and claims explicitly, and `scripts/teardown-prep.sh` automates the sequence with waits.
 
 Storage and volume lifecycle
 

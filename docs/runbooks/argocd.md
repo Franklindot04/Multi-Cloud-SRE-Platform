@@ -151,14 +151,17 @@ Add-on upgrades follow the same pattern through `platform/addons` (see the add-o
 
 Delete everything that makes AWS create load balancers **while the load balancer controller is still running**, and wait until the ALBs and target groups are gone, **before** removing the controller and before Terraform destroys the cluster. Otherwise ALBs, target groups and network interfaces are left behind, keep billing and block deletion of the subnets and the VPC.
 
-1. **Delete workloads that create load balancers or volumes.** Delete the Applications that deploy workloads first (there are none yet), so Argo CD does not recreate them, then:
+1. **Delete workloads that create load balancers or volumes, labels first.** Deleting an Application of an ApplicationSet by hand only makes the ApplicationSet create it again while the cluster Secret still has the labels that select the cluster. Delete the label keys (this switches off the services and the data layer on the cluster; setting them to `false` also works, see the [data layer teardown](data-layer.md#teardown)), then delete what is left:
 
    ```bash
+   kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-
+   kubectl -n argocd get applications | grep -E 'apps-|data-'          # wait until they are gone
+   kubectl -n shop get deployments,statefulsets,jobs,ingresses,pods   # wait until the namespace is empty
    kubectl delete ingress --all -A
    kubectl delete svc -A --field-selector spec.type=LoadBalancer
    ```
 
-   Do not delete the data layer's volume claims here; follow the [data layer teardown](data-layer.md#teardown), which removes them deliberately and confirms the cloud volumes are gone.
+   Then tear the data layer down as its runbook says: delete the `Cluster`, the `RabbitmqCluster` and its StatefulSet (a RabbitMQ pod survives the `RabbitmqCluster`), the claims including `platform-valkey`, and confirm the cloud volumes are gone. `scripts/teardown-prep.sh --context <CTX> --region <REGION>` runs that whole order, including these label and workload steps, with waits ([data layer teardown](data-layer.md#teardown)). Do not skip it: volumes outlive the cluster.
 
 2. **Wait until the ALBs and target groups are gone:**
 
@@ -167,8 +170,8 @@ Delete everything that makes AWS create load balancers **while the load balancer
    aws elbv2 describe-target-groups --region <REGION> --query 'TargetGroups[].TargetGroupName'
    ```
 
-   Both must come back empty, or list nothing that belongs to the cluster, before you continue.
-3. **Delete the root Application and the ApplicationSets**, which removes every add-on through the Application finalizers:
+   Both must come back empty, or list nothing that belongs to the cluster, before you continue. Also check for security groups the controller created (`aws ec2 describe-security-groups --filters Name=tag:elbv2.k8s.aws/cluster,Values=<CLUSTER_NAME>`); they block deletion of the VPC.
+3. **Delete the root Application and the ApplicationSets**, which removes every add-on through the Application finalizers (the `apps` and `data` labels are already removed, so nothing is recreated for them):
 
    ```bash
    kubectl -n argocd delete application platform-root --wait=true
@@ -182,8 +185,9 @@ Delete everything that makes AWS create load balancers **while the load balancer
 ### Teardown checklist
 
 - [ ] Ingress and `LoadBalancer` Services deleted; no PVCs left
-- [ ] If the data layer was enabled: all PersistentVolumeClaims deleted and the cloud volumes confirmed gone ([data layer teardown](data-layer.md#teardown)); volumes are not removed by Terraform
-- [ ] No load balancers or target groups from the cluster (`aws elbv2 ...`)
+- [ ] The `platform.example/apps` and `platform.example/data` labels removed from the cluster Secret before anything was deleted
+- [ ] If the data layer was enabled: all PersistentVolumeClaims deleted, `kubectl get pv` empty and the cloud volumes confirmed gone ([data layer teardown](data-layer.md#teardown)); volumes are not removed by Terraform
+- [ ] No load balancers, target groups or controller-created security groups from the cluster (`aws elbv2 ...`, `aws ec2 describe-security-groups` on the `elbv2.k8s.aws/cluster` tag)
 - [ ] Root Application and ApplicationSets deleted; Applications gone
 - [ ] Argo CD uninstalled
 - [ ] Terraform destroy of the stack completed

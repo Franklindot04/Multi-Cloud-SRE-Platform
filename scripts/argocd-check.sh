@@ -12,6 +12,10 @@
 #      and none of those paths, nor any file under them, may be matched by a .gitignore rule
 #      (scripts/gitignore-match.sh: file reads and pattern matching only; see its header for the limits)
 #
+#   6. the sync-wave ordering of the data ApplicationSets is the documented one (scripts/chart-contract-check.py
+#      waves): secrets before postgres, valkey and rabbitmq, the credential copy after rabbitmq, operators
+#      before what they run, and every wave equal to the table in platform/argocd/README.md
+#
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
 #
 # Environment:
@@ -281,6 +285,22 @@ EOF
   echo "    checked $checked Application and ApplicationSet file(s)"
 else
   echo "helm not installed; skipping the render test"
+fi
+
+echo "==> sync-wave ordering"
+if [ "$root" = "platform/argocd" ]; then
+  if contract_py="$(./scripts/python-with-yaml.sh)"; then
+    if "$contract_py" scripts/chart-contract-check.py waves "$root/apps" "$root/README.md"; then
+      echo "    sync waves are in the documented order and match the README"
+    else
+      status=1
+    fi
+  else
+    echo "no Python with PyYAML found (installing yamllint provides it); the wave check fails without it"
+    status=1
+  fi
+else
+  echo "    skipped: only the repository's own platform/argocd has the wave table"
 fi
 
 exit "$status"

@@ -69,7 +69,8 @@ Dependency status: `kubectl -n shop port-forward svc/orders 8081:8081`, then `cu
 
 In the data profile, orders and payments each run a Job (`orders-migrate`, `payments-migrate`) as an Argo CD PreSync hook, before the Deployment changes.
 
-- **Not ready yet:** if PostgreSQL is not reachable (just installed, failing over), the command fails, Kubernetes restarts the pod with backoff, and this repeats until the Job's deadline (15 minutes). After that the Job fails.
+- **Not ready yet:** if PostgreSQL is not reachable (just installed, failing over), or the role, its password or the database does not exist yet, the command waits and retries every five seconds, logging each attempt, for up to 780 seconds (`MIGRATE_WAIT_SECONDS`). The pod keeps running, so the Job's retry budget is untouched. After that it exits with the last error and the Job fails at its 15-minute deadline at the latest.
+- **Waiting:** orders prints `database not ready (attempt N: ...); retrying in 5s (Ns of 780s)` and payments logs `database not ready, retrying` while PostgreSQL, the role or its password is not ready. The wait is inside the process, so it does not use the Job's retries; the 780 s limit (`MIGRATE_WAIT_SECONDS`) is shorter than the 900 s deadline.
 - **On failure:** the sync stops before any workload is touched and **the old pods keep serving**. The Application shows `OutOfSync` with a failed PreSync hook; Argo CD retries with backoff. Fix the cause (a bad migration is fixed by a new commit, never by editing an applied one) and let it retry, or sync from the UI.
 - **Read the logs** while the Job exists (a succeeded Job is deleted; a failed one stays):
 
@@ -117,8 +118,16 @@ Order matters, because a load balancer left behind keeps billing:
    gcloud compute forwarding-rules list                            # GCP: none from this cluster
    ```
 
-3. **Delete the Applications** by removing the label (run the bootstrap script without `--enable-apps`), and wait until `kubectl -n argocd get applications | grep apps-` is empty and `kubectl -n shop get all` shows no services.
-4. **Then the data layer and its volumes**, exactly as in the [data layer teardown](data-layer.md#teardown). Deleting the services does not delete PostgreSQL, Valkey or RabbitMQ or their volumes.
+3. **Remove the label, not the Applications.** An Application deleted by hand is created again by its ApplicationSet while the cluster Secret carries `platform.example/apps=true`. Delete the label keys for the services and the data layer together, so nothing can recreate either:
+
+   ```bash
+   kubectl --context <CTX> -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-
+   kubectl --context <CTX> -n argocd get applications | grep -E 'apps-|data-'      # wait until empty
+   kubectl --context <CTX> -n shop get deployments,statefulsets,jobs,ingresses,pods  # wait until the namespace is empty
+   ```
+
+   (Running the bootstrap script without `--enable-apps` sets the services label to `false`, which also stops them; `false` was verified to work like a missing label.)
+4. **Then the data layer and its volumes**, in the order of the [data layer teardown](data-layer.md#teardown): the `Cluster` and the `RabbitmqCluster`, the RabbitMQ StatefulSet if its pod survives, the remaining claims including `platform-valkey`, `kubectl get pv` empty, then the cloud checks for volumes, load balancers and controller-created security groups. `scripts/teardown-prep.sh --context <CTX> --region <REGION>` runs steps 3 and 4 with waits (use `--dry-run` first). Deleting the services does not delete PostgreSQL, Valkey or RabbitMQ or their volumes.
 5. Then the Argo CD and Terraform teardown ([Argo CD runbook](argocd.md#teardown)).
 
 ## Local test with kind
@@ -165,5 +174,6 @@ What this verified, and what it could not, is recorded in the change summary: po
 - **Pods `CreateContainerConfigError`:** a Secret the profile reads is missing (`orders-db`, `payments-db`, `cache-auth` from `data-secrets`; `rabbitmq-auth` from `data-rabbitmq-credentials`). `kubectl -n shop describe pod` names it.
 - **Pod rejected by Pod Security:** the message names the violated rule; the chart is meant to satisfy `restricted`, so a change to the security context is the cause.
 - **`orders` not ready, `payments` ok:** `curl localhost:8081/readyz` (port-forward) names the failing check; `postgres` and `payments` are required, `valkey` and `rabbitmq` only degrade.
-- **PreSync hook stuck:** `kubectl -n shop get jobs,pods` and the Job logs above; a Job that cannot reach PostgreSQL retries until its deadline.
+- **PreSync hook stuck:** `kubectl -n shop get jobs,pods` and the Job logs above. A migration that cannot reach PostgreSQL, or whose role or password is not set up yet, logs `database not ready` every five seconds and keeps waiting for up to 13 minutes (`MIGRATE_WAIT_SECONDS`), then fails with the last error.
+- **`rabbitmq-auth` or another Secret is missing:** the copy and generator Jobs run during a sync; see the secrets entries in the [data layer troubleshooting](data-layer.md#troubleshooting).
 - **Memory profile loses orders after a restart:** by design; orders and payments hold their state in the pod there.

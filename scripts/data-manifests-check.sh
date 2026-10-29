@@ -9,6 +9,9 @@
 #      schemas from a pinned commit of the datreeio CRDs-catalog
 #   4. apps/docker-compose.data.yml is valid compose when given apps/.env.example
 #   5. shellcheck on the scripts, through scripts/shellcheck.sh (same flags and version as CI)
+#   6. contracts that a schema check cannot see (scripts/chart-contract-check.py): no chart renders only hook
+#      resources, no Job that creates Secrets is a Helm hook, the PostgreSQL chart has its PreSync gate for the
+#      role Secrets (the sync waves are checked by scripts/argocd-check.sh)
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
 #
@@ -61,6 +64,43 @@ if have docker && docker compose version > /dev/null 2>&1; then
   echo "apps/docker-compose.data.yml is valid"
 else
   echo "docker compose not installed; skipping the compose file check"
+fi
+
+# --- 6. contracts ---
+
+echo "==> chart contracts"
+contract_py="$(./scripts/python-with-yaml.sh)" || contract_py=""
+if ! have helm; then
+  echo "helm not installed; skipping the chart contract checks"
+elif [ -z "$contract_py" ]; then
+  echo "no Python with PyYAML found (installing yamllint provides it); the contract checks fail without it"
+  status=1
+else
+  contract_work="$(mktemp -d)"
+  export HELM_CONFIG_HOME="$contract_work/config" HELM_CACHE_HOME="$contract_work/cache" HELM_DATA_HOME="$contract_work/data"
+  contracts=0
+  for chart in platform/data/*/; do
+    chart="${chart%/}"
+    [ -f "$chart/Chart.yaml" ] || continue
+    # Charts with dependencies need a network to build; the rule is about templates this repository owns.
+    grep -q '^dependencies:' "$chart/Chart.yaml" && continue
+    args=()
+    [ ! -f "$chart/values-aws.yaml" ] || args+=(-f "$chart/values-aws.yaml")
+    if ! helm template "$(basename "$chart")" "$chart" --namespace data ${args[@]+"${args[@]}"} > "$contract_work/render.yaml" 2> "$contract_work/render.err"; then
+      echo "    FAIL [$chart] helm template"
+      cat "$contract_work/render.err"
+      status=1
+      continue
+    fi
+    "$contract_py" scripts/chart-contract-check.py hooks "$chart" < "$contract_work/render.yaml" || status=1
+    "$contract_py" scripts/chart-contract-check.py secret-jobs "$chart" < "$contract_work/render.yaml" || status=1
+    if [ "$(basename "$chart")" = postgres ]; then
+      "$contract_py" scripts/chart-contract-check.py postgres-gate "$chart" < "$contract_work/render.yaml" || status=1
+    fi
+    contracts=$((contracts + 1))
+  done
+  rm -rf "$contract_work"
+  echo "    checked $contracts chart(s)"
 fi
 
 # --- 5. shell scripts ---

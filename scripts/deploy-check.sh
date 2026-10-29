@@ -12,7 +12,8 @@
 #      limits, read-only root filesystem, no host namespaces or hostPath, no privileged containers, no mounted
 #      service account token (except the credential copier), no LoadBalancer or NodePort Service, no secret
 #      values, no :latest images. A failure names the offending resource.
-#   4. the image values file has a registry and a tag
+#   4. the image values file has a registry and a tag, and (scripts/chart-contract-check.py, run on every render)
+#      no Job that creates Secrets is a Helm hook and the credential copy chart is not hooks only
 #   5. yamllint on the non-template files, and shellcheck through scripts/shellcheck.sh
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
@@ -86,6 +87,7 @@ else
     fi
     if [ -n "$py" ]; then
       "$py" scripts/rendered-security-check.py "$label" < "$file" || status=1
+      "$py" scripts/chart-contract-check.py secret-jobs "$label" < "$file" || status=1
     else
       status=1
     fi
@@ -151,6 +153,10 @@ else
 
     if helm template data-rabbitmq-credentials "$creds_chart" --namespace shop > "$work/render.yaml" 2> "$work/render.err"; then
       validate "rabbitmq-credentials/$cloud" "$cloud" "$work/render.yaml"
+      # The copy is a hook Job: the chart must also render something ordinary, or Argo CD never syncs it.
+      if [ -n "$py" ]; then
+        "$py" scripts/chart-contract-check.py hooks "rabbitmq-credentials/$cloud" < "$work/render.yaml" || status=1
+      fi
     else
       echo "    FAIL [rabbitmq-credentials/$cloud] helm template"
       cat "$work/render.err"

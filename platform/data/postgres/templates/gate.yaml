@@ -1,0 +1,116 @@
+{{- /*
+A gate in front of the Cluster: the role Secrets must exist before the Cluster is applied. Argo CD does not order
+separate Applications (see ADR-0018), and a Cluster applied before its managed roles' Secrets leaves those roles
+pending, so this Application waits for them itself. The Job is a PreSync hook, so nothing else in the sync
+(the Cluster, the Databases) is applied until it succeeds; if the Secrets never appear it fails, the sync stops
+without touching anything, and Argo CD retries with backoff.
+
+The hook ServiceAccount and Role exist only for the duration of the sync. The Role can only read the named Secrets.
+*/ -}}
+{{- if .Values.gate.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.cluster.name }}-secrets-gate
+  namespace: {{ .Values.cluster.namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-5"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.cluster.name }}-secrets-gate
+  namespace: {{ .Values.cluster.namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-5"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- range .Values.databases }}
+      - {{ .secret }}
+      {{- end }}
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.cluster.name }}-secrets-gate
+  namespace: {{ .Values.cluster.namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-5"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.cluster.name }}-secrets-gate
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.cluster.name }}-secrets-gate
+    namespace: {{ .Values.cluster.namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.cluster.name }}-secrets-gate
+  namespace: {{ .Values.cluster.namespace }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: {{ add (int .Values.gate.waitSeconds) 120 }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      serviceAccountName: {{ .Values.cluster.name }}-secrets-gate
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: wait
+          image: {{ .Values.gate.image }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              API=https://kubernetes.default.svc
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+              TOKEN="$(cat "$SA/token")"
+              waited=0
+              for name in{{ range .Values.databases }} {{ .secret }}{{ end }}; do
+                while true; do
+                  code="$(curl -sS --max-time 10 --cacert "$SA/ca.crt" -H "Authorization: Bearer $TOKEN" \
+                    -o /dev/null -w '%{http_code}' "$API/api/v1/namespaces/{{ .Values.cluster.namespace }}/secrets/$name" || echo 000)"
+                  [ "$code" = 200 ] && { echo "found    Secret $name"; break; }
+                  if [ "$waited" -ge {{ .Values.gate.waitSeconds }} ]; then
+                    echo "gave up after ${waited}s: Secret {{ .Values.cluster.namespace }}/$name does not exist (HTTP $code). It is created by the data-secrets Application; check that it synced." >&2
+                    exit 1
+                  fi
+                  echo "waiting  Secret $name (HTTP $code, ${waited}s of {{ .Values.gate.waitSeconds }}s)"
+                  sleep 5
+                  waited=$((waited + 5))
+                done
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+{{- end }}

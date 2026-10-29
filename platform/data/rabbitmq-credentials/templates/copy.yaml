@@ -1,6 +1,13 @@
 {{- /*
-Everything here is an Argo CD PreSync hook (Helm hooks on a plain `helm install` behave the same way), so the
-service account and the Roles exist only while the Job runs. The permissions are the minimum for the copy:
+The ServiceAccount, Roles and RoleBindings are ordinary resources (sync wave -5), so the Application always has
+something to sync and Argo CD starts the first sync on its own. A chart that contains only hooks renders nothing
+to compare, so Argo CD reports it Synced and Healthy without ever running a sync.
+
+The copy is an Argo CD Sync hook (wave 0, after the RBAC). It runs during a sync, waits for the operator to create
+the source Secret, is removed when it succeeds, and is not compared with the live state, so its disappearance
+never makes the Application OutOfSync and nothing re-runs it in a loop.
+
+The permissions are the minimum for the copy:
 
   data namespace: get on exactly the source Secret
   shop namespace: get, update and patch on exactly the target Secret, and create on Secrets
@@ -14,8 +21,6 @@ metadata:
   name: rabbitmq-credentials-copier
   namespace: {{ .Values.appNamespace }}
   annotations:
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
     argocd.argoproj.io/sync-wave: "-5"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -24,8 +29,6 @@ metadata:
   name: rabbitmq-credentials-source
   namespace: {{ .Values.dataNamespace }}
   annotations:
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
     argocd.argoproj.io/sync-wave: "-5"
 rules:
   - apiGroups: [""]
@@ -39,8 +42,6 @@ metadata:
   name: rabbitmq-credentials-source
   namespace: {{ .Values.dataNamespace }}
   annotations:
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
     argocd.argoproj.io/sync-wave: "-5"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -57,8 +58,6 @@ metadata:
   name: rabbitmq-credentials-target
   namespace: {{ .Values.appNamespace }}
   annotations:
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
     argocd.argoproj.io/sync-wave: "-5"
 rules:
   - apiGroups: [""]
@@ -75,8 +74,6 @@ metadata:
   name: rabbitmq-credentials-target
   namespace: {{ .Values.appNamespace }}
   annotations:
-    argocd.argoproj.io/hook: PreSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
     argocd.argoproj.io/sync-wave: "-5"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
@@ -93,12 +90,13 @@ metadata:
   name: rabbitmq-credentials-copy
   namespace: {{ .Values.appNamespace }}
   annotations:
-    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
     argocd.argoproj.io/sync-wave: "0"
 spec:
   backoffLimit: {{ .Values.backoffLimit }}
   activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished }}
   template:
     metadata:
       annotations:
@@ -128,11 +126,20 @@ spec:
               src="$API/api/v1/namespaces/{{ .Values.dataNamespace }}/secrets/{{ .Values.sourceSecret }}"
               dst="$API/api/v1/namespaces/{{ .Values.appNamespace }}/secrets"
 
-              code="$(call -o /tmp/source -w '%{http_code}' "$src")"
-              if [ "$code" != 200 ]; then
-                echo "source Secret {{ .Values.dataNamespace }}/{{ .Values.sourceSecret }} not available yet (HTTP $code); the Job will retry" >&2
-                exit 1
-              fi
+              # The operator creates the source Secret a little after the RabbitmqCluster exists. Wait for it inside
+              # the process (the pod keeps running), so waiting does not use up the Job's retries.
+              waited=0
+              while true; do
+                code="$(call -o /tmp/source -w '%{http_code}' "$src" || echo 000)"
+                [ "$code" = 200 ] && break
+                if [ "$waited" -ge {{ .Values.waitSeconds }} ]; then
+                  echo "gave up after ${waited}s: source Secret {{ .Values.dataNamespace }}/{{ .Values.sourceSecret }} is not available (HTTP $code)" >&2
+                  exit 1
+                fi
+                echo "waiting for the source Secret {{ .Values.dataNamespace }}/{{ .Values.sourceSecret }} (HTTP $code, ${waited}s of {{ .Values.waitSeconds }}s)"
+                sleep 10
+                waited=$((waited + 10))
+              done
 
               # The values stay base64 encoded from the source to the target; nothing is decoded or printed.
               field() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" /tmp/source | head -n 1; }

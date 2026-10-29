@@ -44,12 +44,17 @@ public final class Database {
      * before, and the clean command is disabled.
      */
     public static MigrateResult migrate(AppConfig.Db db) {
+        return migrate(db, 5);
+    }
+
+    /** Like {@link #migrate(AppConfig.Db)} with an explicit number of Flyway's own connection retries. */
+    public static MigrateResult migrate(AppConfig.Db db, int connectRetries) {
         Flyway flyway = Flyway.configure()
                 .dataSource(url(db), db.user(), db.password())
                 .locations("classpath:db/migration")
                 .cleanDisabled(true)
                 .validateOnMigrate(true)
-                .connectRetries(5)
+                .connectRetries(connectRetries)
                 .load();
         return flyway.migrate();
     }
