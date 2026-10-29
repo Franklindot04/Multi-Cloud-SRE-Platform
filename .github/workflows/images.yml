@@ -1,18 +1,24 @@
 name: images
 
 # Builds the container image of every changed sample service for linux/amd64. On a pull request the image is
-# built and nothing is pushed. On a push to main it is pushed to GitHub Container Registry as
+# built into the local Docker daemon, scanned with Trivy, and nothing is pushed; HIGH and CRITICAL findings
+# that have a fix fail the job. On a push to main it is pushed to GitHub Container Registry as
 # ghcr.io/<lower-case owner>/<service>, tagged with the full commit SHA and a short SHA (never "latest"), and
-# a job summary lists each image digest with the command that updates deploy/helm/values/images.yaml.
+# then, for the pushed digest: an SPDX SBOM is generated, the digest is scanned, signed (keyless, with the
+# workflow's OIDC identity), the SBOM is attached as a signed attestation, SLSA build provenance is published,
+# and scripts/verify-image.sh checks all of it. Only after that does the job hand the digest on. A job summary
+# lists each image digest with the command that updates deploy/helm/values/images.yaml.
 # This workflow never commits, pushes branches or tags, or opens pull requests: the values file is updated in
-# a normal pull request with scripts/update-image-values.sh. See docs/runbooks/releasing-images.md and
-# docs/adr/0017-ci-pipeline-and-image-publishing.md.
+# a normal pull request with scripts/update-image-values.sh. See docs/runbooks/releasing-images.md,
+# docs/runbooks/service-deployment.md (verify an image) and docs/adr/0017-ci-pipeline-and-image-publishing.md
+# and docs/adr/0019-image-supply-chain.md.
 
 on:
   pull_request:
     paths:
       - "apps/**"
       - ".github/workflows/images.yml"
+      - ".trivyignore"
   push:
     branches:
       - main
@@ -22,6 +28,13 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # Trivy is installed from its release archive and checked against this SHA-256 (the entry for
+  # trivy_<version>_Linux-64bit.tar.gz in the release's checksums file), not through an action: the Trivy
+  # actions had their tags rewritten in March 2026. To move to a new version, change both lines together.
+  TRIVY_VERSION: "0.76.1"
+  TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
 
 # A newer push to a pull request cancels the superseded build. A run on main is never cancelled, so a
 # published commit always gets its images.
@@ -61,12 +74,13 @@ jobs:
             printf '' | ./scripts/changed-services.sh --all | tee -a "$GITHUB_OUTPUT"
           else
             git diff --name-only "$base" "$HEAD_SHA" |
-              ./scripts/changed-services.sh --all-on .github/workflows/images.yml | tee -a "$GITHUB_OUTPUT"
+              ./scripts/changed-services.sh --all-on .github/workflows/images.yml --all-on .trivyignore | tee -a "$GITHUB_OUTPUT"
           fi
 
-  # Pull requests (including from forks): build only. The token is read-only and no registry login happens.
+  # Pull requests (including from forks): build into the local daemon and scan. The token is read-only and no
+  # registry login happens.
   build:
-    name: Build ${{ matrix.service }} (no push)
+    name: Build and scan ${{ matrix.service }} (no push)
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.any == 'true'
     runs-on: ubuntu-24.04
@@ -123,6 +137,7 @@ jobs:
           context: apps/${{ matrix.service }}
           platforms: linux/amd64
           push: false
+          load: true
           tags: ${{ steps.meta.outputs.image }}:${{ github.sha }}
           labels: |
             ${{ steps.meta.outputs.labels }}
@@ -133,17 +148,45 @@ jobs:
           provenance: false
           sbom: false
 
-  # Pushes to main only: the one job with packages: write. It never runs for pull requests, so a pull request
-  # from a fork cannot reach it.
+      # Every entry in .trivyignore needs a reason and an expiry date; the scan does not run without them.
+      - name: Check the ignore file
+        run: ./scripts/check-trivyignore.sh .trivyignore
+
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          file="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${file}"
+          echo "${TRIVY_SHA256}  ${file}" | sha256sum -c -
+          tar -xzf "$file" trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+          trivy --version
+
+      # Fails on HIGH or CRITICAL findings that have a fixed version. Findings without a fix are not listed (see
+      # ADR-0019). The vulnerability database is downloaded from ghcr.io when the scan starts.
+      - name: Scan the image
+        env:
+          IMAGE_REF: ${{ steps.meta.outputs.image }}:${{ github.sha }}
+        run: |
+          trivy image --image-src docker --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile .trivyignore --exit-code 1 --no-progress "$IMAGE_REF"
+
+  # Pushes to main only: the one job with write permissions (packages, id-token, attestations). It never runs
+  # for pull requests, so a pull request from a fork cannot reach it.
   publish:
     name: Publish ${{ matrix.service }}
     needs: changes
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.any == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    # packages: write pushes the image and the provenance bundle; id-token: write lets the job ask for the OIDC
+    # token that keyless signing and the provenance attestation use; attestations: write stores the provenance.
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -198,8 +241,9 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # Tags: the full commit SHA (immutable by convention: it is never reused) and the short SHA (a
-      # convenience). There is no "latest" tag. Provenance and SBOM attestations are off for now so the pushed
-      # image is a single manifest whose digest is easy to pin.
+      # convenience). There is no "latest" tag. Buildx's own provenance and SBOM attestations stay off so the
+      # pushed image is a single manifest whose digest is easy to pin; the attestations below are attached to
+      # that digest afterwards.
       - name: Build and push the image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
@@ -219,12 +263,97 @@ jobs:
           provenance: false
           sbom: false
 
-      # --- Supply chain steps, added in the next change (comments only; nothing below runs) ---
-      # - SBOM: generate an SPDX or CycloneDX SBOM for the pushed digest and attach it to the image.
-      # - Vulnerability scan: scan the pushed digest and fail on fixable high or critical findings.
-      # - Signing: sign the digest keylessly with the workflow's OIDC identity (needs id-token: write on this
-      #   job only) and verify the signature before the values file is updated.
-      # - Provenance: re-enable build provenance attestations once consumers can read them.
+      # From here on everything refers to the pushed digest, never to a tag.
+      - name: Check the digest
+        id: ref
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "unexpected digest: $DIGEST" >&2
+            exit 1
+          fi
+          echo "ref=${IMAGE}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the ignore file
+        run: ./scripts/check-trivyignore.sh .trivyignore
+
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          file="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${file}"
+          echo "${TRIVY_SHA256}  ${file}" | sha256sum -c -
+          tar -xzf "$file" trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+          trivy --version
+
+      # Trivy reads the registry credentials that the login step above wrote.
+      - name: Generate the SBOM (SPDX JSON)
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          trivy image --image-src remote --format spdx-json --output "${RUNNER_TEMP}/sbom-${SERVICE}.spdx.json" \
+            --no-progress "$REF"
+
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: sbom-${{ matrix.service }}
+          path: ${{ runner.temp }}/sbom-${{ matrix.service }}.spdx.json
+          retention-days: 90
+          if-no-files-found: error
+
+      # The same gate as on pull requests, on the digest that was pushed. If it fails, nothing is signed or
+      # attested and the digest is not handed on (the image stays in the registry, unsigned).
+      - name: Scan the pushed digest
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          trivy image --image-src remote --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile .trivyignore --exit-code 1 --no-progress "$REF"
+
+      # The installer verifies the cosign binary it installs against a hash that ships inside the action; the
+      # cosign version is the installer's default for this release.
+      # SHA pinned to the v4.1.2 release.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+
+      # Keyless: the signing certificate is issued to this workflow's OIDC identity and recorded in the
+      # public Sigstore transparency log. There is no key and no secret.
+      - name: Sign the image digest
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+        run: cosign sign --yes "$REF"
+
+      - name: Attach the SBOM as a signed attestation
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          cosign attest --yes --type spdxjson --predicate "${RUNNER_TEMP}/sbom-${SERVICE}.spdx.json" "$REF"
+
+      # SLSA build provenance, signed with the same identity and pushed next to the image. The storage record
+      # is off because it needs one more permission (artifact-metadata: write) that nothing here uses.
+      # SHA pinned to the v4.2.2 release.
+      - name: Publish build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      # The same check anyone can run later, run here before the digest is handed on.
+      - name: Verify signature, SBOM attestation and provenance
+        env:
+          SERVICE: ${{ matrix.service }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: ./scripts/verify-image.sh "$SERVICE" "$DIGEST"
 
       - name: Record the digest
         env:
@@ -303,3 +432,21 @@ jobs:
             echo
             echo "Services not listed above were not rebuilt; the helper keeps their current digests."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  result:
+    name: Images result
+    # One stable check name: it fails if any job above failed or was cancelled, and passes when jobs were
+    # skipped (no image changed, or this is a pull request or a push). This workflow starts only for changes
+    # under apps/, the workflow file or .trivyignore, so a pull request that touches none of them has no
+    # "Images result" check.
+    needs: [changes, build, publish, summary]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check the results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          printf '%s' "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

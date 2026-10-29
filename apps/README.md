@@ -60,7 +60,7 @@ Python dependencies are locked with hashes in `orders/requirements.txt` (and `re
 | Java build | `maven:3.9.12-eclipse-temurin-25-noble` |
 | Java runtime (payments) | `gcr.io/distroless/java25-debian13:nonroot` |
 
-Images are pinned to specific version tags. CI builds `linux/amd64` images and publishes them to `ghcr.io/<owner>/<service>`. The distroless `nonroot` tags move with security updates, so they are the least strict pin. **Digest pinning** (`image@sha256:...`) arrives with the CI image build change: the pipeline will resolve each tag to a digest, write it into the Dockerfiles, and let Renovate or a scheduled job propose digest updates, together with signing and SBOMs.
+Images are pinned to specific version tags. CI builds `linux/amd64` images and publishes them to `ghcr.io/<owner>/<service>`. The distroless `nonroot` tags move with security updates, so they are the least strict pin. **Digest pinning** of the base images (`image@sha256:...`) is still open: it needs a job that resolves each tag to a digest, writes it into the Dockerfiles and proposes updates. The published images are scanned, signed and have an SBOM and provenance ([ADR-0019](../docs/adr/0019-image-supply-chain.md)).
 
 ## Conventions shared by every service
 
@@ -93,4 +93,4 @@ See the [local development runbook](../docs/runbooks/local-development.md). CI (
 
 ## Not in this change
 
-Image signing, vulnerability scanning and SBOMs; digest-pinned base images; network policies, autoscaling and progressive delivery; backups of the data layer; CI image builds, vulnerability scanning, signing and SBOMs; OpenTelemetry instrumentation; authentication.
+Digest-pinned base images; network policies, autoscaling and progressive delivery; backups of the data layer; OpenTelemetry instrumentation; authentication.

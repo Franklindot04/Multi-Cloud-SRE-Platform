@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for the helper scripts: scripts/update-image-values.sh and scripts/changed-services.sh (used by CI) and
-# scripts/teardown-prep.sh (against a fake kubectl and a fake aws, scripts/tests/fakes).
+# Tests for the helper scripts: scripts/update-image-values.sh and scripts/changed-services.sh (used by CI),
+# scripts/check-trivyignore.sh, scripts/teardown-prep.sh (against a fake kubectl and a fake aws) and
+# scripts/verify-image.sh (against a fake cosign); the fakes are in scripts/tests/fakes.
 # Plain bash (3.2 compatible), no framework, no network. Fixtures are in scripts/tests/fixtures.
 #
 #   scripts/test-scripts.sh
@@ -331,6 +332,213 @@ new_cluster
 run_teardown --context test-cluster --region eu-north-1 --bogus
 check "an unknown option is rejected with exit 2" test "$rc" -eq 2
 check "the script never uses --force or runs version control" test "$(grep -Ec -e '--force|(^|[;&| ])git( |$)' "$teardown")" = 0
+
+echo "check-trivyignore.sh"
+
+ignore="./scripts/check-trivyignore.sh"
+# trivyignore TODAY FILE: run the check with a fixed date; output in $work/igout, status in $rc.
+trivyignore() {
+  rc=0
+  TRIVYIGNORE_TODAY="$1" "$ignore" "$2" > "$work/igout" 2>&1 || rc=$?
+}
+
+printf '# nothing accepted\n' > "$work/ignore-empty"
+trivyignore 2026-10-30 "$work/ignore-empty"
+check "an ignore file without entries passes" test "$rc" -eq 0
+
+printf '# reason: the library is only used by a build tool, never at runtime\nCVE-2026-1111 exp:2026-12-31\n' > "$work/ignore-ok"
+trivyignore 2026-10-30 "$work/ignore-ok"
+check "an entry with a reason and a future expiry passes" test "$rc" -eq 0
+check "and the output counts the entry" grep -q 'ok (1 entry)' "$work/igout"
+
+printf 'CVE-2026-1111 exp:2026-12-31\n' > "$work/ignore-noreason"
+trivyignore 2026-10-30 "$work/ignore-noreason"
+check "an entry without a reason fails" test "$rc" -eq 1
+check "and the message names the entry and the missing reason" grep -q 'CVE-2026-1111 has no reason' "$work/igout"
+
+printf '# reason: see the issue tracker\n\nCVE-2026-1111 exp:2026-12-31\n' > "$work/ignore-gap"
+trivyignore 2026-10-30 "$work/ignore-gap"
+check "a reason separated from its entry by a blank line does not count" test "$rc" -eq 1
+
+printf '# reason: ok\nCVE-2026-1111 exp:2026-12-31\n' > "$work/ignore-short"
+trivyignore 2026-10-30 "$work/ignore-short"
+check "a reason shorter than ten characters fails" test "$rc" -eq 1
+
+printf '# reason:\nCVE-2026-1111 exp:2026-12-31\n' > "$work/ignore-blank-reason"
+trivyignore 2026-10-30 "$work/ignore-blank-reason"
+check "an empty reason fails" test "$rc" -eq 1
+
+printf '# an ordinary comment about the entry below\nCVE-2026-1111 exp:2026-12-31\n' > "$work/ignore-comment"
+trivyignore 2026-10-30 "$work/ignore-comment"
+check "an ordinary comment is not a reason" test "$rc" -eq 1
+
+printf '# reason: the fix needs a major version upgrade, planned\nCVE-2026-1111\n' > "$work/ignore-noexp"
+trivyignore 2026-10-30 "$work/ignore-noexp"
+check "an entry without an expiry date fails" test "$rc" -eq 1
+check "and the message asks for exp:YYYY-MM-DD" grep -q 'exactly one expiry, exp:YYYY-MM-DD' "$work/igout"
+
+printf '# reason: the fix needs a major version upgrade, planned\nCVE-2026-1111 exp:2026-13-45\n' > "$work/ignore-baddate"
+trivyignore 2026-10-30 "$work/ignore-baddate"
+check "an expiry that is not a calendar date fails" test "$rc" -eq 1
+
+trivyignore 2027-01-01 "$work/ignore-ok"
+check "an entry whose expiry has passed fails" test "$rc" -eq 1
+check "and the message says when it expired" grep -q 'expired on 2026-12-31' "$work/igout"
+trivyignore 2026-12-31 "$work/ignore-ok"
+check "an entry is still accepted on its expiry date" test "$rc" -eq 0
+
+printf '# reason: the fix needs a major version upgrade, planned\nCVE-2026-1111 exp:2026-12-31 extra\n' > "$work/ignore-extra"
+trivyignore 2026-10-30 "$work/ignore-extra"
+check "extra text on an entry line fails" test "$rc" -eq 1
+
+printf 'CVE-2026-1111 exp:2020-01-01\nCVE-2026-2222\n# reason: fine for now, reviewed monthly\nCVE-2026-3333 exp:2026-12-31\n' > "$work/ignore-many"
+trivyignore 2026-10-30 "$work/ignore-many"
+check "every problem is reported, not just the first" test "$(grep -c '^FAIL' "$work/igout")" = 4
+
+check "the repository's .trivyignore passes the check" "$ignore" .trivyignore
+rc=0
+"$ignore" "$work/does-not-exist" > /dev/null 2>&1 || rc=$?
+check "a missing file is rejected with exit 2" test "$rc" -eq 2
+rc=0
+"$ignore" --bogus > /dev/null 2>&1 || rc=$?
+check "an unknown option is rejected with exit 2" test "$rc" -eq 2
+
+echo "verify-image.sh"
+
+verify="./scripts/verify-image.sh"
+signer="https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/.github/workflows/images.yml@refs/heads/main"
+vd_gateway="sha256:$(printf '1%.0s' $(seq 64))"
+vd_orders="sha256:$(printf '2%.0s' $(seq 64))"
+vd_payments="sha256:$(printf '3%.0s' $(seq 64))"
+vd_notifier="sha256:$(printf '4%.0s' $(seq 64))"
+vd_other="sha256:$(printf '9%.0s' $(seq 64))"
+
+cat > "$work/values.yaml" << VALUES
+image:
+  registry: ghcr.io/franklindot04
+  tag: "0123456789abcdef0123456789abcdef01234567"
+digests:
+  gateway: "$vd_gateway"
+  orders: "$vd_orders"
+  payments: "$vd_payments"
+  notifier: "$vd_notifier"
+VALUES
+
+# run_verify ARGS...: run with the fake cosign first on PATH and the test values file; output in $work/vout.
+run_verify() {
+  rc=0
+  PATH="$fakes:$PATH" FAKE_STATE="$state" VALUES_FILE="$work/values.yaml" "$verify" "$@" > "$work/vout" 2>&1 || rc=$?
+}
+
+new_cluster
+run_verify gateway
+check "a verified image exits 0" test "$rc" -eq 0
+check "and prints PASS for the signature" grep -q 'PASS  signature' "$work/vout"
+check "and for the SBOM attestation" grep -q 'PASS  SBOM attestation (spdxjson)' "$work/vout"
+check "and for the build provenance" grep -q 'PASS  build provenance (slsaprovenance1)' "$work/vout"
+check "and for the image" grep -q '^PASS  gateway$' "$work/vout"
+check "and says how many verified" grep -q '^PASS: 1 of 1 image(s) verified' "$work/vout"
+check "the default digest comes from the values file" grep -q "ghcr.io/franklindot04/gateway@$vd_gateway" "$state/cosign.log"
+check "three cosign calls are made: verify, then the two attestations" test "$(awk '{print $1}' "$state/cosign.log" | tr '\n' ' ')" = "verify verify-attestation verify-attestation "
+check "the attestation types are spdxjson and slsaprovenance1" test "$(grep -c -e '--type spdxjson' -e '--type slsaprovenance1' "$state/cosign.log")" = 2
+check "every call pins the exact signer identity" test "$(grep -c -e "--certificate-identity $signer " "$state/cosign.log")" = 3
+check "every call pins the GitHub Actions issuer" test "$(grep -c -e '--certificate-oidc-issuer https://token.actions.githubusercontent.com ' "$state/cosign.log")" = 3
+check "no call uses an identity pattern or skips a check" test "$(grep -c -e 'identity-regexp' -e 'issuer-regexp' -e 'insecure' -e 'private-infrastructure' "$state/cosign.log")" = 0
+check "the script text does not weaken verification either" test "$(grep -c -e 'identity-regexp' -e 'issuer-regexp' -e 'insecure' -e 'private-infrastructure' -e 'skip' "$verify")" = 0
+check "the image is always referenced by digest" test "$(grep -c '@sha256:' "$state/cosign.log")" = 3
+
+new_cluster
+run_verify orders "$vd_other"
+check "a digest argument replaces the one in the values file" grep -q "ghcr.io/franklindot04/orders@$vd_other" "$state/cosign.log"
+check "and the values file digest is not used" test "$(grep -c "$vd_orders" "$state/cosign.log")" = 0
+
+new_cluster
+run_verify all
+check "all verifies the four images" test "$rc" -eq 0 -a "$(grep -c '^PASS  [a-z]*$' "$work/vout")" = 4
+check "all makes twelve cosign calls" test "$(wc -l < "$state/cosign.log" | tr -d ' ')" = 12
+check "all uses each image's digest from the values file" test "$(grep -c -e "orders@$vd_orders" -e "payments@$vd_payments" -e "notifier@$vd_notifier" -e "gateway@$vd_gateway" "$state/cosign.log")" = 12
+check "all says 4 of 4" grep -q '^PASS: 4 of 4 image(s) verified' "$work/vout"
+
+new_cluster
+touch "$state/no-signature"
+run_verify gateway
+check "a missing signature exits 1" test "$rc" -eq 1
+check "and prints FAIL for the signature" grep -q 'FAIL  signature' "$work/vout"
+check "and the other checks still run and pass or fail on their own" test "$(grep -c -e 'PASS  SBOM' -e 'PASS  build provenance' "$work/vout")" = 2
+check "and the image is reported as failed" grep -q '^FAIL  gateway$' "$work/vout"
+check "and the cosign error is shown" grep -q 'no signatures found' "$work/vout"
+check "and the summary says FAIL" grep -q '^FAIL: 1 of 1 image(s) did not verify' "$work/vout"
+
+new_cluster
+touch "$state/no-sbom"
+run_verify gateway
+check "a missing SBOM attestation exits 1" test "$rc" -eq 1 -a "$(grep -c 'FAIL  SBOM attestation' "$work/vout")" = 1
+
+new_cluster
+touch "$state/no-provenance"
+run_verify gateway
+check "missing provenance exits 1" test "$rc" -eq 1 -a "$(grep -c 'FAIL  build provenance' "$work/vout")" = 1
+
+new_cluster
+printf 'https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/.github/workflows/images.yml@refs/heads/feature\n' > "$state/signer"
+run_verify gateway
+check "an image signed from another branch fails all three checks" test "$rc" -eq 1 -a "$(grep -c '^  FAIL' "$work/vout")" = 3
+
+new_cluster
+printf 'https://github.com/someone-else/Multi-Cloud-SRE-Platform/.github/workflows/images.yml@refs/heads/main\n' > "$state/signer"
+run_verify gateway
+check "an image signed by another repository fails" test "$rc" -eq 1
+
+new_cluster
+printf 'https://example.com/issuer\n' > "$state/issuer"
+run_verify gateway
+check "an image from another OIDC issuer fails" test "$rc" -eq 1
+
+new_cluster
+printf '%s\n' "$vd_payments" > "$state/unsigned"
+run_verify all
+check "one unsigned image among four makes the run exit 1" test "$rc" -eq 1
+check "and only that image is reported as failed" test "$(grep -c '^FAIL  [a-z]*$' "$work/vout")" = 1 -a "$(grep -c '^PASS  [a-z]*$' "$work/vout")" = 3
+check "and the summary counts it" grep -q '^FAIL: 1 of 4 image(s) did not verify' "$work/vout"
+
+new_cluster
+rc=0
+SIGNER_REPOSITORY=Other/fork PATH="$fakes:$PATH" FAKE_STATE="$state" VALUES_FILE="$work/values.yaml" "$verify" gateway > "$work/vout" 2>&1 || rc=$?
+check "SIGNER_REPOSITORY changes the pinned identity" grep -q -e '--certificate-identity https://github.com/Other/fork/.github/workflows/images.yml@refs/heads/main ' "$state/cosign.log"
+check "and an image signed by the default repository then fails" test "$rc" -eq 1
+
+new_cluster
+run_verify
+check "no service is rejected with exit 2" test "$rc" -eq 2
+check "and the message asks for a service" grep -q 'a service name is required' "$work/vout"
+check "and cosign is never called" test ! -e "$state/cosign.log"
+run_verify frontend
+check "an unknown service is rejected with exit 2" test "$rc" -eq 2
+run_verify gateway latest
+check "a tag instead of a digest is rejected with exit 2" test "$rc" -eq 2
+run_verify gateway "sha256:abc"
+check "a short digest is rejected with exit 2" test "$rc" -eq 2
+run_verify gateway "sha256:$(printf 'A%.0s' $(seq 64))"
+check "an upper-case digest is rejected with exit 2" test "$rc" -eq 2
+run_verify all "$vd_gateway"
+check "a digest together with all is rejected with exit 2" test "$rc" -eq 2
+run_verify gateway "$vd_gateway" extra
+check "too many arguments are rejected with exit 2" test "$rc" -eq 2
+run_verify --bogus gateway
+check "an unknown option is rejected with exit 2" test "$rc" -eq 2
+check "none of the rejected calls reached cosign" test ! -e "$state/cosign.log"
+
+rc=0
+printf 'digests: {}\n' > "$work/values-empty.yaml"
+PATH="$fakes:$PATH" FAKE_STATE="$state" VALUES_FILE="$work/values-empty.yaml" "$verify" gateway > "$work/vout" 2>&1 || rc=$?
+check "a service without a digest in the values file is rejected with exit 2" test "$rc" -eq 2
+check "and the message says to pass one" grep -q 'pass one as the second argument' "$work/vout"
+
+rc=0
+PATH="/usr/bin:/bin" FAKE_STATE="$state" VALUES_FILE="$work/values.yaml" "$verify" gateway > "$work/vout" 2>&1 || rc=$?
+check "a missing cosign is rejected with exit 2" test "$rc" -eq 2
+check "and the message names cosign" grep -q 'cosign is not installed' "$work/vout"
+check "neither script runs a version control command" test "$(cat "$verify" "$ignore" | grep -Ec '(^|[;&| ])git( |$)')" = 0
 
 echo
 echo "$passed passed, $failed failed"

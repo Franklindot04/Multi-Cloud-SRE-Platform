@@ -1,0 +1,11 @@
+# Vulnerabilities that the image scans are told to accept, for the pull request scan and the scan of a
+# published image (.github/workflows/images.yml). Nothing is accepted today.
+#
+# Every entry has a reason on the line directly above it and an expiry date on its own line, and the scan does
+# not start if either is missing or the date has passed (scripts/check-trivyignore.sh):
+#
+#   # reason: the vulnerable function is never called by the gateway; waiting for the base image update
+#   CVE-2026-12345 exp:2026-12-31
+#
+# Prefer fixing the finding (a newer dependency or base image). Keep the expiry short, and see
+# docs/runbooks/service-deployment.md for what to do when the scan fails.

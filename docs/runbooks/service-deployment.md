@@ -168,6 +168,65 @@ kind delete cluster --name sre-chart-test
 
 What this verified, and what it could not, is recorded in the change summary: pods Ready under `restricted` with a read-only root filesystem, probes passing, the gateway reaching the others by Service name, 21 of 21 smoke checks, 471 request pairs with no failure across restarts of all four services, the RabbitMQ credential copy Job and its permissions. It cannot verify the data profile end to end (there is no PostgreSQL, Valkey or RabbitMQ in that cluster), the Argo CD hooks and sync waves, the ingress controllers, or multi-node and multi-zone spreading.
 
+## Verify an image
+
+Every image the `images` workflow publishes from `main` after [ADR-0019](../adr/0019-image-supply-chain.md) is scanned, signed with the workflow's GitHub identity (no key), and has a signed SBOM and build provenance attached to its digest. `scripts/verify-image.sh` checks all three against `ghcr.io/franklindot04/<service>`, for a digest and never a tag:
+
+```bash
+docker login ghcr.io -u <github user>          # only while the packages are private; a token with read:packages
+./scripts/verify-image.sh all                  # the four digests in deploy/helm/values/images.yaml
+./scripts/verify-image.sh orders               # one service, the digest from the values file
+./scripts/verify-image.sh gateway sha256:<digest>      # a digest from a job summary, before it is in the values file
+```
+
+It needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) (the workflow uses 3.x) and network access to the registry and to Sigstore. It prints PASS or FAIL for the signature, the SBOM attestation and the provenance of each image, and exits non-zero if any check failed:
+
+```text
+gateway
+  ghcr.io/franklindot04/gateway@sha256:...
+  PASS  signature
+  PASS  SBOM attestation (spdxjson)
+  PASS  build provenance (slsaprovenance1)
+PASS  gateway
+```
+
+What a pass means: the digest was signed, and its SBOM and provenance attested, by a certificate that names exactly `https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/.github/workflows/images.yml@refs/heads/main` and was issued for the GitHub Actions OIDC issuer. What it does not mean: that the code is free of vulnerabilities (the scan only knows published, fixable ones), that nobody reviewed or should review the change, or that a cluster would refuse an unsigned image (nothing in the clusters checks yet). The limits are listed in the ADR.
+
+Read the SBOM of a published image from the `sbom-<service>` artifact of the `images` run, or from the registry:
+
+```bash
+cosign verify-attestation --type spdxjson \
+  --certificate-identity https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/.github/workflows/images.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/franklindot04/<service>@sha256:<digest> | jq -r '.payload' | base64 -d | jq '.predicate.packages | length'
+```
+
+If a check fails:
+
+- **Every check fails for the digests that are in `images.yaml` today:** expected until a release made after the supply chain change has been rolled in. Those images were published before images were signed. Roll in a new release ([releasing images](releasing-images.md)) and verify again.
+- **Everything fails with an authorization error:** the package is private and you are not logged in (`docker login ghcr.io`).
+- **Only the provenance check fails** (the first publish after the change is where this is most likely): the provenance can be checked with the GitHub CLI instead, `gh attestation verify oci://ghcr.io/franklindot04/<service>@sha256:<digest> --repo Franklindot04/Multi-Cloud-SRE-Platform`. Then the script's provenance check needs correcting.
+- **The signature fails for a digest from a job summary:** do not put it in `images.yaml`. Open the `images` run that produced it and read the failing step; an image that was pushed but not signed stays in the registry and must not be deployed.
+- **The signature is there but the identity does not match:** the digest was signed by something other than the images workflow on `main` of this repository (another branch, a fork, a person). Treat it as untrusted.
+
+## When the image scan fails
+
+The `Scan the image` step of `Build and scan <service> (no push)` (pull requests) or `Scan the pushed digest` (publish) prints a table of the findings with the package, the installed version and the fixed version. The job fails only for `HIGH` and `CRITICAL` vulnerabilities that have a fixed version.
+
+1. **Read the table.** Is the package from the base image (the operating system layer, the Java or Python runtime) or from the service's own dependencies (`go.sum`, `requirements.txt`, `pom.xml`)?
+2. **Fix it.** For a dependency, move to the fixed version the table names and let the lock file or `go.sum` follow (the Python requirements are hash-pinned: regenerate them with `uv`, see [apps/README.md](../../apps/README.md)). For a base image, re-run the job once the maintainers have published a fixed image: the distroless and Temurin tags move, and a rebuild picks up the new one. A change to a service's files rebuilds and rescans it.
+3. **Only if there is a fixed version that cannot be adopted yet,** add an entry to [`.trivyignore`](../../.trivyignore) in the same pull request, with the reason on the line above it and a short expiry (weeks, not months):
+
+   ```text
+   # reason: the fixed release needs a Go minor upgrade that is scheduled in the next sprint
+   CVE-2026-12345 exp:2026-11-30
+   ```
+
+   The job refuses an entry without a reason or a valid future date, and Trivy stops honouring an entry on its expiry date, so the finding comes back. The reviewer is approving the risk, not the file.
+4. **The scan itself failed** (the vulnerability database could not be downloaded, a registry error) rather than found something: re-run the job. Do not add an ignore entry.
+5. **The scan failed on `main`, after the push:** the image is in the registry but was not signed and its digest was not handed on, so the `Publish summary` job did not list it. Do not deploy it. Fix the cause in a new pull request; the next publish builds a new image. The scan does not rescan old digests, so check the current ones from time to time.
+6. **`Check the ignore file` failed:** the message names the line. An expired entry is removed, or renewed with a new reason and date after looking at the finding again.
+
 ## Troubleshooting
 
 - **`ImagePullBackOff`:** the images in `images.yaml` are not published or the registry is private; set `imagePullSecrets` or publish the images.

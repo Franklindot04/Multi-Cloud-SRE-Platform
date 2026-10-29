@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# A fake cosign for scripts/test-scripts.sh. It models one image that was signed by one workflow identity and
+# answers only the calls scripts/verify-image.sh is expected to make; anything else exits 99, so a changed or
+# new call shows up as a test failure. Every call is appended to $FAKE_STATE/cosign.log.
+#
+# The image counts as signed by the identity in $FAKE_STATE/signer and the issuer in $FAKE_STATE/issuer (the
+# repository's images workflow on main and the GitHub Actions issuer when the files are absent). A check passes
+# only when the identity and issuer it is given are exactly those. Marker files in $FAKE_STATE:
+#   no-signature     cosign verify fails (no signature at all)
+#   no-sbom          there is no spdxjson attestation
+#   no-provenance    there is no slsaprovenance1 attestation
+#   unsigned         digests (one per line) that have no signature and no attestation
+set -eu
+
+state="${FAKE_STATE:?FAKE_STATE is not set}"
+echo "$*" >> "$state/cosign.log"
+
+signer="https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/.github/workflows/images.yml@refs/heads/main"
+issuer="https://token.actions.githubusercontent.com"
+[ ! -s "$state/signer" ] || signer="$(cat "$state/signer")"
+[ ! -s "$state/issuer" ] || issuer="$(cat "$state/issuer")"
+
+unexpected() {
+  echo "fake cosign: unexpected call: $*" >&2
+  exit 99
+}
+
+[ "$#" -ge 1 ] || unexpected
+command="$1"
+shift
+case "$command" in
+  verify | verify-attestation) ;;
+  *) unexpected "$command" "$@" ;;
+esac
+
+type=""
+identity=""
+oidc=""
+ref=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --type)
+      type="${2:-}"
+      shift 2
+      ;;
+    --certificate-identity)
+      identity="${2:-}"
+      shift 2
+      ;;
+    --certificate-oidc-issuer)
+      oidc="${2:-}"
+      shift 2
+      ;;
+    -*) unexpected "$command" "$1" ;;
+    *)
+      ref="$1"
+      shift
+      ;;
+  esac
+done
+
+# Only a digest reference may be checked, never a tag.
+case "$ref" in
+  *@sha256:*) ;;
+  *) unexpected "not a digest reference: $ref" ;;
+esac
+digest="sha256:${ref##*@sha256:}"
+
+if [ "$command" = "verify" ]; then
+  [ -z "$type" ] || unexpected "verify with --type"
+elif [ "$type" != "spdxjson" ] && [ "$type" != "slsaprovenance1" ]; then
+  unexpected "verify-attestation with --type '$type'"
+fi
+
+fail() {
+  echo "Error: $1" >&2
+  exit 1
+}
+
+if [ -s "$state/unsigned" ] && grep -Fxq -- "$digest" "$state/unsigned"; then
+  fail "no signatures found for $digest"
+fi
+if [ "$command" = "verify" ] && [ -e "$state/no-signature" ]; then
+  fail "no signatures found"
+fi
+if [ "$type" = "spdxjson" ] && [ -e "$state/no-sbom" ]; then
+  fail "no matching attestations: spdxjson"
+fi
+if [ "$type" = "slsaprovenance1" ] && [ -e "$state/no-provenance" ]; then
+  fail "no matching attestations: slsaprovenance1"
+fi
+if [ "$identity" != "$signer" ] || [ "$oidc" != "$issuer" ]; then
+  fail "none of the expected identities matched what was in the certificate"
+fi
+echo '[{"critical":{"image":{"docker-manifest-digest":"'"$digest"'"}}}]'

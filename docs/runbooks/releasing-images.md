@@ -8,7 +8,7 @@ CI publishes images but never changes the repository. Rolling a new build out to
 
 1. **Merge** the change to `main`. The `apps` workflow ran on the pull request (lint, unit tests, integration and smoke tests), and the `images` workflow built the changed images without pushing.
 2. **Wait for the publish jobs.** The `images` workflow on `main` builds each changed service for `linux/amd64` and pushes it to `ghcr.io/<lower-case owner>/<service>` tagged with the full commit SHA and a short SHA. Watch the run under Actions, workflow `images`.
-3. **Read the job summary** of that run (the `Publish summary` job). It lists the registry, tag and digest of each image that was built, and the command to run.
+3. **Read the job summary** of that run (the `Publish summary` job). It lists the registry, tag and digest of each image that was built, and the command to run. A digest appears there only after the publish job scanned it, signed it, attached the SBOM and the provenance, and verified all of that; if a publish job failed in one of those steps, its digest is missing on purpose and must not be deployed. To check a digest yourself, see [verify an image](service-deployment.md#verify-an-image).
 4. **Run the helper script** from the repository root with the values from the summary. Look at the diff first:
 
    ```bash
