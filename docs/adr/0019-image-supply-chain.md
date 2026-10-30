@@ -49,9 +49,9 @@ CI still never commits. `scripts/update-image-values.sh` and the pull request ba
 ## Consequences
 
 - A fixable HIGH or CRITICAL vulnerability in an image fails the pull request that introduces it (or the one that touches the image after the vulnerability was published), and the finding names the package, the installed version and the fixed version. The base images of Go, Java and Python move with security updates, so a pull request can start failing without a code change; the fix is a rebuild, a dependency bump or a short, justified `.trivyignore` entry.
-- Every image pushed from `main` has an SBOM, a signature and provenance that anyone can check with one command and a pinned identity. The first publish after this change is the first time any of it runs on GitHub (see below).
+- Every image pushed from `main` has an SBOM, a signature and provenance that anyone can check with one command and a pinned identity. The first publish after this change (commit `106d729`) ran all of it on GitHub (see below).
 - The publish job is longer and holds more permissions than before. The extra permissions are the ones the OIDC and attestation steps need, they sit on one job that fork pull requests cannot reach, and nothing else in the workflow can use them.
-- `scripts/verify-image.sh` fails for the digests currently in `deploy/helm/values/images.yaml`: they were published before this change and carry no signature or attestation. That is expected until a release made after this change is rolled in.
+- `scripts/verify-image.sh` fails for any digest published before this change: those images carry no signature or attestation. The digests in `deploy/helm/values/images.yaml` are from the first signed publish, rolled in by a release pull request, and the script passes for them.
 - The signing certificate, the repository name and the image digest appear in the public Sigstore transparency log, even for a private package.
 - Scanning needs the Trivy vulnerability database from `ghcr.io/aquasecurity` when the job runs, so an outage there fails the scan job (a re-run is the remedy; do not add an ignore entry for it).
 
@@ -70,14 +70,18 @@ CI still never commits. `scripts/update-image-values.sh` and the pull request ba
 
 Checked before this change was merged, on a laptop: the workflow with `actionlint`; the new scripts with `shellcheck` at the strictest level; `scripts/check-trivyignore.sh` and `scripts/verify-image.sh` against a fake `cosign` (argument handling, output, the exact identity and issuer in every call, a failure of each check, an image signed by another branch, repository or issuer, and one bad image among four); and Trivy 0.76.1 itself, downloaded and checked against the SHA-256 in the workflow, with the exact flags of the scan step against a local image (clean image, a failing gate, an ignore file with active entries, and the same entries expired) and the SPDX output.
 
-Not exercised, because it needs the real GitHub runner and a real push to `main`:
+Exercised on GitHub after the merge:
 
-- the whole publish path: the registry login being enough for Trivy to read the pushed digest, `cosign sign` and `cosign attest` with the runner's OIDC token, the size and acceptance of the SBOM attestation, and the provenance action pushing its bundle with the permissions given;
-- that `cosign verify-attestation --type slsaprovenance1` finds the provenance bundle the attestation action pushed. This is the least certain step: the verification and the provenance action are separate tools, and if cosign does not discover that bundle, the `Verify` step fails the first publish and the check has to change (for example to `gh attestation verify`) before anything can be released. That failure is safe, since nothing is handed on, but it is likely enough to expect;
-- the pull request scan job as a GitHub job (the install step, `load: true` followed by `--image-src docker`, the cache), and the `Images result` job;
-- `scripts/verify-image.sh` against real signatures; it has only run against the fake.
+- the publish job ran on `main` for commit `106d729`. For all four images (gateway, orders, payments, notifier) it scanned the pushed digest, signed it, attached the SBOM attestation and the SLSA build provenance, and its own `Verify` step passed;
+- separately, `scripts/verify-image.sh` passed for all four digests from a developer machine with cosign 3.1.4: the signature, the SBOM attestation and the provenance, with the signer pinned to the images workflow on `main`;
+- a release pull request rolled those signed digests into `deploy/helm/values/images.yaml` and was merged, and `scripts/verify-image.sh all` passes against the values file;
+- `cosign verify-attestation --type slsaprovenance1` found the provenance bundle that the attestation action pushed, so the `gh attestation verify` fallback was not needed;
+- the pull request scan job has run on GitHub too: it reported the pip-bundled libraries in the orders image, which were fixed by removing pip from that image rather than by an ignore entry.
 
-The first merge to `main` that changes an image is therefore the real test of the publish half.
+Still not exercised:
+
+- the signed images have not been deployed to a cluster, and nothing in a cluster checks signatures (see above);
+- everything listed under "What this does not cover" still stands.
 
 ## Alternatives considered
 
@@ -85,6 +89,6 @@ The first merge to `main` that changes an image is therefore the real test of th
 - **Scan only on publish, or only on pull requests.** Pull requests alone miss new vulnerabilities in the base image after merge; publish alone finds a problem after the image is already in the registry. Both give different information.
 - **Failing on unfixed findings too.** It would block merges on problems nobody can fix. The decision to accept such a finding can be recorded the same way as any other, in `.trivyignore`, if it is ever wanted.
 - **A key pair for signing.** A key needs storing, rotating and protecting from the job that uses it; keyless signing uses the identity the job already has.
-- **`gh attestation verify` as the only verifier.** It works for GitHub attestations but does not cover the cosign signature and the SBOM attestation, and needs the GitHub CLI; one tool for all three checks is simpler to test and to run. It stays the fallback for provenance.
+- **`gh attestation verify` as the only verifier.** It works for GitHub attestations but does not cover the cosign signature and the SBOM attestation, and needs the GitHub CLI; one tool for all three checks is simpler to test and to run. It was kept in mind as a fallback for provenance, but the cosign check worked on the first publish, so it is not used.
 - **Syft or another SBOM tool.** A second tool for no gain; Trivy already reads the image and produces SPDX.
 - **Scanning in `apps.yml` so `Apps result` covers it.** Would build every image a second time per pull request, or move the build there. Putting the scan beside the existing build and adding an `Images result` job keeps one build.

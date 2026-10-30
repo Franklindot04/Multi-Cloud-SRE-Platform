@@ -203,9 +203,9 @@ cosign verify-attestation --type spdxjson \
 
 If a check fails:
 
-- **Every check fails for the digests that are in `images.yaml` today:** expected until a release made after the supply chain change has been rolled in. Those images were published before images were signed. Roll in a new release ([releasing images](releasing-images.md)) and verify again.
+- **Every check fails for one digest:** if it was published before the supply chain change, it was never signed (the first signed publish was commit `106d729`). Use a digest from a later release ([releasing images](releasing-images.md)). The digests in `images.yaml` come from that first signed publish and pass.
 - **Everything fails with an authorization error:** the package is private and you are not logged in (`docker login ghcr.io`).
-- **Only the provenance check fails** (the first publish after the change is where this is most likely): the provenance can be checked with the GitHub CLI instead, `gh attestation verify oci://ghcr.io/franklindot04/<service>@sha256:<digest> --repo Franklindot04/Multi-Cloud-SRE-Platform`. Then the script's provenance check needs correcting.
+- **Only the provenance check fails:** the cosign check has worked on real images, so first look for a cause on the digest (a build that did not publish provenance, or one from before the change). To cross-check with the GitHub CLI: `gh attestation verify oci://ghcr.io/franklindot04/<service>@sha256:<digest> --repo Franklindot04/Multi-Cloud-SRE-Platform`.
 - **The signature fails for a digest from a job summary:** do not put it in `images.yaml`. Open the `images` run that produced it and read the failing step; an image that was pushed but not signed stays in the registry and must not be deployed.
 - **The signature is there but the identity does not match:** the digest was signed by something other than the images workflow on `main` of this repository (another branch, a fork, a person). Treat it as untrusted.
 
