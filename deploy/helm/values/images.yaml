@@ -5,11 +5,11 @@
 # built from, and each digest pins the exact image for that service.
 image:
   registry: ghcr.io/franklindot04
-  tag: "66beba6c1358325955742f48db6bff9b0370b4d4"
+  tag: "106d7298e2d388ce67239428b99c110dcd13fd7e"
 
 # sha256 digests per service, written together with the tag. A digest takes precedence over the tag when pulling.
 digests:
-  gateway: "sha256:d0813e39a3049004a68d0486e999245a5a97d9d1734fa8e8119fe0a6aad2deb4"
-  orders: "sha256:8aed84420a7b30417d735eec78839409af33184c0ee91340423bf1cddff976e1"
-  payments: "sha256:bdea696733339006f61d429b7578ff5982e6c1e971cb4fc1e7426474e4443dbb"
-  notifier: "sha256:8ba0ee2d08742e89682b56af19edb1a9b1a8cbad55be8d311318e1e6bdc0aecc"
+  gateway: "sha256:cff59b7cbf5dbf44041ff555a1c5b32a731bae70e5f4e131f0b8b741e8e4342f"
+  orders: "sha256:32a5998139eb3d237531ab8a9a4272a67b95f077ae8a67cbbd12bd7a6522cf44"
+  payments: "sha256:bcf54cab34ba899adcc2864163d607e122b5e1a29ee4c6f31f1ba4a0ed49f7b1"
+  notifier: "sha256:b036a4e2c75f1afb49730da7b8a7ae1107e37c63a10e1c2048a17bedcd9c24d9"
