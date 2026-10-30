@@ -1,0 +1,7 @@
+apiVersion: v2
+name: observability-monitors
+description: ServiceMonitors and PodMonitors for the sample services and the data layer
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

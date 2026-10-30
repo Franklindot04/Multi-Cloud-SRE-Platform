@@ -1,0 +1,53 @@
+{{- if .Values.data.postgres.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: postgres
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: postgres-monitor
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.data.namespace }}
+  selector:
+    matchLabels:
+      cnpg.io/cluster: {{ .Values.data.postgres.cluster }}
+      cnpg.io/podRole: instance
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.data.interval }}
+{{- end }}
+{{- if and .Values.data.postgres.enabled .Values.data.rabbitmq.enabled }}
+---
+{{- end }}
+{{- if .Values.data.rabbitmq.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rabbitmq
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: rabbitmq-monitor
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.data.namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.data.rabbitmq.cluster }}
+      app.kubernetes.io/component: rabbitmq
+  endpoints:
+    - port: prometheus
+      path: /metrics
+      interval: {{ .Values.data.interval }}
+{{- end }}

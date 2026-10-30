@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "collector.name" . }}
+  labels:
+    {{- include "collector.labels" . | nindent 4 }}
+data:
+  # Every listener binds to the pod's own address (MY_POD_IP, set in the Deployment from the downward API), not to
+  # every interface and not to localhost, so the Service and the kubelet probes reach it and nothing else does.
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:{{ .Values.ports.otlpGrpc }}
+          http:
+            endpoint: ${env:MY_POD_IP}:{{ .Values.ports.otlpHttp }}
+
+    processors:
+      # First in every pipeline, so memory pressure is handled before anything else allocates.
+      memory_limiter:
+        check_interval: {{ .Values.memoryLimiter.checkInterval }}
+        limit_mib: {{ .Values.memoryLimiter.limitMiB }}
+        spike_limit_mib: {{ .Values.memoryLimiter.spikeLimitMiB }}
+      batch: {}
+
+    exporters:
+      prometheus:
+        endpoint: ${env:MY_POD_IP}:{{ .Values.ports.exporter }}
+      debug:
+        verbosity: {{ .Values.debug.verbosity }}
+
+    extensions:
+      health_check:
+        endpoint: ${env:MY_POD_IP}:{{ .Values.ports.health }}
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [prometheus]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [debug]
+      telemetry:
+        logs:
+          level: info
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: ${env:MY_POD_IP}
+                    port: {{ .Values.ports.telemetry }}

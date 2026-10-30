@@ -1,0 +1,4 @@
+# The metric names the example board may use, as if they had been confirmed in service code.
+demo_requests_total
+demo_duration_seconds
+up

@@ -91,6 +91,8 @@ for chart_file in "$root"/*/Chart.yaml; do
 
     variants=("")
     [ -f "$dir/values-ha.yaml" ] && variants+=("$dir/values-ha.yaml")
+    # An optional feature that is off by default and switched on by adding this file (for example persistent volumes).
+    [ -f "$dir/values-persistent.yaml" ] && variants+=("$dir/values-persistent.yaml")
     for extra in "$dir"/ci/"$cloud"-*.yaml; do
       [ -e "$extra" ] || continue
       [ "$(basename "$extra")" = "$cloud-params.yaml" ] && continue

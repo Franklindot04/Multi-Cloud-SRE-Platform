@@ -15,7 +15,7 @@ Deploys the four sample services (gateway, orders, payments, notifier) to a clus
 
 ## Enable the services
 
-The bootstrap script writes every label on each run, so repeat the flags you already use (for example `--enable-data`).
+The bootstrap script writes every label on each run, so repeat the flags you already use (for example `--enable-data` or `--enable-observability`).
 
 ```bash
 # preview: changes nothing, calls no cluster or cloud API

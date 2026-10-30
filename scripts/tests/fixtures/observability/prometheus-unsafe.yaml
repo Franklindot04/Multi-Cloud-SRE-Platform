@@ -1,0 +1,10 @@
+# A Prometheus resource whose pods would not meet the restricted level.
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: demo
+  namespace: observability
+spec:
+  hostNetwork: true
+  securityContext:
+    runAsUser: 0

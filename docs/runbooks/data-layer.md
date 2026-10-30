@@ -172,22 +172,24 @@ scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --dry-run    
 scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-name <CLUSTER_NAME>
 ```
 
-`--context` is required (the script never uses the current context). It waits for each step (`--timeout`, 600 seconds a step by default) and stops at the first one that does not finish, so it is safe to run again after fixing the cause. It deletes only the named resources in the `argocd`, `shop` and `data` namespaces, never forces a deletion, and does not delete namespaces, the storage class, Argo CD or anything in the cloud. `--skip-aws` stops after step 9 (GKE, or no AWS credentials). It was tested against a fake `kubectl` and a fake `aws`, not against a real cluster: run `--dry-run` first and read the output.
+`--context` is required (the script never uses the current context). It waits for each step (`--timeout`, 600 seconds a step by default) and stops at the first one that does not finish, so it is safe to run again after fixing the cause. It deletes only the named resources in the `argocd`, `shop`, `data` and `observability` namespaces, never forces a deletion, and does not delete namespaces, the storage class, Argo CD or anything in the cloud. `--skip-aws` stops after step 11 (GKE, or no AWS credentials). It was tested against a fake `kubectl` and a fake `aws`, not against a real cluster: run `--dry-run` first and read the output.
 
 The steps, in order:
 
-1. Remove the cluster Secret label keys.
-2. Wait for the `apps-*` and `data-*` Applications to go. This also removes the CloudNativePG and RabbitMQ Cluster operators.
+1. Remove the cluster Secret label keys (`apps`, `data` and `observability`).
+2. Wait for the `apps-*`, `data-*` and `observability-*` Applications to go. This also removes the CloudNativePG, RabbitMQ Cluster and Prometheus operators.
 3. Wait for the `shop` namespace to empty.
-4. Delete the CloudNativePG `Database` objects (`platform-pg-orders`, `platform-pg-payments`) and wait for them.
-5. Delete the CloudNativePG `Cluster`.
-6. Delete the `RabbitmqCluster` and wait for it, then its StatefulSet if that survives.
-7. Wait for the pods in `data` to go.
-8. Delete the PersistentVolumeClaims, including `platform-valkey`.
-9. Confirm `kubectl get pv` is empty.
-10. to 12. AWS: no leftover tagged volumes, load balancers or security groups.
+4. If the `observability` namespace exists, wait for its pods to go.
+5. If it exists, delete its PersistentVolumeClaims. There are none unless the [persistent values](../../platform/observability/README.md#sizing-and-storage) were used.
+6. Delete the CloudNativePG `Database` objects (`platform-pg-orders`, `platform-pg-payments`) and wait for them.
+7. Delete the CloudNativePG `Cluster`.
+8. Delete the `RabbitmqCluster` and wait for it, then its StatefulSet if that survives.
+9. Wait for the pods in `data` to go.
+10. Delete the PersistentVolumeClaims, including `platform-valkey`.
+11. Confirm `kubectl get pv` is empty.
+12. to 14. AWS: no leftover tagged volumes, load balancers or security groups.
 
-**Operators that are already gone.** Step 2 removes the operators, but a `Database` and a `RabbitmqCluster` carry a finalizer that only their operator can remove, so their deletion would otherwise hang until the timeout. In steps 4 and 6 the script deletes the object and, while it waits, checks whether the operator still has a running pod (`cnpg-system` and `rabbitmq-system` are only read). With the operator running it just waits. With the operator gone it removes the one finalizer the operator would have removed, from that one object, prints what it removed and why, and carries on:
+**Operators that are already gone.** Step 2 removes the operators, but a `Database` and a `RabbitmqCluster` carry a finalizer that only their operator can remove, so their deletion would otherwise hang until the timeout. In steps 6 and 8 the script deletes the object and, while it waits, checks whether the operator still has a running pod (`cnpg-system` and `rabbitmq-system` are only read). With the operator running it just waits. With the operator gone it removes the one finalizer the operator would have removed, from that one object, prints what it removed and why, and carries on:
 
 | Object | Finalizer the script may remove | Operator it looks for |
 | --- | --- | --- |
@@ -196,13 +198,15 @@ The steps, in order:
 
 Nothing else is ever changed. An object stuck on any other finalizer is left alone: the script times out and prints the finalizers it found. If it cannot ask the cluster whether the operator runs, it stops. The `Database` objects use `databaseReclaimPolicy: retain`, so removing them does not drop the databases; they go with the `Cluster` in step 5. Under `--dry-run` it says, per object, whether it would only wait or would remove the finalizer.
 
+**The Prometheus Operator needs no such handling.** Its only finalizer is `monitoring.coreos.com/status-cleanup`, set on the `Prometheus` object itself (never on a `ServiceMonitor`, `PodMonitor` or rule) and only when the operator's `StatusForConfigurationResources` feature gate is on. The gate is off by default and the stack does not turn it on, so nothing holds the objects when the operator goes first (checked against the operator source at the pinned version, see [ADR-0020](../adr/0020-metrics-stack.md)). If someone enabled the gate and a `Prometheus` is stuck, step 4 times out on the pods that remain and prints this; the script does not remove that finalizer. Step 5 deletes the claims of the optional persistent volumes, which would otherwise keep billing after `terraform destroy`.
+
 ### By hand
 
 1. **Remove the cluster Secret labels.** Delete the label keys; this is what stops the ApplicationSets from recreating Applications. Deleting an Application by hand does not work for as long as the labels select the cluster, and the Applications' finalizers delete what they own:
 
    ```bash
-   kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-
-   kubectl --context <EKS_CONTEXT> -n argocd get applications | grep -E 'apps-|data-'     # wait until none remain
+   kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability-
+   kubectl --context <EKS_CONTEXT> -n argocd get applications | grep -E 'apps-|data-|observability-'     # wait until none remain
    ```
 
    Setting the labels to `false` also works (the selectors match the value `"true"`; verified against the ApplicationSet controller on a throwaway cluster, see the ADR), and the bootstrap script writes `false`. Deleting the keys is preferred because nothing then depends on the value. Delete the services' Ingress first if one was ever enabled ([service deployment runbook](service-deployment.md#teardown)).
@@ -222,6 +226,7 @@ Nothing else is ever changed. An object stuck on any other finalizer is left alo
    kubectl --context <EKS_CONTEXT> -n data get pods                                        # wait until none remain
    ```
 
+   If the metrics foundation was deployed with the persistent values, also delete its claims before the cloud checks below: `kubectl --context <EKS_CONTEXT> -n observability get pvc`, then delete each one by name. Without those values there are none.
 4. **Delete the remaining PersistentVolumeClaims**, including `platform-valkey`, whose claim is kept on purpose, then confirm no volume is left in the cluster:
 
    ```bash

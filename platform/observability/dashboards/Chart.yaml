@@ -1,0 +1,7 @@
+apiVersion: v2
+name: dashboards
+description: Grafana dashboards as labelled ConfigMaps that the Grafana sidecar loads
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

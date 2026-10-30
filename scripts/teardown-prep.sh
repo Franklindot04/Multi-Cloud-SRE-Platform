@@ -7,30 +7,33 @@
 # Steps, in this order. Each one waits for its result and the script stops at the first step that does not
 # complete within the timeout; nothing later runs after a failure.
 #
-#    1. remove the cluster Secret labels platform.example/apps and platform.example/data (the label keys are
-#       deleted, not set to false), so the ApplicationSets stop recreating Applications
-#    2. wait until the apps-* and data-* Applications are gone (this also removes the CloudNativePG and the
-#       RabbitMQ Cluster operators)
+#    1. remove the cluster Secret labels platform.example/apps, platform.example/data and
+#       platform.example/observability (the label keys are deleted, not set to false), so the ApplicationSets stop
+#       recreating Applications
+#    2. wait until the apps-*, data-* and observability-* Applications are gone (this also removes the
+#       CloudNativePG, RabbitMQ Cluster and Prometheus operators)
 #    3. wait until the shop namespace holds no workloads
-#    4. delete the CloudNativePG Database objects in the data namespace and wait for them
-#    5. delete the CloudNativePG Clusters in the data namespace
-#    6. delete the RabbitmqClusters in the data namespace and wait for them, then their StatefulSets if those
+#    4. if the observability namespace exists, wait until it holds no pods
+#    5. if it exists, delete its PersistentVolumeClaims (there are none unless values-persistent.yaml was used)
+#    6. delete the CloudNativePG Database objects in the data namespace and wait for them
+#    7. delete the CloudNativePG Clusters in the data namespace
+#    8. delete the RabbitmqClusters in the data namespace and wait for them, then their StatefulSets if those
 #       survive (the operator does not remove them)
-#    7. wait until no pods are left in the data namespace
-#    8. delete the PersistentVolumeClaims in the data namespace (including platform-valkey)
-#    9. confirm kubectl get pv is empty
-#   10. AWS: confirm no EBS volume tagged kubernetes.io/created-for/pvc/name remains, so only node root
+#    9. wait until no pods are left in the data namespace
+#   10. delete the PersistentVolumeClaims in the data namespace (including platform-valkey)
+#   11. confirm kubectl get pv is empty
+#   12. AWS: confirm no EBS volume tagged kubernetes.io/created-for/pvc/name remains, so only node root
 #       volumes are left
-#   11. AWS: confirm no load balancer created by the AWS Load Balancer Controller remains
-#   12. AWS: confirm no security group created by the AWS Load Balancer Controller remains
+#   13. AWS: confirm no load balancer created by the AWS Load Balancer Controller remains
+#   14. AWS: confirm no security group created by the AWS Load Balancer Controller remains
 #
-# Deletions name the resource and the namespace (argocd, shop and data are the only namespaces changed;
-# cnpg-system and rabbitmq-system are only read, to see whether an operator is still running). Nothing is
+# Deletions name the resource and the namespace (argocd, shop, data and observability are the only namespaces
+# changed; cnpg-system and rabbitmq-system are only read, to see whether an operator is still running). Nothing is
 # forced: a deletion that does not finish is reported and the script stops. It does not delete namespaces, the
 # storage class, Argo CD or any cloud resource; terraform destroy is a separate, manual step.
 #
 # Finalizers of operators that are gone. Step 2 removes the operators, and a Database or a RabbitmqCluster
-# carries a finalizer that only its operator removes. For these two kinds, and only these, steps 4 and 6 look
+# carries a finalizer that only its operator removes. For these two kinds, and only these, steps 6 and 8 look
 # at whether the operator is running while they wait:
 #
 #   Database          finalizer cnpg.io/deleteDatabase
@@ -43,12 +46,21 @@
 # other finalizer, on these or on any other resource, is never touched: the script waits, times out and names
 # what is holding the object. With the operator running it only waits.
 #
+# The Prometheus Operator needs no such handling here. The only finalizer it ever sets is
+# monitoring.coreos.com/status-cleanup, on the Prometheus (and Alertmanager, ThanosRuler and PrometheusAgent)
+# objects themselves, never on ServiceMonitors, PodMonitors or rules, and only when its feature gate
+# StatusForConfigurationResources is on. The gate is off by default and platform/observability does not turn it
+# on, so nothing holds these objects when the operator goes first. If the gate was switched on by hand and the
+# finalizer is stuck, step 4 times out on the pods that remain and says so; this script does not remove that
+# finalizer. The only thing the observability stack leaves behind that Terraform does not manage is the
+# volumes of values-persistent.yaml, which step 5 deletes.
+#
 # Options:
 #   --context CONTEXT     kubectl context of the cluster to prepare; required
-#   --region REGION       AWS region for steps 10 to 12 (default: AWS_REGION, then AWS_DEFAULT_REGION)
+#   --region REGION       AWS region for steps 12 to 14 (default: AWS_REGION, then AWS_DEFAULT_REGION)
 #   --cluster-name NAME   only count load balancers and security groups tagged for this cluster (default: any
 #                         created by the controller in the region)
-#   --skip-aws            stop after step 9 (GKE, or no AWS credentials yet)
+#   --skip-aws            stop after step 11 (GKE, or no AWS credentials yet)
 #   --timeout SECONDS     time each step may take (default 600)
 #   --dry-run             print what would run, run no change, make no AWS call; read-only kubectl
 #                         queries are still used to name the resources
@@ -69,6 +81,7 @@ POLL="${TEARDOWN_POLL_SECONDS:-5}"
 ARGO_NS="argocd"
 CLUSTER_SECRET="cluster-in-cluster"
 DATA_NS="data"
+OBS_NS="observability"
 SHOP_NS="shop"
 CNPG_NS="cnpg-system"
 CNPG_SELECTOR="app.kubernetes.io/name=cloudnative-pg"
@@ -145,8 +158,8 @@ fi
 
 k() { kubectl --context "$CONTEXT" "$@"; }
 
-TOTAL=12
-[ "$SKIP_AWS" -eq 0 ] || TOTAL=9
+TOTAL=14
+[ "$SKIP_AWS" -eq 0 ] || TOTAL=11
 n=0
 DETAIL=""
 
@@ -212,7 +225,7 @@ apps_gone() {
     DETAIL="could not list Applications"
     return 1
   }
-  DETAIL="$(printf '%s\n' "$out" | grep -E '/(apps|data)-' || true)"
+  DETAIL="$(printf '%s\n' "$out" | grep -E '/(apps|data|observability)-' || true)"
   [ -z "$DETAIL" ]
 }
 
@@ -234,6 +247,29 @@ data_pods_gone() {
 These pods have an owner this script does not delete. Find it with: kubectl --context $CONTEXT -n $DATA_NS get pod <name> -o jsonpath='{.metadata.ownerReferences}'"
     return 1
   fi
+}
+
+namespace_present() { k get namespace "$1" -o name > /dev/null 2>&1; }
+
+obs_pods_gone() {
+  DETAIL="$(names_in "$OBS_NS" pods 2> /dev/null)" || {
+    DETAIL="could not list pods in the $OBS_NS namespace"
+    return 1
+  }
+  if [ -n "$DETAIL" ]; then
+    DETAIL="$DETAIL
+Their Application is gone, so something still holds their owner. Look at the finalizers of the Prometheus objects: kubectl --context $CONTEXT -n $OBS_NS get prometheuses.monitoring.coreos.com -o yaml
+A finalizer monitoring.coreos.com/status-cleanup is set by the Prometheus Operator only when its StatusForConfigurationResources feature gate is on, and only that operator removes it. This script does not remove it."
+    return 1
+  fi
+}
+
+no_obs_pvc() {
+  DETAIL="$(names_in "$OBS_NS" persistentvolumeclaims 2> /dev/null)" || {
+    DETAIL="could not list claims in the $OBS_NS namespace"
+    return 1
+  }
+  [ -z "$DETAIL" ]
 }
 
 no_pvc() {
@@ -404,16 +440,41 @@ fi
 step "Remove the cluster Secret labels, so the ApplicationSets stop recreating Applications"
 if k -n "$ARGO_NS" get secret "$CLUSTER_SECRET" -o name > /dev/null 2>&1; then
   # A trailing '-' deletes the label key. Absent labels are reported by kubectl and are not an error.
-  run k -n "$ARGO_NS" label secret "$CLUSTER_SECRET" platform.example/apps- platform.example/data-
+  run k -n "$ARGO_NS" label secret "$CLUSTER_SECRET" platform.example/apps- platform.example/data- platform.example/observability-
 else
   fail "Secret $ARGO_NS/$CLUSTER_SECRET not found in context '$CONTEXT'. Is this the Argo CD hub cluster?"
 fi
 
-step "Wait for the apps-* and data-* Applications to be deleted"
-wait_for "no apps-* or data-* Application remains" apps_gone
+step "Wait for the apps-*, data-* and observability-* Applications to be deleted"
+wait_for "no apps-*, data-* or observability-* Application remains" apps_gone
 
 step "Wait for the $SHOP_NS namespace to empty"
 wait_for "the $SHOP_NS namespace has no workloads" shop_empty
+
+step "Wait for the pods in the $OBS_NS namespace to be gone (if the namespace exists)"
+if namespace_present "$OBS_NS"; then
+  wait_for "no pod remains in the $OBS_NS namespace" obs_pods_gone
+else
+  echo "  no $OBS_NS namespace: the metrics foundation was not deployed here"
+fi
+
+step "Delete the PersistentVolumeClaims in the $OBS_NS namespace (only values-persistent.yaml creates any)"
+if namespace_present "$OBS_NS"; then
+  obs_pvcs="$(names_in "$OBS_NS" persistentvolumeclaims)" || fail "could not list claims in the $OBS_NS namespace"
+  if [ -z "$obs_pvcs" ]; then
+    echo "  no claims in the $OBS_NS namespace"
+  else
+    printf '%s\n' "$obs_pvcs" | sed 's/^/  claim: /'
+    while IFS= read -r pvc; do
+      run k -n "$OBS_NS" delete "$pvc" --wait=true --timeout="${TIMEOUT}s"
+    done << EOF
+$obs_pvcs
+EOF
+  fi
+  wait_for "no claim remains in the $OBS_NS namespace" no_obs_pvc
+else
+  echo "  no $OBS_NS namespace: nothing to delete"
+fi
 
 step "Delete the CloudNativePG Database objects in the $DATA_NS namespace, before their Cluster"
 delete_owned databases.postgresql.cnpg.io databases.postgresql.cnpg.io "$CNPG_DB_FINALIZER" "CloudNativePG operator" "$CNPG_NS" "$CNPG_SELECTOR"

@@ -1,0 +1,28 @@
+{{- range .Values.services.names }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ . }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ . }}-monitor
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  # The job label of every series is the service name.
+  jobLabel: app.kubernetes.io/name
+  namespaceSelector:
+    matchNames:
+      - {{ $.Values.services.namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ . }}
+      app.kubernetes.io/part-of: sre-sample
+  endpoints:
+    - port: {{ $.Values.services.port }}
+      path: /metrics
+      interval: {{ $.Values.services.interval }}
+{{- end }}

@@ -1,0 +1,53 @@
+---
+# ServiceMonitors for the four sample services, and a PodMonitor for PostgreSQL and a ServiceMonitor for RabbitMQ.
+# Wave 13: after the stack's CRDs. The monitors live in the observability namespace and select their targets in the
+# shop and data namespaces, which this project cannot reach. A monitor whose targets do not exist (a cluster without
+# the services or the data layer) selects nothing and is harmless.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: observability-monitors
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "13"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/observability: "true"
+  template:
+    metadata:
+      name: 'observability-monitors-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: observability-monitors
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-observability
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/observability/monitors
+        helm:
+          releaseName: observability-monitors
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: observability
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

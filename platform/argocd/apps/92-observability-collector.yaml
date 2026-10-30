@@ -1,0 +1,61 @@
+---
+# OpenTelemetry Collector (plain distribution, image pinned by digest). Wave 12: after the stack, because its
+# ServiceMonitor needs the Prometheus Operator CRDs (the chart skips the dry run while they are missing, and the
+# Application retries).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: observability-collector
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "12"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/observability: "true"
+  template:
+    metadata:
+      name: 'observability-collector-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: observability-collector
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-observability
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/observability/otel-collector
+        helm:
+          releaseName: otel-collector
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: observability
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/enforce-version: latest
+            pod-security.kubernetes.io/warn: restricted
+            pod-security.kubernetes.io/warn-version: latest
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/audit-version: latest
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

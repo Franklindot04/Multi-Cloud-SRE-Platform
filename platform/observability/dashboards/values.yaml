@@ -1,0 +1,7 @@
+---
+# One ConfigMap per file in files/. The Grafana sidecar loads every ConfigMap in this namespace that carries the label
+# below; the label must match sidecar.dashboards.label and labelValue in the kube-prometheus-stack values.
+namespace: observability
+sidecarLabel:
+  key: grafana_dashboard
+  value: "1"

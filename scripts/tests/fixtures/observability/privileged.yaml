@@ -1,0 +1,30 @@
+# A workload like node-exporter: host namespaces, a hostPath volume, a host port and a container that is not locked down.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: host-demo
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app: host-demo
+  template:
+    metadata:
+      labels:
+        app: host-demo
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+        - name: host-demo
+          image: example.invalid/host-demo:1.0.0
+          ports:
+            - containerPort: 9100
+              hostPort: 9100
+          securityContext:
+            privileged: true
+            runAsUser: 0
+      volumes:
+        - name: root
+          hostPath:
+            path: /

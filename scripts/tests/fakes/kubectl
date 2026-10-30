@@ -19,7 +19,10 @@
 #   stuck-mq            the RabbitmqCluster carries its operator finalizer, which only a running operator removes
 #   odd-finalizer-databases, odd-finalizer-mq
 #                       the object also carries example.com/keep, which nothing here can remove
-# Deleting things creates labels-removed, pg-deleted, sts-deleted and pvc-deleted. Deleting a Database or a
+#   obs-namespace       the observability namespace exists (without it the observability steps find nothing to do)
+#   obs-persistent      Prometheus and Grafana have claims in the observability namespace (values-persistent.yaml)
+#   stuck-obs-pods      a pod in the observability namespace never goes away
+# Deleting things creates labels-removed, pg-deleted, sts-deleted, pvc-deleted and obs-pvc-deleted. Deleting a Database or a
 # RabbitmqCluster creates deleting-<object>; the object is gone once it has no finalizer left (deleted-<object>),
 # and patching out the operator finalizer creates cleared-<object>.
 set -eu
@@ -92,7 +95,7 @@ case "$*" in
     fi
     echo secret/cluster-in-cluster
     ;;
-  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-")
+  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability-")
     mark labels-removed
     echo "secret/cluster-in-cluster unlabeled"
     ;;
@@ -101,7 +104,7 @@ case "$*" in
       echo "application.argoproj.io/cert-manager-in-cluster"
     else
       printf '%s\n' application.argoproj.io/apps-orders-in-cluster application.argoproj.io/data-postgres-in-cluster \
-        application.argoproj.io/cert-manager-in-cluster
+        application.argoproj.io/observability-stack-in-cluster application.argoproj.io/cert-manager-in-cluster
     fi
     ;;
   "-n shop get deployments,statefulsets,jobs,ingresses,pods -o name")
@@ -126,6 +129,25 @@ case "$*" in
       exit 1
     fi
     if flag mq-operator-up; then echo pod/rabbitmq-cluster-operator-0; fi
+    ;;
+  "get namespace observability -o name")
+    flag obs-namespace || exit 1
+    echo namespace/observability
+    ;;
+  "-n observability get pods -o name")
+    if flag stuck-obs-pods || ! flag labels-removed; then
+      printf '%s\n' pod/prometheus-kube-prometheus-stack-prometheus-0 pod/kube-prometheus-stack-grafana-0
+    fi
+    ;;
+  "-n observability get persistentvolumeclaims -o name")
+    if flag obs-persistent && ! flag obs-pvc-deleted; then
+      printf '%s\n' persistentvolumeclaim/prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0 \
+        persistentvolumeclaim/kube-prometheus-stack-grafana
+    fi
+    ;;
+  "-n observability delete persistentvolumeclaim/"*" --wait=true --timeout="*)
+    mark obs-pvc-deleted
+    echo "$4 deleted"
     ;;
   "-n data get databases.postgresql.cnpg.io -o name")
     for o in "$db_orders" "$db_payments"; do
@@ -196,6 +218,9 @@ case "$*" in
   "get pv -o name")
     if flag stuck-pv || ! flag pvc-deleted; then
       echo persistentvolume/pvc-0123
+    fi
+    if flag obs-persistent && ! flag obs-pvc-deleted; then
+      echo persistentvolume/pvc-4567
     fi
     ;;
   *) unexpected "$@" ;;

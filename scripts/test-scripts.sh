@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Tests for the helper scripts: scripts/update-image-values.sh and scripts/changed-services.sh (used by CI),
 # scripts/check-trivyignore.sh, scripts/teardown-prep.sh (against a fake kubectl and a fake aws) and
-# scripts/verify-image.sh (against a fake cosign); the fakes are in scripts/tests/fakes.
+# scripts/verify-image.sh (against a fake cosign); the fakes are in scripts/tests/fakes. It also tests the
+# --enable-observability flag of scripts/bootstrap-argocd.sh (dry run only) and the observability checks of
+# scripts/chart-contract-check.py.
 # Plain bash (3.2 compatible), no framework, no network. Fixtures are in scripts/tests/fixtures.
 #
 #   scripts/test-scripts.sh
@@ -164,7 +166,7 @@ new_cluster
 touch "$state/mq-survives"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "the happy path exits 0" test "$rc" -eq 0
-check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data-$' "$state/kubectl.log"
+check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability-$' "$state/kubectl.log"
 check "labels come before the Cluster deletion" test "$(line_of 'label secret')" -lt "$(line_of 'delete cluster.postgresql')"
 check "the Cluster is deleted before the RabbitmqCluster" test "$(line_of 'delete cluster.postgresql')" -lt "$(line_of 'delete rabbitmqcluster')"
 check "the surviving StatefulSet is deleted after the RabbitmqCluster" test "$(line_of 'delete rabbitmqcluster')" -lt "$(line_of 'delete statefulset')"
@@ -176,7 +178,9 @@ check "the volume query uses the pvc name tag" grep -q 'Name=tag-key,Values=kube
 check "the load balancer query uses the controller tag" grep -q 'Key=elbv2.k8s.aws/cluster ' "$state/aws.log"
 check "every deletion names its namespace" test "$(grep ' delete ' "$state/kubectl.log" | grep -vc -e '-n data delete')" = 0
 check "no call uses --force" test "$(cat "$state/kubectl.log" "$state/aws.log" | grep -c -e '--force')" = 0
-check "it changes nothing outside argocd, shop and data, and only lists operator pods elsewhere" test "$(grep -e '-n ' "$state/kubectl.log" | grep -v -e '-n argocd' -e '-n shop' -e '-n data' | grep -vc -e '^-n cnpg-system get pods -l ' -e '^-n rabbitmq-system get pods -l ')" = 0
+check "it changes nothing outside argocd, shop, data and observability, and only lists operator pods elsewhere" test "$(grep -e '-n ' "$state/kubectl.log" | grep -v -e '-n argocd' -e '-n shop' -e '-n data' -e '-n observability' | grep -vc -e '^-n cnpg-system get pods -l ' -e '^-n rabbitmq-system get pods -l ')" = 0
+check "without an observability namespace nothing is read or deleted in it" test "$(grep -c -e '-n observability' "$state/kubectl.log")" = 0
+check "and the output says the metrics foundation was not deployed" grep -q 'no observability namespace: the metrics foundation was not deployed here' "$work/tdout"
 check "the Database objects are deleted before the Cluster" test "$(line_of 'delete database.postgresql.cnpg.io/platform-pg-payments')" -lt "$(line_of 'delete cluster.postgresql')"
 check "the output says it finished" grep -q 'Teardown preparation finished' "$work/tdout"
 check "an ordinary run removes no finalizer" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
@@ -268,6 +272,51 @@ new_cluster
 touch "$state/stuck-pods"
 run_teardown --context test-cluster --region eu-north-1 --timeout 2
 check "pods that never go away stop the script before claims are deleted" test "$rc" -eq 1 -a "$(grep -c 'persistentvolumeclaim' "$state/kubectl.log")" = 0
+
+# The observability namespace, without and with the volumes of values-persistent.yaml.
+new_cluster
+touch "$state/stuck-apps"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "an observability Application that does not go away stops the script" test "$rc" -eq 1
+check "and is named" grep -q 'observability-stack-in-cluster' "$work/tdout"
+
+new_cluster
+touch "$state/obs-namespace" "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "with the observability namespace and no claims the run exits 0" test "$rc" -eq 0
+check "the observability pods are checked after the shop namespace and before the Databases" test "$(line_of '-n observability get pods')" -gt "$(line_of '-n shop get')" -a "$(line_of '-n observability get pods')" -lt "$(line_of 'delete database.postgresql.cnpg.io/platform-pg-orders')"
+check "the output says there are no claims in it" grep -q 'no claims in the observability namespace' "$work/tdout"
+check "nothing is deleted in the observability namespace" test "$(grep -c -e '-n observability delete' "$state/kubectl.log")" = 0
+check "no observability resource is patched or force-deleted" test "$(grep -e '-n observability' "$state/kubectl.log" | grep -c -e ' patch ' -e '--force' -e 'grace-period')" = 0
+check "the cluster is not left holding a volume" test "$(grep -c 'get pv' "$state/kubectl.log")" -ge 1
+
+new_cluster
+touch "$state/obs-namespace" "$state/obs-persistent" "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "with the persistent volumes the run exits 0" test "$rc" -eq 0
+check "both claims are deleted, each by name in the observability namespace" test "$(grep -c -e '-n observability delete persistentvolumeclaim/' "$state/kubectl.log")" = 2
+check "the Prometheus claim is deleted" grep -q -e '-n observability delete persistentvolumeclaim/prometheus-kube-prometheus-stack-prometheus-db' "$state/kubectl.log"
+check "the Grafana claim is deleted" grep -q -e '-n observability delete persistentvolumeclaim/kube-prometheus-stack-grafana ' "$state/kubectl.log"
+check "the claims go after the observability pods are gone" test "$(line_of '-n observability get pods')" -lt "$(line_of '-n observability delete persistentvolumeclaim')"
+check "kubectl get pv is checked after the observability claims are deleted" test "$(line_of 'get pv')" -gt "$(line_of '-n observability delete persistentvolumeclaim')"
+check "no call uses --force" test "$(grep -c -e '--force' "$state/kubectl.log")" = 0
+
+new_cluster
+touch "$state/obs-namespace" "$state/obs-persistent" "$state/stuck-obs-pods"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "observability pods that never go away stop the script" test "$rc" -eq 1
+check "the message names the pods" grep -q 'pod/kube-prometheus-stack-grafana-0' "$work/tdout"
+check "and the finalizer the Prometheus Operator can set, and says the script leaves it alone" grep -q 'monitoring.coreos.com/status-cleanup.*This script does not remove it' "$work/tdout"
+check "no finalizer is removed and nothing is patched" test "$(grep -c -e ' patch ' "$state/kubectl.log")" = 0
+check "no claim is deleted after that, in observability or data" test "$(grep -c 'delete persistentvolumeclaim' "$state/kubectl.log")" = 0
+check "and nothing in the data namespace is deleted" test "$(grep -c -e '-n data delete' "$state/kubectl.log")" = 0
+
+new_cluster
+touch "$state/obs-namespace" "$state/obs-persistent" "$state/mq-survives"
+run_teardown --context test-cluster --region eu-north-1 --dry-run
+check "a dry run with the persistent volumes exits 0" test "$rc" -eq 0
+check "it deletes no claim" test "$(grep -c 'delete persistentvolumeclaim' "$state/kubectl.log")" = 0
+check "it prints the claim deletions it would run" grep -q '+ kubectl --context test-cluster -n observability delete persistentvolumeclaim/kube-prometheus-stack-grafana --wait=true' "$work/tdout"
 
 new_cluster
 printf 'vol-0123456789abcdef0\n' > "$state/aws-volumes"
@@ -539,6 +588,322 @@ PATH="/usr/bin:/bin" FAKE_STATE="$state" VALUES_FILE="$work/values.yaml" "$verif
 check "a missing cosign is rejected with exit 2" test "$rc" -eq 2
 check "and the message names cosign" grep -q 'cosign is not installed' "$work/vout"
 check "neither script runs a version control command" test "$(cat "$verify" "$ignore" | grep -Ec '(^|[;&| ])git( |$)')" = 0
+
+echo "bootstrap-argocd.sh (--enable-observability)"
+
+bootstrap="./scripts/bootstrap-argocd.sh"
+# The dry run must not touch a cluster, a cloud account or Terraform: these stand-ins record any call and fail it.
+stubs="$work/stubs"
+mkdir -p "$stubs"
+for tool in kubectl helm aws terraform; do
+  printf '#!/bin/sh\necho "%s $*" >> "%s/calls.log"\nexit 99\n' "$tool" "$stubs" > "$stubs/$tool"
+  chmod +x "$stubs/$tool"
+done
+
+# run_bootstrap ARGS...: a dry run with the stand-ins first on PATH; output in $work/bout, status in $rc.
+run_bootstrap() {
+  rc=0
+  PATH="$stubs:$PATH" "$bootstrap" --context test-context --dry-run "$@" > "$work/bout" 2>&1 || rc=$?
+}
+
+run_bootstrap
+check "a plain dry run exits 0" test "$rc" -eq 0
+check "observability is off by default" grep -q '"platform.example/observability": "false"' "$work/bout"
+check "and nothing says it is enabled" test "$(grep -c 'observability enabled' "$work/bout")" = 0
+check "the dry run called no cluster, cloud or Terraform tool" test ! -e "$stubs/calls.log"
+
+run_bootstrap --enable-observability
+check "the flag exits 0 on its own" test "$rc" -eq 0
+check "the flag sets the label to true" grep -q '"platform.example/observability": "true"' "$work/bout"
+check "the label is written once" test "$(grep -c 'platform.example/observability' "$work/bout")" = 1
+check "the output says what the flag does and costs" grep -q 'observability enabled: Prometheus and Grafana keep their data in emptyDir' "$work/bout"
+check "and that there is no ingress" grep -q 'there is no ingress' "$work/bout"
+check "the other feature labels stay false" test "$(grep -c -e '"platform.example/data": "false"' -e '"platform.example/apps": "false"' -e '"platform.example/external-dns": "false"' -e '"platform.example/dns01": "false"' "$work/bout")" = 4
+check "the cluster is still registered as managed on AWS" grep -q '"platform.example/cloud": "aws"' "$work/bout"
+check "the dry run still called no tool" test ! -e "$stubs/calls.log"
+
+run_bootstrap --enable-data --enable-apps --apps-profile data --enable-observability
+check "together with the data layer and the services it exits 0" test "$rc" -eq 0
+check "every label is set on the same run" test "$(grep -c -e '"platform.example/observability": "true"' -e '"platform.example/data": "true"' -e '"platform.example/apps": "true"' -e '"platform.example/apps-profile": "data"' "$work/bout")" = 4
+
+run_bootstrap --enable-observability extra
+check "the flag takes no value" test "$rc" -eq 1
+check "and the message names the argument" grep -q 'unknown argument: extra' "$work/bout"
+
+"$bootstrap" --help > "$work/bout" 2>&1
+check "the help lists the flag" grep -q -e '--enable-observability' "$work/bout"
+check "and says it is off by default" test "$(sed -n '/--enable-observability/,/--enable-apps/p' "$work/bout" | grep -c 'off by')" -ge 1
+check "and says how to reach Grafana" test "$(sed -n '/--enable-observability/,/--enable-apps/p' "$work/bout" | grep -c 'port-forward')" -ge 1
+
+# The label the script writes must be the one the ApplicationSets select on, or the flag deploys nothing.
+check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 5
+check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/observability' platform/argocd/apps/*.yaml | grep -vc '/9[0-9]-observability-')" = 0
+
+echo "chart-contract-check.py (observability checks)"
+
+contract_py="$(./scripts/python-with-yaml.sh)" || contract_py=""
+obs="$fixtures/observability"
+project="platform/argocd/bootstrap/appproject-platform-observability.yaml"
+
+# contract FILE ARGS...: run one check on a manifest file; output in $work/cout, status in $rc.
+contract() {
+  local file="$1"
+  shift
+  rc=0
+  "$contract_py" scripts/chart-contract-check.py "$@" < "$file" > "$work/cout" 2>&1 || rc=$?
+}
+
+if [ -z "$contract_py" ]; then
+  echo "  skip  no Python with PyYAML found (installing yamllint provides it)"
+else
+  contract "$obs/compliant.yaml" restricted t
+  check "a locked-down workload meets the restricted level" test "$rc" -eq 0
+  contract "$obs/privileged.yaml" restricted t
+  check "a host-network, hostPath, privileged workload does not" test "$rc" -eq 1
+  check "the failure names hostNetwork" grep -q 'sets hostNetwork' "$work/cout"
+  check "and the hostPath volume" grep -q 'volume type hostPath (root)' "$work/cout"
+  check "and the host port" grep -q 'uses hostPort 9100' "$work/cout"
+  check "and the missing capability drop" grep -q 'must drop ALL capabilities' "$work/cout"
+  check "and the user 0" grep -q 'runs as user 0' "$work/cout"
+  contract "$obs/prometheus-unsafe.yaml" restricted t
+  check "a Prometheus resource that would run as root is refused" test "$rc" -eq 1
+  check "and so is one without a seccomp profile" grep -q 'needs a seccomp profile' "$work/cout"
+
+  contract "$obs/compliant.yaml" ephemeral t
+  check "a workload with only an emptyDir is ephemeral" test "$rc" -eq 0
+  contract "$obs/stateful.yaml" ephemeral t
+  check "claims, Prometheus storage, an Alertmanager, an Ingress and a load balancer are refused" test "$rc" -eq 1
+  check "the claim is named" grep -q 'PersistentVolumeClaim/data is rendered' "$work/cout"
+  check "the claim template is named" grep -q 'StatefulSet/db has volume claim templates' "$work/cout"
+  check "the Prometheus storage is named" grep -q 'Prometheus/demo has persistent storage' "$work/cout"
+  check "the Alertmanager is named" grep -q 'Alertmanager/demo is rendered' "$work/cout"
+  check "the Ingress is named" grep -q 'Ingress/demo is rendered' "$work/cout"
+  check "the load balancer is named" grep -q 'is a LoadBalancer Service' "$work/cout"
+
+  contract "$obs/grafana-secret-ref.yaml" grafana-admin t
+  check "Grafana reading the generated Secret passes" test "$rc" -eq 0
+  contract "$obs/grafana-literal.yaml" grafana-admin t
+  check "Grafana with a literal password fails" test "$rc" -eq 1
+  check "and the literal variable is named" grep -q 'sets GF_SECURITY_ADMIN_PASSWORD to a literal value' "$work/cout"
+  check "and a Secret carrying a password fails" grep -q 'Secret/demo-grafana carries a password' "$work/cout"
+  contract "$obs/compliant.yaml" grafana-admin t
+  check "a stream without Grafana fails the Grafana check" test "$rc" -eq 1
+
+  contract "$obs/compliant.yaml" digest-pinned t
+  check "an image pinned by digest passes" test "$rc" -eq 0
+  contract "$obs/unpinned.yaml" digest-pinned t
+  check "an image pinned by tag only fails" test "$rc" -eq 1
+
+  contract "$obs/inside-project.yaml" project-fit t "$project" observability
+  check "resources the AppProject allows pass, with the default namespace applied" test "$rc" -eq 0
+  contract "$obs/outside-project.yaml" project-fit t "$project" observability
+  check "resources it does not allow fail" test "$rc" -eq 1
+  check "the cluster-scoped kind is named" grep -q 'ValidatingWebhookConfiguration/demo (admissionregistration.k8s.io) is cluster-scoped and not in clusterResourceWhitelist' "$work/cout"
+  check "the namespaced kind is named" grep -q 'Secret/demo (core) is not in namespaceResourceWhitelist' "$work/cout"
+  check "the namespace is named" grep -q 'Deployment/demo is in the namespace shop' "$work/cout"
+
+  # CRDs are built here because a realistic one is far larger than a fixture should be.
+  "$contract_py" - "$work" << 'PYEOF'
+import sys
+import yaml
+
+out = sys.argv[1]
+PLURALS = ["alertmanagers", "podmonitors", "probes", "prometheuses", "prometheusrules", "servicemonitors"]
+
+
+def crd(plural, storage=(True,), pad=0):
+    versions = [
+        {
+            "name": "v1" if i == 0 else "v1beta{}".format(i),
+            "served": True,
+            "storage": flag,
+            "schema": {"openAPIV3Schema": {"type": "object", "description": "x" * pad}},
+        }
+        for i, flag in enumerate(storage)
+    ]
+    return {
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {"name": plural + ".monitoring.coreos.com"},
+        "spec": {
+            "group": "monitoring.coreos.com",
+            "scope": "Namespaced",
+            "names": {"plural": plural, "kind": plural[:-1].capitalize()},
+            "versions": versions,
+        },
+    }
+
+
+def write(name, docs):
+    with open("{}/{}".format(out, name), "w") as f:
+        yaml.safe_dump_all(docs, f)
+
+
+write("crds-ok.yaml", [crd(p) for p in PLURALS])
+write("crds-missing.yaml", [crd(p) for p in PLURALS if p != "podmonitors"])
+write("crds-two-storage.yaml", [crd(p, storage=(True, True)) if p == "probes" else crd(p) for p in PLURALS])
+write("crds-large.yaml", [crd(p, pad=300000) if p == "prometheuses" else crd(p) for p in PLURALS])
+write("crds-none.yaml", [])
+PYEOF
+  stack_app="platform/argocd/apps/91-observability-stack.yaml"
+  grep -v 'ServerSideApply=true' "$stack_app" > "$work/stack-no-ssa.yaml"
+  contract "$work/crds-ok.yaml" crds t "$stack_app"
+  check "well-formed CRDs pass" test "$rc" -eq 0
+  contract "$work/crds-none.yaml" crds t "$stack_app"
+  check "a render with no CRDs fails" test "$rc" -eq 1
+  contract "$work/crds-missing.yaml" crds t "$stack_app"
+  check "a missing CRD is named" grep -q 'podmonitors.monitoring.coreos.com is not rendered' "$work/cout"
+  contract "$work/crds-two-storage.yaml" crds t "$stack_app"
+  check "two storage versions fail" grep -q 'probes.monitoring.coreos.com must have exactly one storage version' "$work/cout"
+  contract "$work/crds-large.yaml" crds t "$stack_app"
+  check "a CRD over the annotation limit passes when the Application uses server-side apply" test "$rc" -eq 0
+  contract "$work/crds-large.yaml" crds t "$work/stack-no-ssa.yaml"
+  check "and fails when it does not" test "$rc" -eq 1
+  check "and the message names the CRD and the sync option" grep -q 'prometheuses.monitoring.coreos.com.*ServerSideApply=true' "$work/cout"
+  contract "$work/crds-ok.yaml" crds t "$work/stack-no-ssa.yaml"
+  check "small CRDs do not need server-side apply" test "$rc" -eq 0
+
+  # Sync waves: the real files agree with the README, and a misplaced wave is caught.
+  rc=0
+  "$contract_py" scripts/chart-contract-check.py waves platform/argocd/apps platform/argocd/README.md > "$work/cout" 2>&1 || rc=$?
+  check "the real sync waves are in the documented order and match the README" test "$rc" -eq 0
+  rm -rf "$work/apps"
+  cp -R platform/argocd/apps "$work/apps"
+  sed 's/sync-wave: "13"/sync-wave: "9"/' platform/argocd/apps/93-observability-monitors.yaml > "$work/apps/93-observability-monitors.yaml"
+  rc=0
+  "$contract_py" scripts/chart-contract-check.py waves "$work/apps" platform/argocd/README.md > "$work/cout" 2>&1 || rc=$?
+  check "monitors before the stack's CRDs fail the wave check" test "$rc" -eq 1
+  check "the failure names both" grep -q 'observability-stack (wave 11) must come before observability-monitors (wave 9)' "$work/cout"
+  check "and the README mismatch" grep -q 'observability-monitors: wave 9' "$work/cout"
+  cp platform/argocd/apps/93-observability-monitors.yaml "$work/apps/93-observability-monitors.yaml"
+  grep -v 'sync-wave: "10"' platform/argocd/apps/90-observability-secrets.yaml > "$work/apps/90-observability-secrets.yaml"
+  rc=0
+  "$contract_py" scripts/chart-contract-check.py waves "$work/apps" platform/argocd/README.md > "$work/cout" 2>&1 || rc=$?
+  check "an observability ApplicationSet without a wave fails" test "$rc" -eq 1
+fi
+
+echo "chart-contract-check.py (dashboards)"
+
+if [ -z "$contract_py" ]; then
+  echo "  skip  no Python with PyYAML found (installing yamllint provides it)"
+else
+  dash="$work/dash"
+  rm -rf "$dash"
+  mkdir -p "$dash"
+  # Each case is a directory of dashboard files plus CASE.yaml, the ConfigMaps Helm would render for it.
+  "$contract_py" - "$obs/dashboards" "$dash" << 'DASHPY'
+import copy
+import json
+import os
+import sys
+
+import yaml
+
+src, out = sys.argv[1], sys.argv[2]
+good = json.load(open(src + "/ok-board.json"))
+
+
+def make(name, boards, label=True, configmaps=True, stale=False):
+    d = os.path.join(out, name)
+    os.makedirs(d)
+    docs = []
+    for fname, board in boards.items():
+        text = board if isinstance(board, str) else json.dumps(board, indent=2)
+        with open(os.path.join(d, fname), "w") as f:
+            f.write(text)
+        if isinstance(board, str) or not configmaps:
+            continue
+        shown = copy.deepcopy(board)
+        if stale:
+            shown["title"] = "An older title"
+        docs.append(
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "dashboard-" + fname[:-5],
+                    "namespace": "observability",
+                    "labels": {"grafana_dashboard": "1"} if label else {},
+                },
+                "data": {fname: json.dumps(shown)},
+            }
+        )
+    with open(d + ".yaml", "w") as f:
+        yaml.safe_dump_all(docs, f)
+
+
+def changed(fn):
+    board = copy.deepcopy(good)
+    fn(board)
+    return board
+
+
+def other(uid, title):
+    board = copy.deepcopy(good)
+    board["uid"], board["title"] = uid, title
+    return board
+
+
+make("good", {"ok-board.json": good})
+make("not-json", {"ok-board.json": "{not json"})
+make("same-title", {"ok-board.json": good, "other.json": other("other", good["title"])})
+make("wrong-uid", {"ok-board.json": changed(lambda b: b.update(uid="something-else"))})
+make("fixed-uid", {"ok-board.json": changed(lambda b: b["panels"][1]["datasource"].update(uid="abc123"))})
+make("string-ds", {"ok-board.json": changed(lambda b: b["panels"][1]["targets"][0].update(datasource="Prometheus"))})
+make("no-variable", {"ok-board.json": changed(lambda b: b["templating"]["list"].pop(0))})
+make("invented", {"ok-board.json": changed(lambda b: b["panels"][1]["targets"][0].update(expr="sum(rate(demo_invented_total[5m]))"))})
+make("bad-variable", {"ok-board.json": changed(lambda b: b["templating"]["list"][1].update(query={"query": "metrics(.*)", "refId": "x"}))})
+make("no-query", {"ok-board.json": changed(lambda b: b["panels"][1].update(targets=[]))})
+make("no-label", {"ok-board.json": good}, label=False)
+make("no-configmap", {"ok-board.json": good}, configmaps=False)
+make("stale-configmap", {"ok-board.json": good}, stale=True)
+DASHPY
+
+  # dash_check CASE: run the dashboard check on a case; output in $work/cout, status in $rc.
+  dash_check() {
+    rc=0
+    "$contract_py" scripts/chart-contract-check.py dashboards t "$dash/$1" "$obs/dashboards/stack-values.yaml" "$obs/dashboards/sources.txt" < "$dash/$1.yaml" > "$work/cout" 2>&1 || rc=$?
+  }
+
+  dash_check good
+  check "a dashboard that follows the rules passes" test "$rc" -eq 0
+  dash_check not-json
+  check "a file that is not JSON fails" test "$rc" -eq 1
+  check "and the file is named" grep -q 'ok-board.json is not valid JSON' "$work/cout"
+  dash_check same-title
+  check "two dashboards with the same title fail" grep -q "the title 'Example board' is also used by ok-board.json" "$work/cout"
+  dash_check wrong-uid
+  check "a uid that is not the file name fails" grep -q "the uid 'something-else' must equal the file name 'ok-board'" "$work/cout"
+  dash_check fixed-uid
+  check "a fixed data source uid fails" test "$rc" -eq 1
+  check "and the message names the variable to use" grep -qF "uid: \${datasource}" "$work/cout"
+  dash_check string-ds
+  check "a data source given by name fails" grep -q "has the data source 'Prometheus'" "$work/cout"
+  dash_check no-variable
+  check "a dashboard without the data source variable fails" grep -q 'has no data source variable' "$work/cout"
+  dash_check invented
+  check "a metric that no source confirms fails" grep -q 'uses the metric demo_invented_total, which is not confirmed in any source' "$work/cout"
+  dash_check bad-variable
+  check "a variable that is not label_values fails" grep -q "the variable 'service' must be label_values" "$work/cout"
+  dash_check no-query
+  check "a panel without a query fails" grep -q "panel 'Requests per second' has no query" "$work/cout"
+  dash_check no-label
+  check "a ConfigMap without the sidecar label fails" grep -q 'does not carry the sidecar label grafana_dashboard: "1"' "$work/cout"
+  dash_check no-configmap
+  check "a dashboard file that no ConfigMap holds fails" grep -q 'ok-board.json is not in any rendered ConfigMap' "$work/cout"
+  dash_check stale-configmap
+  check "a ConfigMap whose content differs from the file fails" grep -q 'with different content than the file' "$work/cout"
+
+  # The real dashboards: valid, labelled like the sidecar expects, and built only from confirmed metrics.
+  check "the metric extractor keeps metric names and drops functions, label names, variables and keywords" test "$("$contract_py" - << 'MPY'
+import importlib.util
+spec = importlib.util.spec_from_file_location("c", "scripts/chart-contract-check.py")
+c = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(c)
+print(" ".join(c.metrics_in('histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{route=~"$route", status="5.."}[$__rate_interval]))) / on (a) group_left (b) up or vector(0)')))
+MPY
+)" = "http_request_duration_seconds_bucket up"
+fi
 
 echo
 echo "$passed passed, $failed failed"

@@ -1,0 +1,24 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "collector.name" . }}
+  labels:
+    {{- include "collector.labels" . | nindent 4 }}
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  selector:
+    matchLabels:
+      {{- include "collector.selectorLabels" . | nindent 6 }}
+  endpoints:
+    # The collector's own metrics.
+    - port: telemetry
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+    # Metrics received over OTLP.
+    - port: exporter
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

@@ -1,0 +1,56 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-observability
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Metrics foundation (Prometheus, Grafana, OpenTelemetry Collector and monitors) deployed from platform/observability
+  sourceRepos:
+    - https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+  # Any registered cluster, but only the observability namespace, plus kube-system for the Service that the chart
+  # creates there so that CoreDNS can be scraped. The monitors for the services and the data layer live in the
+  # observability namespace and select their targets, so the shop and data namespaces are not destinations.
+  destinations:
+    - server: "*"
+      namespace: observability
+    - server: "*"
+      namespace: kube-system
+  # Cluster-scoped kinds the stack creates: the namespace itself, the operator's CRDs and the read-only roles of the
+  # operator, Prometheus and kube-state-metrics. No webhook configurations, no priority classes. Anything else is
+  # rejected.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    # Only rendered when persistence is switched on (values-persistent.yaml): Grafana's claim.
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+    - group: batch
+      kind: Job
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+    # Prometheus, ServiceMonitor, PodMonitor, PrometheusRule and the other monitoring.coreos.com kinds. The rules and
+    # the Alertmanager resources of the next steps use the same group.
+    - group: monitoring.coreos.com
+      kind: "*"
+  orphanedResources:
+    warn: true

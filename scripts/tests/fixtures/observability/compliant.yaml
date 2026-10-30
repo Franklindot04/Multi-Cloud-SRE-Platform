@@ -1,0 +1,45 @@
+# A workload that meets the restricted Pod Security level, has no volumes of its own and pins its image by digest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: demo
+          image: example.invalid/demo:1.0.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: scratch
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo
+  namespace: observability
+spec:
+  type: ClusterIP
+  selector:
+    app: demo
+  ports:
+    - name: http
+      port: 80

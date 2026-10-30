@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "collector.name" . }}
+  labels:
+    {{- include "collector.labels" . | nindent 4 }}
+spec:
+  # ClusterIP only: services send OTLP to http://otel-collector.observability.svc:4318 (or :4317 for gRPC).
+  type: ClusterIP
+  selector:
+    {{- include "collector.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: otlp-grpc
+      port: {{ .Values.ports.otlpGrpc }}
+      targetPort: otlp-grpc
+      protocol: TCP
+    - name: otlp-http
+      port: {{ .Values.ports.otlpHttp }}
+      targetPort: otlp-http
+      protocol: TCP
+    - name: telemetry
+      port: {{ .Values.ports.telemetry }}
+      targetPort: telemetry
+      protocol: TCP
+    - name: exporter
+      port: {{ .Values.ports.exporter }}
+      targetPort: exporter
+      protocol: TCP
