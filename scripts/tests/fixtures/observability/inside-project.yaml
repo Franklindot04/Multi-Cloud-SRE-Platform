@@ -1,0 +1,36 @@
+# Resources the platform-observability project allows. The Service has no namespace, so it lands in the destination.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: demo
+rules: []
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo
+spec:
+  ports:
+    - port: 80
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: demo
+  namespace: observability
+spec:
+  endpoints: []
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coredns
+  namespace: kube-system
+spec:
+  ports:
+    - port: 9153

@@ -1,0 +1,20 @@
+# Resources the platform-observability project must refuse: a webhook configuration (cluster-scoped kind that is not
+# allowed), a Secret (namespaced kind that is not allowed) and a Deployment in the shop namespace.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: demo
+webhooks: []
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo
+  namespace: observability
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: shop
+spec: {}

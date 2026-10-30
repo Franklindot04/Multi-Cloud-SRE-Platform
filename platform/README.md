@@ -8,5 +8,5 @@ Cluster-level configuration reconciled onto the clusters by Argo CD. Terraform p
 | `addons/` | Cluster baseline add-ons as pinned Helm wrapper charts: AWS Load Balancer Controller, external-dns, cert-manager and metrics-server (see [`addons/README.md`](addons/README.md)) |
 | `data/` | Data layer: PostgreSQL (CloudNativePG), a Valkey cache and RabbitMQ with their operators, namespaces, storage class and in-cluster credential generation and the copy of the RabbitMQ credentials into `shop` (see [`data/README.md`](data/README.md)); off unless a cluster is labelled `platform.example/data=true` |
 | `../deploy/helm` | The Helm chart for the sample services, deployed by the `apps-*` ApplicationSets in `argocd/apps` to clusters labelled `platform.example/apps=true` (see [ADR-0016](../docs/adr/0016-service-deployment-model.md)) |
-| `observability/` | Metrics, logs, traces, alerting and dashboards |
+| `observability/` | Metrics foundation (Prometheus Operator, Prometheus, Grafana, an OpenTelemetry Collector and the monitors for the services and the data layer; see [`observability/README.md`](observability/README.md)); off unless a cluster is labelled `platform.example/observability=true`. Logs, traces, alerting and dashboards follow |
 | `security/` | Policy engine, secrets integration, network policies, RBAC |

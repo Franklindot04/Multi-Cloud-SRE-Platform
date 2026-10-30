@@ -1,0 +1,31 @@
+---
+# Optional, off by default: keeps Prometheus data and Grafana state on persistent volumes. Add this file after
+# values.yaml in the Application's value files (platform/argocd/apps/91-observability-stack.yaml) to turn it on.
+#
+# The volumes are PersistentVolumeClaims on the cluster's default StorageClass. Like the data layer's volumes they are
+# created outside Terraform and are not removed by terraform destroy: they keep billing until the claims are
+# deleted. Deleting the Application does not delete them.
+#
+# A ReadWriteOnce volume ties the pod to one zone, which matters on a cluster with Spot nodes in several zones: a
+# replacement node in another zone cannot attach the volume until a node in the original zone is available.
+kube-prometheus-stack:
+  prometheus:
+    prometheusSpec:
+      # Two days still fits comfortably in 5 GiB at this scrape volume; raise retention and size together.
+      retention: 2d
+      retentionSize: 4GB
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 5Gi
+  grafana:
+    persistence:
+      enabled: true
+      type: pvc
+      accessModes:
+        - ReadWriteOnce
+      size: 1Gi

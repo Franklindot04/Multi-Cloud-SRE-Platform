@@ -1,0 +1,31 @@
+---
+# The monitors live in the observability namespace and select their targets in other namespaces, so the services
+# and the data layer need no change and nothing happens in their namespaces. Prometheus selects every monitor
+# in every namespace (see the kube-prometheus-stack values), so no release label is needed.
+namespace: observability
+
+services:
+  # The namespace the services are deployed to (deploy/helm, ADR-0016) and the Service port they serve
+  # /metrics on. The Services carry app.kubernetes.io/name=<service> and app.kubernetes.io/part-of=sre-sample.
+  namespace: shop
+  port: http
+  interval: 30s
+  names:
+    - gateway
+    - orders
+    - payments
+    - notifier
+
+data:
+  namespace: data
+  interval: 30s
+  # CloudNativePG serves metrics on the instance pods (port "metrics", 9187). The read-write and read-only Services
+  # do not expose that port, so a PodMonitor is used instead of a ServiceMonitor.
+  postgres:
+    enabled: true
+    cluster: platform-pg
+  # The RabbitMQ Cluster Operator turns the rabbitmq_prometheus plugin on and adds the port "prometheus" to the
+  # cluster's Service.
+  rabbitmq:
+    enabled: true
+    cluster: platform-mq

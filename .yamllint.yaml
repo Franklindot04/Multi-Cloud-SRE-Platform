@@ -16,6 +16,9 @@ ignore: |
   platform/data/*/charts/
   platform/data/*/Chart.lock
   platform/data/rabbitmq-operator/cluster-operator.yml
+  platform/observability/*/templates/
+  platform/observability/*/charts/
+  platform/observability/*/Chart.lock
 
 rules:
   line-length:

@@ -1,0 +1,52 @@
+---
+# Grafana dashboards: one ConfigMap per JSON file, labelled grafana_dashboard so that the Grafana sidecar loads it. Wave 14:
+# after the stack. They are plain ConfigMaps, so nothing here needs the operator's CRDs; Grafana picks them up whenever
+# they appear.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: observability-dashboards
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "14"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/observability: "true"
+  template:
+    metadata:
+      name: 'observability-dashboards-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: observability-dashboards
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-observability
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/observability/dashboards
+        helm:
+          releaseName: observability-dashboards
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: observability
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

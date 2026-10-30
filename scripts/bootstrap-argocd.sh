@@ -36,6 +36,10 @@ Options:
                            off by default. Volumes it creates are not managed by Terraform and are not
                            removed by terraform destroy: see docs/runbooks/data-layer.md
   --data-profile PROFILE   standard (one instance of each, default) or ha (three); needs --enable-data
+  --enable-observability   label the cluster so the metrics foundation (Prometheus Operator, Prometheus, Grafana,
+                           OpenTelemetry Collector, monitors) is deployed to the observability namespace; off by
+                           default. Requests about 0.3 vCPU and 1 GiB of memory on the nodes, and uses no volumes
+                           and no load balancer. Reach Grafana by port-forward: see platform/observability/README.md
   --enable-apps            label the cluster so the sample services (gateway, orders, payments, notifier) are
                            deployed from deploy/helm; off by default. Images must be published first: see
                            docs/runbooks/service-deployment.md
@@ -58,6 +62,7 @@ ASSUME_YES=0
 ENABLE_EXTERNAL_DNS=0
 ENABLE_DNS01=0
 ENABLE_DATA=0
+ENABLE_OBSERVABILITY=0
 ENABLE_APPS=0
 APPS_PROFILE="memory"
 DATA_PROFILE="standard"
@@ -107,6 +112,10 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || die "--data-profile needs a value"
       DATA_PROFILE="$2"
       shift 2
+      ;;
+    --enable-observability)
+      ENABLE_OBSERVABILITY=1
+      shift
       ;;
     --enable-apps)
       ENABLE_APPS=1
@@ -327,6 +336,7 @@ build_cluster_secret() {
     --arg dns01 "$(bool_word "$ENABLE_DNS01")" \
     --arg data "$(bool_word "$ENABLE_DATA")" \
     --arg data_profile "$DATA_PROFILE" \
+    --arg observability "$(bool_word "$ENABLE_OBSERVABILITY")" \
     --arg apps "$(bool_word "$ENABLE_APPS")" \
     --arg apps_profile "$APPS_PROFILE" \
     --arg cluster_name "$CLUSTER_NAME" \
@@ -353,6 +363,7 @@ build_cluster_secret() {
           "platform.example/dns01": $dns01,
           "platform.example/data": $data,
           "platform.example/data-profile": $data_profile,
+          "platform.example/observability": $observability,
           "platform.example/apps": $apps,
           "platform.example/apps-profile": $apps_profile
         },
@@ -380,6 +391,9 @@ build_cluster_secret() {
 
 if [ "$ENABLE_DATA" -eq 1 ]; then
   info "data layer enabled (profile: $DATA_PROFILE): its volumes are not managed by Terraform; see docs/runbooks/data-layer.md for teardown"
+fi
+if [ "$ENABLE_OBSERVABILITY" -eq 1 ]; then
+  info "observability enabled: Prometheus and Grafana keep their data in emptyDir (lost when a pod is rescheduled), there is no ingress, and the stack requests about 0.3 vCPU and 1 GiB of memory; see platform/observability/README.md"
 fi
 if [ "$ENABLE_APPS" -eq 1 ]; then
   info "services enabled (profile: $APPS_PROFILE): the images in deploy/helm/values/images.yaml must exist in the registry; an enabled ingress creates a billed load balancer"

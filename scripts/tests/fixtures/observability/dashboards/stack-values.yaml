@@ -1,0 +1,8 @@
+---
+# The part of the stack values that names the label the Grafana sidecar selects dashboards by.
+kube-prometheus-stack:
+  grafana:
+    sidecar:
+      dashboards:
+        label: grafana_dashboard
+        labelValue: "1"

@@ -32,12 +32,14 @@ platform/argocd/
                     appproject-platform-system.yaml   Argo CD itself and the GitOps definitions
                     appproject-platform-addons.yaml   the add-ons
                     appproject-platform-apps.yaml     the sample services (shop namespace only)
+                    appproject-platform-observability.yaml  the metrics foundation (observability namespace)
                     root-application.yaml             app-of-apps, points at apps/
   apps/           synced by the root Application:
                     00-argocd.yaml                    Argo CD manages its own upgrades
                     10-... 61-...                     ApplicationSets for the add-ons
                     70-... 78-...                     the data layer (and the RabbitMQ credential copy)
                     80-... 83-...                     the sample services, one ApplicationSet each
+                    90-... 94-...                     the metrics foundation (platform/observability)
 ```
 
 ## How clusters are described
@@ -52,6 +54,7 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `platform.example/dns01` | `true`, `false` | Create the Let's Encrypt DNS-01 ClusterIssuer (default `false`) |
 | `platform.example/data` | `true`, `false` | Deploy the data layer from `platform/data` (default `false`; volumes it creates outlive `terraform destroy`) |
 | `platform.example/data-profile` | `standard`, `ha` | Data layer profile (default `standard`; `ha` needs three nodes) |
+| `platform.example/observability` | `true`, `false` | Deploy the metrics foundation from `platform/observability` (default `false`; no volumes, no ingress) |
 | `platform.example/apps` | `true`, `false` | Deploy the sample services from `deploy/helm` (default `false`; needs published images) |
 | `platform.example/apps-profile` | `memory`, `data` | Service profile (default `memory`; `data` needs the data layer) |
 
@@ -86,6 +89,11 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 6 | `data-secrets`, `data-cnpg-operator`, `data-rabbitmq-operator` |
 | 7 | `data-postgres`, `data-valkey`, `data-rabbitmq` |
 | 8 | `data-rabbitmq-credentials` (copies the broker credentials into `shop`) |
+| 10 | `observability-secrets` (only on clusters labelled `platform.example/observability=true`) |
+| 11 | `observability-stack` (Prometheus Operator, Prometheus, Grafana) |
+| 12 | `observability-collector` |
+| 13 | `observability-monitors` |
+| 14 | `observability-dashboards` (Grafana dashboards as ConfigMaps) |
 | 20 | `apps-notifier`, `apps-payments` (only on clusters labelled `platform.example/apps=true`) |
 | 21 | `apps-orders` |
 | 22 | `apps-gateway` |
@@ -105,6 +113,7 @@ Waves order how the ApplicationSets are created; each generated Application then
 - Default RBAC role is read-only (`policy.default: role:readonly`); Dex and notifications are disabled.
 - The built-in `admin` account is kept for bootstrap. Rotate its password after the first login and delete the initial secret (see the runbook).
 - A fourth AppProject, `platform-apps`, restricts the sample services to the `shop` namespace and a short allowlist of namespaced kinds (the only cluster-scoped kind is `Namespace`), so it cannot reach the `data` namespace or its volumes. A third AppProject, `platform-data`, restricts the data layer to the namespaces `data`, `shop`, `cnpg-system` and `rabbitmq-system` and an allowlist of cluster-scoped kinds that includes StorageClass.
+- A fifth AppProject, `platform-observability`, restricts the metrics foundation to the namespaces `observability` and `kube-system` (for the CoreDNS Service the stack creates there), the cluster-scoped kinds a Prometheus Operator install needs (the namespace, CRDs and read-only roles, but no webhook configurations) and a short allowlist of namespaced kinds. The existing projects do not fit: `platform-addons` allows other namespaces and kinds, and `platform-data` and `platform-apps` are scoped to the data and shop namespaces. The monitors for the services and the data layer live in the `observability` namespace and select their targets, so this project cannot touch `shop` or `data`. `make observability-check` verifies that everything the charts render is allowed by it.
 - AppProjects limit sources to this repository, destinations to the namespaces in use, and cluster-scoped kinds to an allowlist, and warn about orphaned resources.
 
 ## Checks
@@ -112,5 +121,7 @@ Waves order how the ApplicationSets are created; each generated Application then
 ```bash
 make argocd-check
 ```
+
+The metrics foundation has its own check, `make observability-check` (see [`platform/observability`](../observability)).
 
 Runs `helm lint`, `helm template` and `kubeconform` on the install chart (default and HA values), `kubeconform` on every Application, ApplicationSet and AppProject (with Argo CD CRD schemas from the pinned `datreeio/CRDs-catalog` commit `3eb90d47`), `yamllint`, `shellcheck` (through `scripts/shellcheck.sh`: `-S style`, version 0.11.0, the same as CI), and a render test: every referenced path and values file exists, every project is defined, and every templated Helm parameter changes the rendered output of its chart. Missing tools are skipped.

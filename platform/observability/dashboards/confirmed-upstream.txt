@@ -1,0 +1,11 @@
+# Metric names that the dashboards use and that no file in this repository or in a vendored chart contains, with
+# where each was confirmed. scripts/chart-contract-check.py (dashboards) accepts a name from this list, from the
+# source of the sample services, from the vendored CloudNativePG chart (its dashboard and default queries) and from
+# the vendored kube-prometheus-stack chart (its rules), and rejects any other.
+#
+# Confirmed against the kube-state-metrics v2.20.0 documentation (docs/metrics/workload/pod-metrics.md, STABLE) on
+# 2026-10-30; 2.20.0 is the version the pinned stack chart deploys:
+kube_pod_container_status_restarts_total
+#
+# Added by Prometheus itself for every scrape target:
+up

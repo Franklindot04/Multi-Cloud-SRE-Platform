@@ -1,0 +1,205 @@
+---
+# Prometheus Operator, Prometheus and Grafana for a small cluster of a couple of Spot nodes. Everything here is sized
+# for that: modest requests, a short retention, no persistent volumes, no Alertmanager and no node-exporter.
+# Access is by port-forward only (see platform/observability/README.md); there is no ingress.
+kube-prometheus-stack:
+  # The operator's CRDs (Prometheus, ServiceMonitor, PodMonitor, PrometheusRule and so on) are rendered by the chart
+  # and are too large for client-side apply, so the Argo CD Application syncs with ServerSideApply=true.
+  crds:
+    enabled: true
+
+  # No Alertmanager yet: nothing would receive an alert. Alert and recording rules arrive with the SLO work,
+  # so the chart's default rules (and the dashboards that depend on them) are off as well.
+  alertmanager:
+    enabled: false
+  defaultRules:
+    create: false
+
+  # node-exporter needs hostNetwork, hostPID and hostPath volumes, which the restricted Pod Security level does
+  # not allow, and the namespace enforces restricted. It is left out. Node CPU and memory still come from the
+  # kubelet and cAdvisor. To add it later, deploy it into its own namespace that is allowed to be privileged
+  # (see the README), not into this one.
+  nodeExporter:
+    enabled: false
+
+  # The control plane of EKS and GKE is managed and does not expose these endpoints to the cluster, and kube-proxy
+  # listens on localhost only, so their targets would always be down.
+  kubeControllerManager:
+    enabled: false
+  kubeScheduler:
+    enabled: false
+  kubeEtcd:
+    enabled: false
+  kubeProxy:
+    enabled: false
+
+  # No priority class is set on any pod of the stack, on purpose. The sample services use platform-apps; metrics must
+  # never preempt them, and when a node is short of room the stack goes first.
+  prometheusOperator:
+    # The admission webhooks need a certificate and a hook Job to patch it in. They only validate rule files,
+    # which are checked in CI instead, so they are off, and with them the operator's own TLS listener.
+    admissionWebhooks:
+      enabled: false
+    tls:
+      enabled: false
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+    # The chart defaults already run as non-root with a read-only root filesystem, no privilege escalation, all
+    # capabilities dropped and a RuntimeDefault seccomp profile; they are repeated so a chart change cannot
+    # loosen them silently.
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+    prometheusConfigReloader:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 24Mi
+        limits:
+          cpu: 50m
+          memory: 48Mi
+
+  prometheus:
+    service:
+      type: ClusterIP
+    # The kubelet, API server and CoreDNS monitors authenticate with the Prometheus pod's own projected token, which
+    # the kubelet rotates. The alternative is a long-lived token Secret, which is not created.
+    serviceAccount:
+      createTokenSecret: false
+    # The scrape class that carries that authorization for the control-plane monitors.
+    controlPlaneScrapeClass:
+      enabled: true
+    prometheusSpec:
+      replicas: 1
+      # Two days of data. With emptyDir the data is lost whenever the pod is rescheduled, so a longer retention
+      # would only cost disk on the node. The size limit stops a high-cardinality mistake from filling it.
+      retention: 2d
+      retentionSize: 1GB
+      scrapeInterval: 30s
+      evaluationInterval: 30s
+      walCompression: true
+      enableAdminAPI: false
+      # Select every ServiceMonitor, PodMonitor, Probe and PrometheusRule in every namespace, not only those
+      # carrying this release's label, so monitors owned by other charts (the data layer, the services) are found.
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      probeSelectorNilUsesHelmValues: false
+      ruleSelectorNilUsesHelmValues: false
+      scrapeConfigSelectorNilUsesHelmValues: false
+      resources:
+        requests:
+          cpu: 150m
+          memory: 512Mi
+        limits:
+          cpu: 750m
+          memory: 1Gi
+      # No persistent volume in the default profile: with no storageSpec the operator uses an emptyDir. Metrics
+      # are lost when the pod is rescheduled or the node is replaced; that is acceptable for a reference
+      # platform on Spot nodes. To keep them, add values-persistent.yaml to the Application's value files
+      # (a PersistentVolumeClaim on the platform's default StorageClass).
+      storageSpec: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 2000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+  grafana:
+    enabled: true
+    # The admin account comes from the Secret grafana-admin, generated in the cluster by the
+    # observability-secrets chart. No password is set, defaulted or committed anywhere in this repository.
+    admin:
+      existingSecret: grafana-admin
+      userKey: admin-user
+      passwordKey: admin-password
+    # Dashboards are added in a later change. They will be ConfigMaps in this namespace labelled
+    # grafana_dashboard: "1", which the sidecar loads; the chart's own dashboards need the default rules.
+    defaultDashboardsEnabled: false
+    # The Prometheus data source is a ConfigMap created by the chart and loaded by the sidecar.
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        labelValue: "1"
+        # Only this namespace. The chart's default (ALL) needs a cluster-wide role to read ConfigMaps.
+        searchNamespace: null
+      datasources:
+        enabled: true
+        searchNamespace: null
+      resources:
+        requests:
+          cpu: 10m
+          memory: 48Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+    # emptyDir: dashboards and data sources come from ConfigMaps, and nothing here is worth a volume. Users,
+    # preferences and anything created in the UI are lost when the pod is rescheduled. To keep them, use
+    # values-persistent.yaml.
+    persistence:
+      enabled: false
+    initChownData:
+      enabled: false
+    rbac:
+      namespaced: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 300m
+        memory: 384Mi
+    grafana.ini:
+      analytics:
+        check_for_updates: false
+        reporting_enabled: false
+      security:
+        disable_gravatar: true
+    # The chart defaults already meet the restricted Pod Security level; they are repeated so a chart change
+    # cannot loosen them silently.
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 472
+      runAsGroup: 472
+      fsGroup: 472
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+    ingress:
+      enabled: false
+    # The chart's test Pod is a Helm hook that Argo CD does not run.
+    testFramework:
+      enabled: false
+
+  kube-state-metrics:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 48Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi

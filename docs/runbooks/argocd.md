@@ -38,7 +38,7 @@ Installs the Argo CD hub on the EKS cluster, registers the cluster, and lets Arg
 
    The script reads the Terraform outputs, confirms that the context points at the EKS cluster and that your AWS credentials belong to the same account, asks for confirmation, installs the pinned Argo CD chart, waits for it, writes the cluster Secret (labels and annotations only), and applies the AppProjects and the root Application. It prints the access instructions at the end and never prints the password.
 
-   Optional flags: `--enable-data` (the data layer, see the [data layer runbook](data-layer.md)), `--enable-apps` with `--apps-profile memory|data` (the sample services; needs published images, see the [service deployment runbook](service-deployment.md)), `--enable-external-dns --dns-domain example.com` and `--enable-dns01 --acme-email you@example.com` once a domain exists and the DNS roles are applied (see [global DNS](global-dns.md)).
+   Optional flags: `--enable-data` (the data layer, see the [data layer runbook](data-layer.md)), `--enable-observability` (Prometheus, Grafana and an OpenTelemetry Collector in the `observability` namespace, no volumes and no ingress; see [`platform/observability`](../../platform/observability/README.md)), `--enable-apps` with `--apps-profile memory|data` (the sample services; needs published images, see the [service deployment runbook](service-deployment.md)), `--enable-external-dns --dns-domain example.com` and `--enable-dns01 --acme-email you@example.com` once a domain exists and the DNS roles are applied (see [global DNS](global-dns.md)).
 
 4. **Open the UI** (no ingress; port-forward only):
 

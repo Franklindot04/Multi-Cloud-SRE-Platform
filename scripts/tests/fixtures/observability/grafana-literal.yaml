@@ -1,0 +1,31 @@
+# Grafana with the admin password in the manifest, and a Secret that carries it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-grafana
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: example.invalid/grafana:1.0.0
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: placeholder
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-grafana
+  namespace: observability
+stringData:
+  admin-password: placeholder

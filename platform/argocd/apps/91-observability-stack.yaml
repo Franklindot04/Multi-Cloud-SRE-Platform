@@ -1,0 +1,63 @@
+---
+# kube-prometheus-stack: the Prometheus Operator and its CRDs, Prometheus, Grafana and kube-state-metrics (vendored,
+# version-pinned chart). Wave 11. The CRDs are too large for client-side apply, so the Application syncs with
+# ServerSideApply=true. The namespace carries Pod Security restricted; the stack is configured to meet it (node-exporter
+# is off because it cannot).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: observability-stack
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "11"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/observability: "true"
+  template:
+    metadata:
+      name: 'observability-stack-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: observability-stack
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-observability
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/observability/kube-prometheus-stack
+        helm:
+          releaseName: kube-prometheus-stack
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: observability
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ServerSideApply=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/enforce-version: latest
+            pod-security.kubernetes.io/warn: restricted
+            pod-security.kubernetes.io/warn-version: latest
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/audit-version: latest
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 10m

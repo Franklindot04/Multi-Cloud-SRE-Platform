@@ -1,0 +1,49 @@
+---
+# The plain OpenTelemetry Collector distribution as a Deployment. It accepts OTLP over gRPC and HTTP, exposes
+# metrics for Prometheus, and accepts traces only to drop them until a trace backend exists.
+image:
+  repository: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector
+  # Version 0.164.0 (released 2026-10-26), the multi-architecture index. Pinned by digest; the tag is only
+  # a label for people.
+  tag: 0.164.0
+  digest: sha256:28b6d41ac51bff6b41ba5e8fe503569ffb9d6a1ea90f7a78419e86f34e44f750
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+# The image runs as this user and group (its Dockerfile sets USER 10001).
+runAsUser: 10001
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 96Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+# memory_limiter refuses new data above limitMiB and starts dropping at limitMiB minus spikeLimitMiB. Keep limitMiB
+# clearly below the container's memory limit, or the kernel kills the pod before the processor reacts.
+memoryLimiter:
+  checkInterval: 1s
+  limitMiB: 192
+  spikeLimitMiB: 48
+
+# Traces are received and dropped: the debug exporter at the lowest verbosity prints one line per batch.
+# Replace it with an exporter when a trace backend exists.
+debug:
+  verbosity: basic
+
+ports:
+  otlpGrpc: 4317
+  otlpHttp: 4318
+  # The collector's own metrics (queue sizes, refused and dropped data, memory).
+  telemetry: 8888
+  # Metrics that arrive over OTLP, in the Prometheus text format.
+  exporter: 8889
+  health: 13133
+
+serviceMonitor:
+  # Needs the Prometheus Operator CRDs (the kube-prometheus-stack Application).
+  enabled: true
+  interval: 30s

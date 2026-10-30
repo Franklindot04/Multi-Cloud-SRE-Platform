@@ -1,0 +1,12 @@
+apiVersion: v2
+name: kube-prometheus-stack
+description: Prometheus Operator, Prometheus and Grafana for cluster and service metrics
+type: application
+version: 0.1.0
+appVersion: 0.94.2
+annotations:
+  platform/clouds: "aws,gcp"
+dependencies:
+  - name: kube-prometheus-stack
+    version: 92.16.0
+    repository: https://prometheus-community.github.io/helm-charts

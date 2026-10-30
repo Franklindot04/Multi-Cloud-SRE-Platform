@@ -1,0 +1,78 @@
+# Everything the default profile must not render: a claim, a claim template, Prometheus storage, an Alertmanager,
+# an Ingress and a load balancer.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: observability
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  namespace: observability
+spec:
+  serviceName: db
+  selector:
+    matchLabels:
+      app: db
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+        - name: db
+          image: example.invalid/db:1.0.0
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: demo
+  namespace: observability
+spec:
+  storage:
+    volumeClaimTemplate:
+      spec:
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Alertmanager
+metadata:
+  name: demo
+  namespace: observability
+spec:
+  replicas: 1
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo
+  namespace: observability
+spec:
+  rules: []
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: public
+  namespace: observability
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80

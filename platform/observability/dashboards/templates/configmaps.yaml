@@ -1,0 +1,16 @@
+{{- range $path, $_ := .Files.Glob "files/*.json" }}
+{{- $file := base $path }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-{{ trimSuffix ".json" $file }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{ $.Values.sidecarLabel.key }}: {{ $.Values.sidecarLabel.value | quote }}
+    app.kubernetes.io/name: dashboard-{{ trimSuffix ".json" $file }}
+    app.kubernetes.io/part-of: observability
+data:
+  {{ $file }}: |-
+    {{- $.Files.Get $path | nindent 4 }}
+{{- end }}
