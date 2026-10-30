@@ -64,6 +64,8 @@ jobs:
             --all-on scripts/shellcheck.sh
             --all-on scripts/test-scripts.sh
             --all-on scripts/update-image-values.sh
+            --all-on scripts/check-trivyignore.sh
+            --all-on scripts/verify-image.sh
             --all-on scripts/tests/
             --all-on apps/docker-compose.yml
             --all-on apps/docker-compose.data.yml

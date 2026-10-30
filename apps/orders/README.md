@@ -103,6 +103,8 @@ uv pip compile --python-version 3.14 --generate-hashes --no-header requirements.
 uv pip compile --python-version 3.14 --generate-hashes --no-header requirements-dev.in -o requirements-dev.txt
 ```
 
+The image contains the dependencies from `requirements.txt` and no pip. The virtual environment is built without pip, the build stage installs into it from outside, and the final stage removes the pip that ships with the base image. pip carries its own copies of other libraries (msgpack, urllib3 and a pkg_resources copy of setuptools), which a vulnerability scan reports as if the application used them, and nothing installs packages at run time. The Dockerfile fails the build if pip is reachable again.
+
 ## Development
 
 ```bash
