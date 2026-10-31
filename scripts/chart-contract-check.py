@@ -568,8 +568,16 @@ def check_logql(expr, variables, where):
     for open_, close in (("{", "}"), ("(", ")"), ("[", "]")):
         if plain.count(open_) != plain.count(close):
             problems.append("{}: the query has unbalanced {}{}: {}".format(where, open_, close, expr))
-    if expr.count('"') % 2:
+    # Backtick strings are raw: quotes and backslashes inside them are text, so they are looked at first.
+    unquoted = re.sub(r"`[^`]*`", "", expr)
+    if expr.count("`") % 2:
+        problems.append("{}: the query has an unclosed backtick: {}".format(where, expr))
+    elif unquoted.count('"') % 2:
         problems.append("{}: the query has an unclosed double quote: {}".format(where, expr))
+    for ref in re.findall(r'"(?:[^"\\]|\\.)*"', unquoted):
+        if re.search(r"\$\{?search\}?", ref):
+            problems.append("{}: the search text is inside a double-quoted string, which breaks on a double quote or a backslash; "
+                            "use a backtick string".format(where))
     for name in re.findall(r"\$\{?([A-Za-z_]\w*)\}?", expr):
         if name not in variables and name not in GRAFANA_INTERVALS:
             problems.append("{}: the query uses ${}, which is not a variable of the dashboard".format(where, name))
@@ -610,9 +618,11 @@ def check_logql(expr, variables, where):
     return problems
 
 
-def loki_queries(files_dir):
+def loki_queries(files_dir, searches=()):
     """(dashboard, panel or variable, expression with Grafana variables filled in, kind) for every Loki query in the
-    dashboards, once with "All" selected and once with concrete values, for scripts/observability-check.sh to run."""
+    dashboards, once with "All" selected and once with concrete values, for scripts/observability-check.sh to run.
+    searches is a list of (name, text): the queries that use the search variable are also returned once for each text,
+    with the other variables on "All"."""
     out = []
     for path in sorted(glob.glob(files_dir + "/*.json")):
         board = json.load(open(path, encoding="utf-8"))
@@ -631,7 +641,10 @@ def loki_queries(files_dir):
                 if m:
                     items.append(("variable " + v["name"], m.group(1), "selector"))
         for title, expr, kind in items:
-            for mode, values in (("all", {}), ("concrete", {"namespace": "shop", "service": "gateway|payments", "search": "request"})):
+            modes = [("all", {}), ("concrete", {"namespace": "shop", "service": "gateway|payments", "search": "request"})]
+            if re.search(r"\$\{?search\}?", expr):
+                modes += [("search " + name, {"search": value}) for name, value in searches]
+            for mode, values in modes:
                 text = expr
                 for name, var in variables.items():
                     if var.get("type") == "datasource":

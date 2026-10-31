@@ -7,7 +7,8 @@ scripts/observability-check.sh starts a Loki container from the image the chart 
 chart renders, and calls this. The sample lines are pushed with the labels and the structured metadata that Alloy
 sets (platform/observability/alloy): a JSON line with a lower-case level, a JSON line with an upper-case level (whose
 metadata is lower case, as Alloy makes it) and plain text lines with no level. Then every Loki query of every dashboard
-is run, with "All" selected and with concrete values, and a few of them are checked for what they return.
+is run, with "All" selected and with concrete values, and the queries with the search variable also with search texts
+that contain double quotes, a backslash, or nothing. A few results are checked for what they return.
 
 Exit status: 0 all queries parsed and returned what was expected, 1 otherwise, 2 bad arguments.
 """
@@ -96,6 +97,15 @@ def sample_streams():
     ]
 
 
+# Search texts that would break a quoted LogQL string: double quotes, a backslash and nothing at all. The dashboards put
+# the search variable in a backtick (raw) string, so none of them needs escaping.
+AWKWARD_SEARCHES = (
+    ("with double quotes", '"level":"error"'),
+    ("with a backslash", r"\d+"),
+    ("empty", ""),
+)
+
+
 def run_query(base, kind, expr):
     now = time.time()
     if kind == "selector":
@@ -134,7 +144,7 @@ def main(argv):
     push(base, sample_streams())
     failures = 0
     results = {}
-    queries = contract.loki_queries(directory)
+    queries = contract.loki_queries(directory, AWKWARD_SEARCHES)
     for dashboard, title, expr, kind in queries:
         status, body = run_query(base, kind, expr)
         results[(dashboard, title)] = body
@@ -183,6 +193,22 @@ def main(argv):
         namespaces = {s.get("namespace") for s in body.get("data") or []}
         expect(logs, "variable namespace (all)", "expected the namespaces shop and data, got {}".format(sorted(map(str, namespaces))),
                namespaces == {"shop", "data"})
+    body = results.get((logs, "variable service (all)"))
+    if body is not None:
+        # Built from service_name, so pods without an app label (PostgreSQL, RabbitMQ, Valkey) can be selected too.
+        names = {s.get("service_name") for s in body.get("data") or []}
+        expect(logs, "variable service (all)", "expected the service_name values gateway, payments and postgres, got {}".format(sorted(map(str, names))),
+               names == {"gateway", "payments", "postgres"})
+
+    # The awkward search texts: the line panel must parse them and find what the text says (any case). The sample
+    # lines in the shop and data namespaces: 7 lines; 2 have "level":"error" (the payments line has ERROR); 5 have a
+    # digit (the PostgreSQL lines have none).
+    for name, want in (("with double quotes", 2), ("with a backslash", 5), ("empty", 7)):
+        body = results.get((logs, "Log lines (search {})".format(name)))
+        if body is None:
+            expect(logs, "Log lines (search {})".format(name), "the query was not run", False)
+        else:
+            expect(logs, "Log lines (search {})".format(name), "expected {} lines, got {}".format(want, line_count(body)), line_count(body) == want)
 
     # The level is structured metadata: it filters lines, and it is not a label.
     status, body = run_query(base, "range", '{namespace="shop"} | level="error"')

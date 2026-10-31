@@ -394,7 +394,7 @@ if [ "$ENABLE_DATA" -eq 1 ]; then
   info "data layer enabled (profile: $DATA_PROFILE): its volumes are not managed by Terraform; see docs/runbooks/data-layer.md for teardown"
 fi
 if [ "$ENABLE_OBSERVABILITY" -eq 1 ]; then
-  info "observability enabled: Prometheus and Grafana keep their data in emptyDir (lost when a pod is rescheduled), there is no ingress, and the stack requests about 0.3 vCPU and 1 GiB of memory; see platform/observability/README.md"
+  info "observability enabled: Prometheus, Grafana and Loki keep their data in emptyDir (lost when a pod is rescheduled), there is no ingress, and the stack requests about 0.45 vCPU and 1.4 GiB of memory; see platform/observability/README.md"
 fi
 if [ "$ENABLE_APPS" -eq 1 ]; then
   info "services enabled (profile: $APPS_PROFILE): the images in deploy/helm/values/images.yaml must exist in the registry; an enabled ingress creates a billed load balancer"
