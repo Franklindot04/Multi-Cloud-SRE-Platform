@@ -9,7 +9,7 @@ Everything is off unless the cluster Secret carries the label `platform.example/
 ## Before you start
 
 - Argo CD is installed on the cluster ([Argo CD runbook](argocd.md)) and the `platform/argocd/apps` files of this change are on `main` in GitHub: the root Application reads Git, not your working tree.
-- There is room on the nodes. The stack requests about 0.3 vCPU and 1 GiB of memory, on top of everything else. On the default two `t3.large` Spot nodes that is tight when the data layer and the services run too; see the capacity paragraph in the ADR before enabling everything at once.
+- There is room on the nodes. The stack requests about 0.45 vCPU and 1.4 GiB of memory, on top of everything else. On the default two `t3.large` Spot nodes that is tight when the data layer and the services run too; see the capacity paragraph in the ADR before enabling everything at once.
 - You know which other flags you use. The bootstrap script writes every cluster label on each run, so repeat them (for example `--enable-data`), or they are switched off.
 
 ## Enable

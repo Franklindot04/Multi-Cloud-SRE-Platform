@@ -844,7 +844,8 @@ run_bootstrap --enable-observability
 check "the flag exits 0 on its own" test "$rc" -eq 0
 check "the flag sets the label to true" grep -q '"platform.example/observability": "true"' "$work/bout"
 check "the label is written once" test "$(grep -c 'platform.example/observability' "$work/bout")" = 1
-check "the output says what the flag does and costs" grep -q 'observability enabled: Prometheus and Grafana keep their data in emptyDir' "$work/bout"
+check "the output says what the flag does and costs" grep -q 'observability enabled: Prometheus, Grafana and Loki keep their data in emptyDir' "$work/bout"
+check "the output gives the current size of the stack" grep -q 'about 0.45 vCPU and 1.4 GiB of memory' "$work/bout"
 check "and that there is no ingress" grep -q 'there is no ingress' "$work/bout"
 check "the other feature labels stay false" test "$(grep -c -e '"platform.example/data": "false"' -e '"platform.example/apps": "false"' -e '"platform.example/external-dns": "false"' -e '"platform.example/dns01": "false"' "$work/bout")" = 4
 check "the cluster is still registered as managed on AWS" grep -q '"platform.example/cloud": "aws"' "$work/bout"
@@ -1126,6 +1127,8 @@ make("logs-empty-selector", {"ok-logs.json": logs_changed(lambda b: logs_expr(b,
 make("logs-bad-filter-label", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$namespace\"} | status=\"500\" [$__auto]))"))})
 make("logs-bad-group", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum by (host) (rate({namespace=~\"$namespace\"} [$__auto]))"))})
 make("logs-unknown-variable", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$nope\"} [$__auto]))"))})
+make("logs-search-in-quotes", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$namespace\"} |~ \"(?i)$search\" [$__auto]))"))})
+make("logs-unclosed-backtick", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$namespace\"} |~ `(?i)$search [$__auto]))"))})
 make("logs-unbalanced", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$namespace\"} [$__auto])"))})
 make("logs-all-matches-empty", {"ok-logs.json": logs_changed(lambda b: b["templating"]["list"][1].update(allValue=".*"))})
 make("logs-bad-variable-label", {"ok-logs.json": logs_changed(lambda b: b["templating"]["list"][2].update(query={"query": "label_values({namespace=~\"$namespace\"}, host)", "refId": "x"}))})
@@ -1187,9 +1190,14 @@ DASHPY
   check "a variable the dashboard does not define fails" grep -qF "uses \$nope, which is not a variable of the dashboard" "$work/cout"
   dash_check logs-unbalanced
   check "unbalanced brackets fail" grep -q 'unbalanced ()' "$work/cout"
+  dash_check logs-search-in-quotes
+  check "the search text inside a double-quoted string fails" grep -q 'search text is inside a double-quoted string' "$work/cout"
+  dash_check logs-unclosed-backtick
+  check "an unclosed backtick fails" grep -q 'unclosed backtick' "$work/cout"
   dash_check logs-bad-variable-label
   check "a variable that lists values of an unknown label fails" grep -q "lists values of host, which is not a log stream label" "$work/cout"
-  check "the query listing fills in the variables, with All and with concrete values, and the intervals" test "$("$contract_py" scripts/chart-contract-check.py loki-queries "$dash/logs-good" | awk -F'\t' '$2 ~ /^Log volume/ {print $2 ": " $4}' | tr '\n' '|')" = 'Log volume by service (all): sum by (service_name) (rate({namespace=~".+", service_name=~".*"} |~ "(?i)" [1m]))|Log volume by service (concrete): sum by (service_name) (rate({namespace=~"shop", service_name=~"gateway|payments"} |~ "(?i)request" [1m]))|'
+  # shellcheck disable=SC2016 # the backticks are LogQL, not command substitution
+  check "the query listing fills in the variables, with All and with concrete values, and the intervals" test "$("$contract_py" scripts/chart-contract-check.py loki-queries "$dash/logs-good" | awk -F'\t' '$2 ~ /^Log volume/ {print $2 ": " $4}' | tr '\n' '|')" = 'Log volume by service (all): sum by (service_name) (rate({namespace=~".+", service_name=~".*"} |~ `(?i)` [1m]))|Log volume by service (concrete): sum by (service_name) (rate({namespace=~"shop", service_name=~"gateway|payments"} |~ `(?i)request` [1m]))|'
 
   # The real dashboards: valid, labelled like the sidecar expects, and built only from confirmed metrics.
   check "the metric extractor keeps metric names and drops functions, label names, variables and keywords" test "$("$contract_py" - << 'MPY'

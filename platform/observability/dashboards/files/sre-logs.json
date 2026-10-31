@@ -132,7 +132,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "sum(rate({namespace=~\"$namespace\", service_name=~\"$service\"} |~ \"(?i)$search\" [$__auto]))",
+          "expr": "sum(rate({namespace=~\"$namespace\", service_name=~\"$service\"} |~ `(?i)$search` [$__auto]))",
           "legendFormat": "Log lines per second",
           "queryType": "instant"
         }
@@ -366,7 +366,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "sum by (service_name) (rate({namespace=~\"$namespace\", service_name=~\"$service\"} |~ \"(?i)$search\" [$__auto]))",
+          "expr": "sum by (service_name) (rate({namespace=~\"$namespace\", service_name=~\"$service\"} |~ `(?i)$search` [$__auto]))",
           "legendFormat": "{{service_name}}",
           "queryType": "range"
         }
@@ -464,7 +464,7 @@
       "id": 10,
       "type": "logs",
       "title": "Log lines",
-      "description": "Newest first, for the namespaces, services and search text chosen above. At most 500 lines are shown.",
+      "description": "Newest first, for the namespaces, services and search text chosen above. At most 500 lines are shown. JSON lines are shown formatted.",
       "datasource": {
         "type": "loki",
         "uid": "${loki}"
@@ -482,7 +482,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "{namespace=~\"$namespace\", service_name=~\"$service\"} |~ \"(?i)$search\"",
+          "expr": "{namespace=~\"$namespace\", service_name=~\"$service\"} |~ `(?i)$search`",
           "queryType": "range",
           "maxLines": 500
         }
@@ -492,7 +492,7 @@
         "showLabels": false,
         "showCommonLabels": false,
         "wrapLogMessage": true,
-        "prettifyLogMessage": false,
+        "prettifyLogMessage": true,
         "enableLogDetails": true,
         "dedupStrategy": "none",
         "sortOrder": "Descending"

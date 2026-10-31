@@ -76,7 +76,7 @@
             "type": "loki",
             "uid": "${loki}"
           },
-          "expr": "sum by (service_name) (rate({namespace=~\"$namespace\", service_name=~\"$service\"} |~ \"(?i)$search\" [$__auto]))"
+          "expr": "sum by (service_name) (rate({namespace=~\"$namespace\", service_name=~\"$service\"} |~ `(?i)$search` [$__auto]))"
         }
       ]
     },
