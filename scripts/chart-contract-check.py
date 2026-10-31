@@ -33,21 +33,33 @@ The observability charts (platform/observability) add checks on the rendered out
   digest-pinned LABEL every container image is pinned by digest
   dashboards LABEL DIR STACK_VALUES SOURCE...
                       every Grafana dashboard in DIR is valid JSON with a unique uid (the file name) and title, uses
-                      the data source variable and no fixed data source uid, and uses only metric names that are
-                      confirmed in a SOURCE (a source directory, a vendored chart tarball, or a list of names); the
+                      a data source variable (datasource for Prometheus, loki for Loki) and no fixed data source uid,
+                      and uses only metric names that are confirmed in a SOURCE (a source directory, a vendored chart
+                      tarball, or a list of names). LogQL queries may use only the log stream labels (namespace, pod,
+                      container, app, service, service_name) and the level, and every selector must exclude the empty
+                      value, as Loki requires. The
                       rendered ConfigMaps (stdin) carry the label that the Grafana sidecar in STACK_VALUES selects
+  loki LABEL          the Loki configuration is single tenant, uses the TSDB index with schema v13 and the filesystem,
+                      has the compactor's retention on with a retention period of at most 168h, and sets ingestion and
+                      line size limits
+  alloy LABEL         the Alloy configuration reads logs only with loki.source.kubernetes (no file or CRD source), from
+                      exactly the namespaces data and shop, turns no part of a log line into a label (the level goes
+                      to structured metadata), and its role cannot read Secrets or ConfigMaps
   crds LABEL APPSET   the Prometheus Operator CRDs are rendered and well formed (kubeconform has no schema for the
                       CustomResourceDefinition kind, so this is the check on them): the CRDs the platform relies on
                       exist, each has one storage version and a schema, and, because the large ones exceed what
                       client-side apply can store in an annotation, the ApplicationSet that deploys the chart
                       syncs with ServerSideApply=true
+  loki-queries DIR    prints, one per line (dashboard, panel, query type, query, tab separated), every Loki query of the
+                      dashboards in DIR with the Grafana variables filled in, with "All" selected and with concrete
+                      values; scripts/observability-check.sh runs them against a Loki image
   project-fit LABEL PROJECT DEFAULT_NAMESPACE
                       every rendered resource is allowed by the AppProject file: its kind, and its namespace
                       (DEFAULT_NAMESPACE where the manifest names none)
 
 The per-chart checks read a multi-document YAML stream (the output of `helm template`) on stdin.
 
-Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned LABEL
+Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned|loki|alloy LABEL
        helm template ... | chart-contract-check.py project-fit LABEL PROJECT_FILE DEFAULT_NAMESPACE
        helm template ... --include-crds | chart-contract-check.py crds LABEL APPLICATIONSET_FILE
        helm template ... | chart-contract-check.py dashboards LABEL DASHBOARD_DIR STACK_VALUES SOURCE...
@@ -337,6 +349,84 @@ def check_digest_pinned(docs, label):
     return problems
 
 
+def _config_map(docs, name):
+    for d in docs:
+        if d["kind"] == "ConfigMap" and (d.get("metadata") or {}).get("name") == name:
+            return d.get("data") or {}
+    return None
+
+
+def check_loki(docs, label):
+    """The Loki configuration the chart renders: one tenant, TSDB schema v13, filesystem storage, retention on."""
+    data = _config_map(docs, "loki")
+    if data is None or "config.yaml" not in data:
+        return ["{}: no ConfigMap loki with a config.yaml".format(label)]
+    cfg = yaml.safe_load(data["config.yaml"]) or {}
+    problems = []
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    if cfg.get("auth_enabled") is not False:
+        fail("auth_enabled must be false (single tenant)")
+    configs = (cfg.get("schema_config") or {}).get("configs") or []
+    if not configs:
+        fail("schema_config has no entry")
+    else:
+        newest = sorted(configs, key=lambda c: str(c.get("from")))[-1]
+        if newest.get("store") != "tsdb" or newest.get("schema") != "v13":
+            fail("the newest schema entry must be store tsdb, schema v13 (it is {}, {})".format(newest.get("store"), newest.get("schema")))
+    if "filesystem" not in ((cfg.get("common") or {}).get("storage") or {}):
+        fail("common.storage must be the filesystem; object storage needs a bucket and a role this profile does not have")
+    if (cfg.get("compactor") or {}).get("retention_enabled") is not True:
+        fail("compactor.retention_enabled must be true")
+    limits = cfg.get("limits_config") or {}
+    retention = str(limits.get("retention_period", ""))
+    if not re.fullmatch(r"\d+h", retention) or int(retention[:-1]) > 168:
+        fail("limits_config.retention_period must be set in hours and be at most 168h (it is '{}')".format(retention))
+    for key in ("ingestion_rate_mb", "ingestion_burst_size_mb", "per_stream_rate_limit", "max_line_size"):
+        if not limits.get(key):
+            fail("limits_config.{} must be set".format(key))
+    return problems
+
+
+ALLOY_NAMESPACES = ["data", "shop"]
+
+
+def check_alloy(docs, label):
+    """The Alloy configuration: logs only through the Kubernetes API, from two namespaces, no log field as a label."""
+    data = _config_map(docs, "alloy")
+    if data is None or "config.alloy" not in data:
+        return ["{}: no ConfigMap alloy with a config.alloy".format(label)]
+    text = data["config.alloy"]
+    problems = []
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    if "loki.source.kubernetes" not in text:
+        fail("the logs must be read with loki.source.kubernetes")
+    for banned in ("loki.source.file", "local.file_match", "loki.source.podlogs"):
+        if banned in text:
+            fail("{} reads files or CRDs from the node and is not allowed here".format(banned))
+    for banned in ("stage.labels", "stage.label_keep", "stage.static_labels"):
+        if banned in text:
+            fail("{} would turn parts of a log line into labels; use stage.structured_metadata".format(banned))
+    if "stage.structured_metadata" not in text:
+        fail("the level must be stored with stage.structured_metadata")
+    found = []
+    for m in re.finditer(r"namespaces\s*\{\s*names\s*=\s*\[([^\]]*)\]", text):
+        found.extend(re.findall(r'"([^"]+)"', m.group(1)))
+    if sorted(found) != ALLOY_NAMESPACES:
+        fail("the collected namespaces must be exactly {} (found {})".format(", ".join(ALLOY_NAMESPACES), ", ".join(sorted(found)) or "none"))
+    for d in docs:
+        if d["kind"] in ("ClusterRole", "Role"):
+            for rule in d.get("rules") or []:
+                if set(rule.get("resources") or []) & {"secrets", "configmaps"}:
+                    fail("{} can read {}; log collection does not need that".format(name_of(d), ", ".join(sorted(rule["resources"]))))
+    return problems
+
+
 # The annotation that client-side apply stores the last applied configuration in is limited to 256 KiB.
 ANNOTATION_LIMIT = 262144
 REQUIRED_CRDS = ("alertmanagers", "podmonitors", "probes", "prometheuses", "prometheusrules", "servicemonitors")
@@ -431,17 +521,131 @@ def load_sources(paths):
     return declared, "\n".join(chunks)
 
 
-def _datasource_refs(node, where, problems):
+# The data source variable each type of data source must be referenced through: never a fixed uid or a name.
+DATASOURCE_VARIABLES = {"prometheus": "datasource", "loki": "loki"}
+
+
+def _datasource_refs(node, where, problems, used):
+    """Check every data source reference in a dashboard; the types referenced are added to the set `used`."""
     if isinstance(node, dict):
         for key, value in node.items():
             if key == "datasource":
-                if not (isinstance(value, dict) and value.get("uid") == "${datasource}" and value.get("type") == "prometheus"):
-                    problems.append("{} has the data source {!r}; it must be the variable {{type: prometheus, uid: ${{datasource}}}}".format(where, value))
+                kind = value.get("type") if isinstance(value, dict) else None
+                if kind in DATASOURCE_VARIABLES and value.get("uid") == "${" + DATASOURCE_VARIABLES[kind] + "}":
+                    used.add(kind)
+                else:
+                    problems.append(
+                        "{} has the data source {!r}; it must be the variable {{type: prometheus, uid: ${{datasource}}}} "
+                        "or {{type: loki, uid: ${{loki}}}}".format(where, value)
+                    )
             else:
-                _datasource_refs(value, where, problems)
+                _datasource_refs(value, where, problems, used)
     elif isinstance(node, list):
         for item in node:
-            _datasource_refs(item, where, problems)
+            _datasource_refs(item, where, problems, used)
+
+
+# Labels that exist on the log streams Alloy sends (platform/observability/alloy) plus service_name, which Loki adds. The
+# level is structured metadata taken from JSON lines: it can be filtered on and grouped by, but it is not in the index.
+LOKI_STREAM_LABELS = {"namespace", "pod", "container", "app", "service", "service_name"}
+LOKI_METADATA_LABELS = {"level"}
+GRAFANA_INTERVALS = {"__auto", "__interval", "__interval_ms", "__rate_interval", "__range", "__range_s", "__range_ms", "__from", "__to"}
+LOGQL_MATCHER = re.compile(r'([A-Za-z_]\w*)\s*(=~|!~|!=|=)\s*("(?:[^"\\]|\\.)*"|`[^`]*`)')
+
+
+def _empty_compatible(regex):
+    try:
+        return re.fullmatch(regex, "") is not None
+    except re.error:
+        return True
+
+
+def check_logql(expr, variables, where):
+    """Problems with a LogQL expression that can be seen without a server: labels, empty selectors, variables, brackets.
+    Whether Loki accepts the syntax is checked against the Loki image by scripts/observability-check.sh."""
+    problems = []
+    plain = re.sub(r'"(?:[^"\\]|\\.)*"|`[^`]*`', '""', expr)
+    for open_, close in (("{", "}"), ("(", ")"), ("[", "]")):
+        if plain.count(open_) != plain.count(close):
+            problems.append("{}: the query has unbalanced {}{}: {}".format(where, open_, close, expr))
+    if expr.count('"') % 2:
+        problems.append("{}: the query has an unclosed double quote: {}".format(where, expr))
+    for name in re.findall(r"\$\{?([A-Za-z_]\w*)\}?", expr):
+        if name not in variables and name not in GRAFANA_INTERVALS:
+            problems.append("{}: the query uses ${}, which is not a variable of the dashboard".format(where, name))
+    selectors = re.findall(r"\{([^{}]*)\}", expr)
+    if not selectors:
+        problems.append("{}: the query has no stream selector: {}".format(where, expr))
+    for selector in selectors:
+        counted = False
+        for label, op, value in LOGQL_MATCHER.findall(selector):
+            if label not in LOKI_STREAM_LABELS:
+                problems.append("{}: the selector uses the label {}, which is not a log stream label ({})".format(
+                    where, label, ", ".join(sorted(LOKI_STREAM_LABELS))))
+            text = value[1:-1]
+            if op == "=":
+                counted = counted or text != ""
+            elif op == "=~":
+                ref = re.fullmatch(r"\$\{?([A-Za-z_]\w*)\}?", text)
+                if ref and ref.group(1) in variables:
+                    var = variables[ref.group(1)]
+                    # "All" is the worst case: it must still exclude the empty value.
+                    if not var.get("includeAll"):
+                        counted = True
+                    elif not _empty_compatible(str(var.get("allValue", ".*"))):
+                        counted = True
+                elif not _empty_compatible(text):
+                    counted = True
+        if not counted:
+            problems.append(
+                "{}: the selector {{{}}} has no matcher that excludes the empty value, which Loki refuses "
+                "(use an allValue of .+ on the variable, or an equality matcher)".format(where, selector))
+    for label, _op in re.findall(r"\|\s*([A-Za-z_]\w*)\s*(=~|!~|!=|==|>=|<=|=|>|<)", plain):
+        if label not in LOKI_STREAM_LABELS | LOKI_METADATA_LABELS:
+            problems.append("{}: the label filter uses {}, which is not a stream label or the level".format(where, label))
+    for group in re.findall(r"\b(?:by|without)\s*\(([^)]*)\)", plain):
+        for label in [g.strip() for g in group.split(",") if g.strip()]:
+            if label not in LOKI_STREAM_LABELS | LOKI_METADATA_LABELS:
+                problems.append("{}: the query groups by {}, which is not a stream label or the level".format(where, label))
+    return problems
+
+
+def loki_queries(files_dir):
+    """(dashboard, panel or variable, expression with Grafana variables filled in, kind) for every Loki query in the
+    dashboards, once with "All" selected and once with concrete values, for scripts/observability-check.sh to run."""
+    out = []
+    for path in sorted(glob.glob(files_dir + "/*.json")):
+        board = json.load(open(path, encoding="utf-8"))
+        variables = {v["name"]: v for v in (board.get("templating") or {}).get("list") or []}
+        items = []
+        for panel in board.get("panels") or []:
+            for target in panel.get("targets") or []:
+                ds = target.get("datasource") or panel.get("datasource") or {}
+                if ds.get("type") == "loki" and target.get("expr"):
+                    items.append((panel.get("title"), target["expr"], target.get("queryType", "range")))
+        for v in variables.values():
+            q = v.get("query")
+            q = q.get("query", "") if isinstance(q, dict) else q
+            if v.get("type") == "query" and (v.get("datasource") or {}).get("type") == "loki" and q:
+                m = re.match(r"^label_values\((.*),\s*[A-Za-z_]\w*\)$", q.strip(), re.S)
+                if m:
+                    items.append(("variable " + v["name"], m.group(1), "selector"))
+        for title, expr, kind in items:
+            for mode, values in (("all", {}), ("concrete", {"namespace": "shop", "service": "gateway|payments", "search": "request"})):
+                text = expr
+                for name, var in variables.items():
+                    if var.get("type") == "datasource":
+                        continue
+                    if name in values:
+                        value = values[name]
+                    elif name == "search":
+                        value = ""
+                    else:
+                        value = str(var.get("allValue", ".*"))
+                    text = text.replace("${" + name + "}", value).replace("$" + name, value)
+                text = re.sub(r"\$(?:__auto|__interval|__rate_interval)", "1m", text)
+                out.append((os.path.basename(path), "{} ({})".format(title, mode), text, kind))
+    return out
 
 
 def check_dashboards(docs, label, files_dir, stack_values, sources):
@@ -483,9 +687,13 @@ def check_dashboards(docs, label, files_dir, stack_values, sources):
         titles.setdefault(title, base)
 
         variables = (board.get("templating") or {}).get("list") or []
-        if not any(v.get("name") == "datasource" and v.get("type") == "datasource" and v.get("query") == "prometheus" for v in variables):
-            problems.append("{} has no data source variable (name datasource, type datasource, query prometheus)".format(where))
-        _datasource_refs(board, where, problems)
+        by_name = {v.get("name"): v for v in variables}
+        used = set()
+        _datasource_refs(board, where, problems, used)
+        for kind in sorted(used):
+            name = DATASOURCE_VARIABLES[kind]
+            if not any(v.get("name") == name and v.get("type") == "datasource" and v.get("query") == kind for v in variables):
+                problems.append("{} has no data source variable (name {}, type datasource, query {})".format(where, name, kind))
 
         exprs, ids = [], set()
         for panel in board.get("panels") or []:
@@ -504,13 +712,23 @@ def check_dashboards(docs, label, files_dir, stack_values, sources):
             for target in panel.get("targets") or []:
                 if not (target.get("expr") or "").strip():
                     problems.append("{}: panel '{}' has an empty query".format(where, panel.get("title")))
-                exprs.append(target.get("expr") or "")
+                ds = target.get("datasource") or panel.get("datasource") or {}
+                kind = ds.get("type") if isinstance(ds, dict) else None
+                if kind == "loki":
+                    problems.extend(check_logql(target.get("expr") or "", by_name, "{}: panel '{}'".format(where, panel.get("title"))))
+                else:
+                    exprs.append(target.get("expr") or "")
         for v in variables:
             if v.get("type") == "query":
                 q = (v.get("query") or {}).get("query", "") if isinstance(v.get("query"), dict) else v.get("query", "")
                 m = re.match(r"^label_values\((.*),\s*[A-Za-z_]\w*\)$", q.strip(), re.S)
                 if not m:
                     problems.append("{}: the variable '{}' must be label_values(<selector>, <label>), not '{}'".format(where, v.get("name"), q))
+                elif (v.get("datasource") or {}).get("type") == "loki":
+                    problems.extend(check_logql(m.group(1), by_name, "{}: variable '{}'".format(where, v.get("name"))))
+                    wanted = re.search(r",\s*([A-Za-z_]\w*)\)\s*$", q.strip()).group(1)
+                    if wanted not in LOKI_STREAM_LABELS:
+                        problems.append("{}: the variable '{}' lists values of {}, which is not a log stream label".format(where, v.get("name"), wanted))
                 else:
                     exprs.append(m.group(1))
         unknown = sorted({n for expr in exprs for n in metrics_in(expr) if not confirmed(n)})
@@ -617,6 +835,8 @@ def check_waves(apps_dir, readme):
         ("observability-stack", "observability-collector"),
         ("observability-stack", "observability-monitors"),
         ("observability-stack", "observability-dashboards"),
+        ("observability-stack", "observability-loki"),
+        ("observability-loki", "observability-alloy"),
     ]
     for first, second in before:
         a, b = wave(first), wave(second)
@@ -648,6 +868,8 @@ def main(argv):
         "ephemeral": check_ephemeral,
         "grafana-admin": check_grafana_admin,
         "digest-pinned": check_digest_pinned,
+        "loki": check_loki,
+        "alloy": check_alloy,
     }
     if len(argv) == 3 and argv[1] in per_chart:
         problems = per_chart[argv[1]](load_stdin(), argv[2])
@@ -659,6 +881,10 @@ def main(argv):
         problems = check_project_fit(load_stdin(), argv[2], argv[3], argv[4])
     elif len(argv) == 4 and argv[1] == "waves":
         problems = check_waves(argv[2], argv[3])
+    elif len(argv) == 3 and argv[1] == "loki-queries":
+        for dashboard, title, expr, kind in loki_queries(argv[2]):
+            print("\t".join((dashboard, title, kind, expr)))
+        return 0
     else:
         print(__doc__, file=sys.stderr)
         return 2

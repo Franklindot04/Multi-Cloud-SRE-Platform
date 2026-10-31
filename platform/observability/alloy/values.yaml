@@ -1,0 +1,174 @@
+---
+# Grafana Alloy as the log collector for the shop and data namespaces. It reads pod logs through the Kubernetes API
+# (loki.source.kubernetes), so it needs no hostPath mount, no node access and no privilege, which is what the restricted
+# Pod Security level of the observability namespace allows. The price is that the API server serves every log stream,
+# which is fine for a few small services and is one more reason to keep the namespace list short.
+#
+# One replica in a Deployment, not a DaemonSet: with the API as the source there is no per-node file to read, and a
+# DaemonSet would make every pod tail every log. Clustering would be needed before raising the replica count.
+alloy:
+  # The CRD is for the PodLogs resource, which is not used. Without it the chart creates no cluster-scoped kind other
+  # than its role.
+  crds:
+    create: false
+
+  global:
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 473
+      runAsGroup: 473
+      fsGroup: 473
+      seccompProfile:
+        type: RuntimeDefault
+
+  controller:
+    type: deployment
+    replicas: 1
+    # No priority class, on purpose: when a node is short of room the logging stack goes before the services.
+    volumes:
+      extra:
+        - name: alloy-data
+          emptyDir:
+            sizeLimit: 100Mi
+
+  # Read access to pods, their logs and namespaces, and nothing else. The chart's defaults also read Secrets and
+  # ConfigMaps, which log collection does not need. The role has to be cluster-wide: the Application cannot create
+  # roles in the shop and data namespaces, and those namespaces come and go with the services and the data layer.
+  rbac:
+    create: true
+    rules:
+      - apiGroups: [""]
+        resources: ["pods", "pods/log"]
+        verbs: ["get", "list", "watch"]
+    # The chart joins the two lists into one ClusterRole and breaks on an empty one, so the second holds the
+    # namespaces rule rather than being left empty.
+    clusterRules:
+      - apiGroups: [""]
+        resources: ["namespaces"]
+        verbs: ["get", "list", "watch"]
+
+  # Reloads the configuration when the ConfigMap changes. Kept small; it is the second container of the pod.
+  configReloader:
+    enabled: true
+    resources:
+      requests:
+        cpu: 5m
+        memory: 24Mi
+      limits:
+        cpu: 50m
+        memory: 48Mi
+
+  alloy:
+    enableReporting: false
+    # The root filesystem is read-only; Alloy keeps its working data under this path, mounted below as an emptyDir.
+    storagePath: /var/lib/alloy
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 473
+      runAsGroup: 473
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    mounts:
+      extra:
+        - name: alloy-data
+          mountPath: /var/lib/alloy
+
+    configMap:
+      create: true
+      content: |
+        // Pods of the two namespaces that hold the sample services and the data layer. Nothing else is collected.
+        discovery.kubernetes "pods" {
+          role = "pod"
+
+          namespaces {
+            names = ["shop", "data"]
+          }
+        }
+
+        // The only labels that become Loki labels: namespace, pod, container, and the app name of the pod. The app
+        // name is also kept as "service", the label the services' own metrics use. Pods without the label (for
+        // example the PostgreSQL instances) simply have no app label. Fields inside a log line never become labels.
+        discovery.relabel "pods" {
+          targets = discovery.kubernetes.pods.targets
+
+          rule {
+            source_labels = ["__meta_kubernetes_namespace"]
+            target_label  = "namespace"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_name"]
+            target_label  = "container"
+          }
+
+          // The older "app" label first, then app.kubernetes.io/name wins when the pod has both.
+          rule {
+            source_labels = ["__meta_kubernetes_pod_label_app"]
+            regex         = "(.+)"
+            target_label  = "app"
+          }
+
+          rule {
+            source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+            regex         = "(.+)"
+            target_label  = "app"
+          }
+
+          rule {
+            source_labels = ["app"]
+            regex         = "(.+)"
+            target_label  = "service"
+          }
+        }
+
+        loki.source.kubernetes "pods" {
+          targets    = discovery.relabel.pods.output
+          forward_to = [loki.process.pods.receiver]
+        }
+
+        // The gateway, orders and notifier write JSON lines with a lower-case "level"; payments writes the Spring Boot
+        // logstash format, whose level is upper case. The level is lowered to one spelling and stored as structured
+        // metadata, not as a label, so the number of streams does not depend on it. Lines that are not JSON, or have
+        // no level, are passed on unchanged and get no level. (The template runs on every line and gives an empty
+        // value where nothing was extracted, which Loki does not store. A stage.match with a line filter would be more
+        // precise, but Alloy rejected its selector when this was tried against a running instance.)
+        loki.process "pods" {
+          forward_to = [loki.write.loki.receiver]
+
+          stage.json {
+            expressions = { level = "level" }
+          }
+
+          stage.template {
+            source   = "level"
+            // The chart runs this text through tpl, so the braces of the stage template are written as a raw string.
+            template = "{{ `{{ ToLower .Value }}` }}"
+          }
+
+          stage.structured_metadata {
+            values = { level = "" }
+          }
+        }
+
+        loki.write "loki" {
+          endpoint {
+            url = "http://loki.observability.svc.cluster.local:3100/loki/api/v1/push"
+          }
+        }

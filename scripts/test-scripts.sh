@@ -864,7 +864,7 @@ check "and says it is off by default" test "$(sed -n '/--enable-observability/,/
 check "and says how to reach Grafana" test "$(sed -n '/--enable-observability/,/--enable-apps/p' "$work/bout" | grep -c 'port-forward')" -ge 1
 
 # The label the script writes must be the one the ApplicationSets select on, or the flag deploys nothing.
-check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 5
+check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 7
 check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/observability' platform/argocd/apps/*.yaml | grep -vc '/9[0-9]-observability-')" = 0
 
 echo "chart-contract-check.py (observability checks)"
@@ -896,6 +896,26 @@ else
   contract "$obs/prometheus-unsafe.yaml" restricted t
   check "a Prometheus resource that would run as root is refused" test "$rc" -eq 1
   check "and so is one without a seccomp profile" grep -q 'needs a seccomp profile' "$work/cout"
+
+  contract "$obs/loki-ok.yaml" loki t
+  check "a single-tenant TSDB v13 filesystem Loki with retention passes (the older schema entry is ignored)" test "$rc" -eq 0
+  contract "$obs/loki-bad.yaml" loki t
+  check "a Loki with tenants, an old schema, object storage, no retention and no limits fails" test "$rc" -eq 1
+  check "the tenant setting is named" grep -q 'auth_enabled must be false' "$work/cout"
+  check "the schema is named" grep -q 'must be store tsdb, schema v13 (it is tsdb, v12)' "$work/cout"
+  check "the storage is named" grep -q 'common.storage must be the filesystem' "$work/cout"
+  check "the compactor is named" grep -q 'compactor.retention_enabled must be true' "$work/cout"
+  check "a retention longer than a week is named" grep -q "retention_period must be set in hours and be at most 168h (it is '720h')" "$work/cout"
+  check "a missing limit is named" grep -q 'limits_config.max_line_size must be set' "$work/cout"
+  contract "$obs/alloy-ok.yaml" alloy t
+  check "an Alloy that reads the API for two namespaces and stores the level as metadata passes" test "$rc" -eq 0
+  contract "$obs/alloy-bad.yaml" alloy t
+  check "an Alloy that reads files from the node, makes labels and reads Secrets fails" test "$rc" -eq 1
+  check "the file source is named" grep -q 'loki.source.file reads files or CRDs from the node' "$work/cout"
+  check "the missing API source is named" grep -q 'must be read with loki.source.kubernetes' "$work/cout"
+  check "the label stage is named" grep -q 'stage.labels would turn parts of a log line into labels' "$work/cout"
+  check "the extra namespace is named" grep -q 'exactly data, shop (found data, kube-system, shop)' "$work/cout"
+  check "the Secret access is named" grep -q 'can read pods, secrets' "$work/cout"
 
   contract "$obs/compliant.yaml" ephemeral t
   check "a workload with only an emptyDir is ephemeral" test "$rc" -eq 0
@@ -1085,6 +1105,30 @@ make("no-query", {"ok-board.json": changed(lambda b: b["panels"][1].update(targe
 make("no-label", {"ok-board.json": good}, label=False)
 make("no-configmap", {"ok-board.json": good}, configmaps=False)
 make("stale-configmap", {"ok-board.json": good}, stale=True)
+logs = json.load(open(src + "/ok-logs.json"))
+
+
+def logs_changed(fn):
+    board = copy.deepcopy(logs)
+    fn(board)
+    return board
+
+
+def logs_expr(board, expr):
+    board["panels"][2]["targets"][0]["expr"] = expr
+
+
+make("logs-good", {"ok-logs.json": logs})
+make("logs-fixed-uid", {"ok-logs.json": logs_changed(lambda b: b["panels"][2]["datasource"].update(uid="loki"))})
+make("logs-no-variable", {"ok-logs.json": logs_changed(lambda b: b["templating"]["list"].pop(0))})
+make("logs-bad-label", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$namespace\", job=\"x\"} [$__auto]))"))})
+make("logs-empty-selector", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({service_name=~\"$service\"} [$__auto]))"))})
+make("logs-bad-filter-label", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$namespace\"} | status=\"500\" [$__auto]))"))})
+make("logs-bad-group", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum by (host) (rate({namespace=~\"$namespace\"} [$__auto]))"))})
+make("logs-unknown-variable", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$nope\"} [$__auto]))"))})
+make("logs-unbalanced", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$namespace\"} [$__auto])"))})
+make("logs-all-matches-empty", {"ok-logs.json": logs_changed(lambda b: b["templating"]["list"][1].update(allValue=".*"))})
+make("logs-bad-variable-label", {"ok-logs.json": logs_changed(lambda b: b["templating"]["list"][2].update(query={"query": "label_values({namespace=~\"$namespace\"}, host)", "refId": "x"}))})
 DASHPY
 
   # dash_check CASE: run the dashboard check on a case; output in $work/cout, status in $rc.
@@ -1121,6 +1165,31 @@ DASHPY
   check "a dashboard file that no ConfigMap holds fails" grep -q 'ok-board.json is not in any rendered ConfigMap' "$work/cout"
   dash_check stale-configmap
   check "a ConfigMap whose content differs from the file fails" grep -q 'with different content than the file' "$work/cout"
+
+  # Loki panels.
+  dash_check logs-good
+  check "a dashboard that queries only Loki, through the loki variable, with allowed labels, passes" test "$rc" -eq 0
+  dash_check logs-fixed-uid
+  check "a fixed Loki data source uid fails" grep -q "has the data source {'type': 'loki', 'uid': 'loki'}" "$work/cout"
+  dash_check logs-no-variable
+  check "a Loki dashboard without the loki variable fails" grep -q 'has no data source variable (name loki, type datasource, query loki)' "$work/cout"
+  dash_check logs-bad-label
+  check "a selector on a label that is not a log stream label fails" grep -q 'uses the label job, which is not a log stream label' "$work/cout"
+  dash_check logs-empty-selector
+  check "a selector whose only matcher can match the empty value fails" grep -q 'has no matcher that excludes the empty value' "$work/cout"
+  dash_check logs-all-matches-empty
+  check "the same when the variable's All value is .*" grep -q 'has no matcher that excludes the empty value' "$work/cout"
+  dash_check logs-bad-filter-label
+  check "a label filter on something that is neither a stream label nor the level fails" grep -q 'the label filter uses status' "$work/cout"
+  dash_check logs-bad-group
+  check "grouping by an unknown label fails" grep -q 'groups by host' "$work/cout"
+  dash_check logs-unknown-variable
+  check "a variable the dashboard does not define fails" grep -qF "uses \$nope, which is not a variable of the dashboard" "$work/cout"
+  dash_check logs-unbalanced
+  check "unbalanced brackets fail" grep -q 'unbalanced ()' "$work/cout"
+  dash_check logs-bad-variable-label
+  check "a variable that lists values of an unknown label fails" grep -q "lists values of host, which is not a log stream label" "$work/cout"
+  check "the query listing fills in the variables, with All and with concrete values, and the intervals" test "$("$contract_py" scripts/chart-contract-check.py loki-queries "$dash/logs-good" | awk -F'\t' '$2 ~ /^Log volume/ {print $2 ": " $4}' | tr '\n' '|')" = 'Log volume by service (all): sum by (service_name) (rate({namespace=~".+", service_name=~".*"} |~ "(?i)" [1m]))|Log volume by service (concrete): sum by (service_name) (rate({namespace=~"shop", service_name=~"gateway|payments"} |~ "(?i)request" [1m]))|'
 
   # The real dashboards: valid, labelled like the sidecar expects, and built only from confirmed metrics.
   check "the metric extractor keeps metric names and drops functions, label names, variables and keywords" test "$("$contract_py" - << 'MPY'

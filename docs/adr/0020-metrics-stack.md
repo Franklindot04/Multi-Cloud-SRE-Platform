@@ -63,7 +63,7 @@ Teardown
 
 - **Nothing has run on a cluster.** See below.
 - **No alerting.** No Alertmanager, no alert or recording rules, no SLOs, no burn-rate alerts, no notification route.
-- **No logs and no traces.** Traces are accepted and dropped. Logs are not collected.
+- **No traces, and logs only through [ADR-0021](0021-logging-stack.md).** Traces are accepted and dropped. Logs are collected by the logging stack of that decision.
 - **No long-term or cross-cluster storage.** One Prometheus per cluster, two days, and only the EKS cluster exists.
 - **No RabbitMQ broker metrics in a dashboard**, no Valkey metrics (the chart has no exporter enabled), and the CloudNativePG and RabbitMQ operators are not scraped.
 - **No node-level metrics** (node-exporter), and no control-plane metrics (EKS and GKE do not expose them).

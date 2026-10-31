@@ -1,0 +1,12 @@
+apiVersion: v2
+name: alloy
+description: Grafana Alloy, which tails pod logs through the Kubernetes API and sends them to Loki
+type: application
+version: 0.1.0
+appVersion: v1.21.3
+annotations:
+  platform/clouds: "aws,gcp"
+dependencies:
+  - name: alloy
+    version: 1.15.0
+    repository: https://grafana.github.io/helm-charts

@@ -132,7 +132,21 @@ kube-prometheus-stack:
     # Dashboards are added in a later change. They will be ConfigMaps in this namespace labelled
     # grafana_dashboard: "1", which the sidecar loads; the chart's own dashboards need the default rules.
     defaultDashboardsEnabled: false
-    # The Prometheus data source is a ConfigMap created by the chart and loaded by the sidecar.
+    # The Prometheus data source is a ConfigMap created by the chart and loaded by the sidecar. Loki is added next to
+    # it the same way, from the chart's additionalDataSources list. The URL is the Service the loki chart creates in
+    # this namespace (platform/observability/loki). maxLines caps how many lines one log query returns to the browser.
+    # There are no derived fields or trace links: traces come later.
+    additionalDataSources:
+      - name: Loki
+        type: loki
+        uid: loki
+        url: http://loki.observability.svc.cluster.local:3100
+        access: proxy
+        isDefault: false
+        editable: false
+        jsonData:
+          maxLines: 1000
+          timeout: 60
     sidecar:
       dashboards:
         enabled: true

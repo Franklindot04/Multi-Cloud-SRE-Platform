@@ -1,0 +1,165 @@
+---
+# Loki for a small dev cluster: one binary, one replica, local filesystem storage on an emptyDir, a single tenant and
+# a short retention. Logs are lost when the pod is rescheduled; values-persistent.yaml keeps them on a volume, and
+# production would use object storage (see that file). Access is by port-forward only; there is no ingress and no
+# gateway in front of it.
+loki:
+  loki:
+    # One tenant, no X-Scope-OrgID header. Only the collector in this namespace writes, and only Grafana reads.
+    auth_enabled: false
+
+    commonConfig:
+      path_prefix: /var/loki
+      replication_factor: 1
+
+    storage:
+      type: filesystem
+      filesystem:
+        chunks_directory: /var/loki/chunks
+        rules_directory: /var/loki/rules
+
+    # TSDB index with schema v13, the current one. The date is in the past so that every log line the collector sends
+    # is covered; a later change of schema needs a new entry with a later date, never an edit of this one.
+    schemaConfig:
+      configs:
+        - from: "2024-04-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    # The chart merges these with its own defaults (query timeout, split interval).
+    limits_config:
+      # Everything older than this is deleted by the compactor, and lines older than it are rejected on the way in.
+      retention_period: 48h
+      reject_old_samples: true
+      reject_old_samples_max_age: 48h
+      # About 4 MB/s overall is far above what a few small services write. A single noisy stream is capped on its own
+      # so that one crash-looping pod cannot use up the budget of the others.
+      ingestion_rate_mb: 4
+      ingestion_burst_size_mb: 8
+      per_stream_rate_limit: 2MB
+      per_stream_rate_limit_burst: 6MB
+      max_line_size: 256KB
+      max_global_streams_per_user: 5000
+      max_label_names_per_series: 15
+      max_entries_limit_per_query: 2000
+      max_query_series: 500
+      max_query_length: 48h1m
+      max_query_lookback: 48h
+      allow_structured_metadata: true
+
+    compactor:
+      working_directory: /var/loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+      compaction_interval: 10m
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 50
+
+    # No usage reporting to the vendor.
+    analytics:
+      reporting_enabled: false
+
+    # The chart defaults already run as non-root with a read-only root filesystem, no privilege escalation and all
+    # capabilities dropped; they are repeated, with the seccomp profile, so a chart change cannot loosen them silently.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      runAsGroup: 10001
+      fsGroup: 10001
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+
+  deploymentMode: SingleBinary
+
+  # Roles only in this namespace. The cluster role exists for the rules sidecar, which is off.
+  rbac:
+    namespaced: true
+
+  singleBinary:
+    replicas: 1
+    # No volume claim: the data directory is an emptyDir. See values-persistent.yaml.
+    persistence:
+      enabled: false
+    # The chart mounts /var/loki only when it creates a claim, and the root filesystem is read-only, so the data
+    # directory is an emptyDir here. The size limit evicts the pod instead of filling the node's disk; 2 GiB is many
+    # times what 48 hours of logs from a few small services need.
+    extraVolumes:
+      - name: loki-data
+        emptyDir:
+          sizeLimit: 2Gi
+    extraVolumeMounts:
+      - name: loki-data
+        mountPath: /var/loki
+    # No priority class, on purpose: when a node is short of room the logging stack goes before the services.
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  # Everything the single-binary mode does not use or that this cluster does not need.
+  backend:
+    replicas: 0
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  ingester:
+    replicas: 0
+  querier:
+    replicas: 0
+  queryFrontend:
+    replicas: 0
+  queryScheduler:
+    replicas: 0
+  distributor:
+    replicas: 0
+  compactor:
+    replicas: 0
+  indexGateway:
+    replicas: 0
+  bloomPlanner:
+    replicas: 0
+  bloomBuilder:
+    replicas: 0
+  bloomGateway:
+    replicas: 0
+  ruler:
+    enabled: false
+    replicas: 0
+  gateway:
+    enabled: false
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+  memcached:
+    enabled: false
+  minio:
+    enabled: false
+  lokiCanary:
+    enabled: false
+  test:
+    enabled: false
+  sidecar:
+    rules:
+      enabled: false
+  monitoring:
+    serviceMonitor:
+      enabled: false

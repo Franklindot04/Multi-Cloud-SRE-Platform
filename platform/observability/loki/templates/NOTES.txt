@@ -1,0 +1,1 @@
+Wrapper chart for Loki. See platform/observability/README.md.

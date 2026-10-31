@@ -29,3 +29,12 @@ data:
   rabbitmq:
     enabled: true
     cluster: platform-mq
+
+# The logging stack lives in the same namespace as the monitors. Both expose Prometheus metrics on the port
+# "http-metrics" of their Service (Loki 3100, Alloy 12345).
+logging:
+  interval: 30s
+  loki:
+    enabled: true
+  alloy:
+    enabled: true

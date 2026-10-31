@@ -77,7 +77,18 @@
   "annotations": {
     "list": []
   },
-  "links": [],
+  "links": [
+    {
+      "title": "Logs",
+      "type": "link",
+      "icon": "doc",
+      "url": "/d/sre-logs/logs",
+      "keepTime": true,
+      "includeVars": true,
+      "targetBlank": false,
+      "tooltip": "Open the logs of the same namespaces and services, for the same time range"
+    }
+  ],
   "panels": [
     {
       "id": 1,
