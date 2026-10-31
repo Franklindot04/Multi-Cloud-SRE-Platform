@@ -89,7 +89,7 @@ aws eks describe-cluster --name "$(terraform output -raw cluster_name)" \
    scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-name <CLUSTER_NAME>
    ```
 
-   What it does, and the commands to run by hand, are in the [data layer teardown](data-layer.md#teardown): remove the cluster Secret labels (`kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-`, deleting the keys, not setting them to `false`), wait for the `shop` namespace to empty, delete the `Cluster` and the `RabbitmqCluster` and then the RabbitMQ StatefulSet if its pod survives, delete the remaining claims including `platform-valkey`, confirm `kubectl get pv` is empty, and confirm with the AWS CLI that only the node root volumes remain. Then check for load balancers and for security groups created by the load balancer controller:
+   What it does, and the commands to run by hand, are in the [data layer teardown](data-layer.md#teardown): remove the cluster Secret labels (`kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability-`, deleting the keys, not setting them to `false`), wait for the `shop` namespace to empty, delete the `Cluster` and the `RabbitmqCluster` and then the RabbitMQ StatefulSet if its pod survives, delete the remaining claims including `platform-valkey`, confirm `kubectl get pv` is empty, and confirm with the AWS CLI that only the node root volumes remain. Then check for load balancers and for security groups created by the load balancer controller:
 
    ```bash
    aws resourcegroupstaggingapi get-resources --region <REGION> --resource-type-filters elasticloadbalancing:loadbalancer \
@@ -98,7 +98,14 @@ aws eks describe-cluster --name "$(terraform output -raw cluster_name)" \
      --query 'SecurityGroups[].[GroupId,GroupName]'
    ```
 
-   Both must be empty. Continue with the [Argo CD teardown](argocd.md#teardown). Do not rely on `kubectl delete pvc --all -A` alone: a claim stays `Bound` while a pod still uses it.
+   Both must be empty. Then remove the namespaces, the storage class and Argo CD with the script, which refuses to start while a volume or a claim is left:
+
+   ```bash
+   scripts/teardown-argocd.sh --context <EKS_CONTEXT> --dry-run
+   scripts/teardown-argocd.sh --context <EKS_CONTEXT>
+   ```
+
+   The order is `scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`. Why the second script exists is in the [Argo CD teardown](argocd.md#teardown). Do not rely on `kubectl delete pvc --all -A` alone: a claim stays `Bound` while a pod still uses it.
 
 2. Destroy the stack:
 

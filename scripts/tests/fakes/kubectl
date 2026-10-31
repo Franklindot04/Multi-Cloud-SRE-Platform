@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# A fake kubectl for scripts/test-scripts.sh. It answers only the exact calls scripts/teardown-prep.sh is
-# expected to make and exits 99 for anything else, so a new or changed call shows up as a test failure.
+# A fake kubectl for scripts/test-scripts.sh. It answers only the exact calls scripts/teardown-prep.sh and
+# scripts/teardown-argocd.sh are expected to make and exits 99 for anything else, so a new or changed call shows
+# up as a test failure.
 #
 # State lives in the directory $FAKE_STATE. Every call is appended to $FAKE_STATE/kubectl.log (with the
 # --context argument). Marker files model the cluster:
@@ -22,6 +23,23 @@
 #   obs-namespace       the observability namespace exists (without it the observability steps find nothing to do)
 #   obs-persistent      Prometheus and Grafana have claims in the observability namespace (values-persistent.yaml)
 #   stuck-obs-pods      a pod in the observability namespace never goes away
+#   no-pv               kubectl get pv lists nothing even while the claims in the data namespace exist
+# For scripts/teardown-argocd.sh (the marker argocd-script switches the Application list to this model):
+#   ns-data, ns-shop, ns-argocd
+#                       these namespaces exist (the observability one is obs-namespace); deleting one creates
+#                       ns-<name>-deleted, and it is gone from then on unless stuck-ns-<name> is set. The argocd
+#                       namespace also stays while an AppProject still has a finalizer.
+#   storageclass        the storage class platform-data exists
+#   argo-controller-up  the Argo CD application controller has a Running pod until helm uninstalls the release
+#                       (or, with helm-not-found, from the start: the release is not there)
+#   stuck-argo-apps     the Applications platform-root and argocd carry resources-finalizer.argocd.argoproj.io and
+#                       are not removed by anything but a patch, even with the controller up
+#   odd-finalizer-argo, odd-finalizer-projects
+#                       the Applications (the AppProjects) also carry example.com/keep, listed first
+#   undeleted-argo-app  an Application named unmanaged exists that is not being deleted and has the finalizer
+#   stuck-projects      the five AppProjects carry the Argo CD finalizer
+# Deleting the Application platform-root creates root-deleted, and the other Applications are gone from then on
+# (unless stuck). Deleting an ApplicationSet creates appsets-deleted.
 # Deleting things creates labels-removed, pg-deleted, sts-deleted, pvc-deleted and obs-pvc-deleted. Deleting a Database or a
 # RabbitmqCluster creates deleting-<object>; the object is gone once it has no finalizer left (deleted-<object>),
 # and patching out the operator finalizer creates cleared-<object>.
@@ -47,13 +65,14 @@ operator_up_for() {
   case "$1" in
     database.*) flag cnpg-operator-up ;;
     rabbitmqcluster.*) flag mq-operator-up ;;
+    *) return 1 ;;
   esac
 }
 
 # remaining OBJECT: the finalizers the object still has, one per line. The operator finalizer is held until a
 # running operator or a patch removes it; the other one is never removed.
 remaining() {
-  local obj="$1" known stuck odd
+  local obj="$1" known stuck odd first=0
   case "$obj" in
     database.postgresql.cnpg.io/*)
       known=cnpg.io/deleteDatabase stuck=stuck-databases odd=odd-finalizer-databases
@@ -61,10 +80,19 @@ remaining() {
     rabbitmqcluster.rabbitmq.com/*)
       known=deletion.finalizers.rabbitmqclusters.rabbitmq.com stuck=stuck-mq odd=odd-finalizer-mq
       ;;
+    application.argoproj.io/*)
+      # The controller is never modelled as removing this finalizer: only a patch does.
+      known=resources-finalizer.argocd.argoproj.io stuck=stuck-argo-apps odd=odd-finalizer-argo first=1
+      if [ "$obj" = application.argoproj.io/unmanaged ]; then stuck=undeleted-argo-app; fi
+      ;;
+    appproject.argoproj.io/*)
+      known=resources-finalizer.argocd.argoproj.io stuck=stuck-projects odd=odd-finalizer-projects first=1
+      ;;
     *) return 0 ;;
   esac
+  if [ "$first" -eq 1 ] && flag "$odd"; then echo example.com/keep; fi
   if flag "$stuck" && ! flag "cleared-$(key "$obj")" && ! operator_up_for "$obj"; then echo "$known"; fi
-  if flag "$odd"; then echo example.com/keep; fi
+  if [ "$first" -eq 0 ] && flag "$odd"; then echo example.com/keep; fi
   return 0
 }
 
@@ -78,6 +106,41 @@ exists() {
     return 1
   fi
   return 0
+}
+
+# argo_app_present NAME: whether the Application exists in the model of scripts/teardown-argocd.sh. Before
+# platform-root is deleted every one is there; afterwards only those that still have a finalizer.
+argo_app_present() {
+  case "$1" in
+    unmanaged) flag undeleted-argo-app ;;
+    cert-manager-in-cluster) ! flag root-deleted ;;
+    *) ! flag root-deleted || [ -n "$(remaining "application.argoproj.io/$1")" ] ;;
+  esac
+}
+
+argo_projects="platform-addons platform-apps platform-data platform-observability platform-system"
+
+projects_hold() {
+  local p
+  for p in $argo_projects; do
+    [ -z "$(remaining "appproject.argoproj.io/$p")" ] || return 0
+  done
+  return 1
+}
+
+# ns_present NAMESPACE: whether the namespace still exists.
+ns_present() {
+  local ns="$1" marker
+  case "$ns" in
+    observability) marker=obs-namespace ;;
+    data | shop | argocd) marker="ns-$ns" ;;
+    *) return 1 ;;
+  esac
+  flag "$marker" || return 1
+  flag "ns-$ns-deleted" || return 0
+  if flag "stuck-ns-$ns"; then return 0; fi
+  if [ "$ns" = argocd ] && projects_hold; then return 0; fi
+  return 1
 }
 
 if [ "${1:-}" = "--context" ]; then
@@ -100,19 +163,81 @@ case "$*" in
     echo "secret/cluster-in-cluster unlabeled"
     ;;
   "-n argocd get applications.argoproj.io -o name")
-    if flag labels-removed && ! flag stuck-apps; then
+    if flag argocd-script; then
+      for a in platform-root argocd cert-manager-in-cluster unmanaged; do
+        if argo_app_present "$a"; then echo "application.argoproj.io/$a"; fi
+      done
+    elif flag labels-removed && ! flag stuck-apps; then
       echo "application.argoproj.io/cert-manager-in-cluster"
     else
       printf '%s\n' application.argoproj.io/apps-orders-in-cluster application.argoproj.io/data-postgres-in-cluster \
         application.argoproj.io/observability-stack-in-cluster application.argoproj.io/cert-manager-in-cluster
     fi
     ;;
+  "-n argocd get application.argoproj.io/"*" --ignore-not-found -o name")
+    if argo_app_present "${4#*/}"; then echo "$4"; fi
+    ;;
+  "-n argocd get application.argoproj.io/"*" -o jsonpath={.metadata.deletionTimestamp}")
+    argo_app_present "${4#*/}" || exit 1
+    if flag root-deleted && [ "${4#*/}" != unmanaged ]; then echo 2026-01-01T00:00:00Z; fi
+    ;;
+  "-n argocd get application.argoproj.io/"*" -o jsonpath="*)
+    argo_app_present "${4#*/}" || exit 1
+    remaining "$4"
+    ;;
+  "-n argocd get appproject.argoproj.io/"*" -o jsonpath="*)
+    ns_present argocd || exit 1
+    remaining "$4"
+    ;;
+  "-n argocd get appprojects.argoproj.io -o name")
+    if ns_present argocd; then
+      for p in $argo_projects; do echo "appproject.argoproj.io/$p"; done
+    fi
+    ;;
+  "-n argocd get applicationsets.argoproj.io -o name")
+    flag appsets-deleted || printf '%s\n' applicationset.argoproj.io/apps applicationset.argoproj.io/data
+    ;;
+  "-n argocd delete application.argoproj.io/platform-root --wait=false")
+    mark root-deleted
+    echo 'application.argoproj.io "platform-root" deleted'
+    ;;
+  "-n argocd delete applicationset.argoproj.io/"*" --ignore-not-found --wait=false")
+    mark appsets-deleted
+    echo "${4%%/*} \"${4#*/}\" deleted"
+    ;;
+  "-n argocd get pods -l app.kubernetes.io/name=argocd-application-controller --field-selector=status.phase=Running -o name")
+    if flag operator-api-error; then
+      echo "Unable to connect to the server" >&2
+      exit 1
+    fi
+    if flag argo-controller-up && ! flag helm-uninstalled && ! flag helm-not-found; then echo pod/argocd-application-controller-0; fi
+    ;;
+  "get namespace "*" -o name")
+    ns_present "$3" || exit 1
+    echo "namespace/$3"
+    ;;
+  "delete namespace "*" --wait=false")
+    mark "ns-$3-deleted"
+    echo "namespace \"$3\" deleted"
+    ;;
+  "get storageclass platform-data -o name")
+    if flag storageclass && ! flag storageclass-deleted; then
+      echo storageclass.storage.k8s.io/platform-data
+    else
+      exit 1
+    fi
+    ;;
+  "delete storageclass platform-data --wait=true --timeout="*)
+    mark storageclass-deleted
+    echo 'storageclass.storage.k8s.io "platform-data" deleted'
+    ;;
   "-n shop get deployments,statefulsets,jobs,ingresses,pods -o name")
     if ! flag labels-removed || flag stuck-shop; then
       printf '%s\n' deployment.apps/orders pod/orders-0
     fi
     ;;
-  "get crd clusters.postgresql.cnpg.io -o name" | "get crd rabbitmqclusters.rabbitmq.com -o name" | "get crd databases.postgresql.cnpg.io -o name")
+  "get crd clusters.postgresql.cnpg.io -o name" | "get crd rabbitmqclusters.rabbitmq.com -o name" | "get crd databases.postgresql.cnpg.io -o name" | \
+    "get crd applications.argoproj.io -o name" | "get crd applicationsets.argoproj.io -o name" | "get crd appprojects.argoproj.io -o name")
     grep -Fxq -- "$3" "$state/crds" || exit 1
     echo "customresourcedefinition.apiextensions.k8s.io/$3"
     ;;
@@ -129,10 +254,6 @@ case "$*" in
       exit 1
     fi
     if flag mq-operator-up; then echo pod/rabbitmq-cluster-operator-0; fi
-    ;;
-  "get namespace observability -o name")
-    flag obs-namespace || exit 1
-    echo namespace/observability
     ;;
   "-n observability get pods -o name")
     if flag stuck-obs-pods || ! flag labels-removed; then
@@ -165,7 +286,8 @@ case "$*" in
     exists "$4" || exit 1
     remaining "$4"
     ;;
-  "-n data patch database.postgresql.cnpg.io/platform-pg-"*" --type=json -p "* | "-n data patch $mq --type=json -p "*)
+  "-n data patch database.postgresql.cnpg.io/platform-pg-"*" --type=json -p "* | "-n data patch $mq --type=json -p "* | \
+    "-n argocd patch application.argoproj.io/"*" --type=json -p "* | "-n argocd patch appproject.argoproj.io/"*" --type=json -p "*)
     # Only the exact patch the script is expected to send: test the finalizer at its index, then remove it.
     value="$(printf '%s' "$*" | sed -n 's/.*"op":"test","path":"[^"]*","value":"\([^"]*\)".*/\1/p')"
     position="$(printf '%s' "$*" | sed -n 's/.*"op":"test","path":"\/metadata\/finalizers\/\([0-9]*\)".*/\1/p')"
@@ -216,7 +338,7 @@ case "$*" in
     echo "$4 deleted"
     ;;
   "get pv -o name")
-    if flag stuck-pv || ! flag pvc-deleted; then
+    if flag stuck-pv || { ! flag pvc-deleted && ! flag no-pv; }; then
       echo persistentvolume/pvc-0123
     fi
     if flag obs-persistent && ! flag obs-pvc-deleted; then

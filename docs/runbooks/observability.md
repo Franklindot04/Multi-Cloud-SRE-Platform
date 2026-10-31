@@ -115,7 +115,7 @@ These volumes outlive `terraform destroy` and keep billing: the Prometheus claim
 
 To stop the metrics foundation but keep the cluster, run the bootstrap script again without `--enable-observability` (and with the other flags you use). The label becomes `false` and Argo CD deletes the Applications. The namespace stays; delete it by hand if you want it gone, after the claims (below).
 
-Before `terraform destroy`, follow the [data layer teardown](data-layer.md#teardown): `scripts/teardown-prep.sh` removes the label, waits for the `observability-*` Applications and the pods in the namespace, and deletes any claims there. The Prometheus Operator does not leave a finalizer behind in this configuration, so teardown does not depend on the operator still running (the reason is in the ADR). If `teardown-prep.sh` stops on the pods in `observability`, read what it printed; it names the finalizer to look for and does not remove it.
+Before `terraform destroy`, follow the [data layer teardown](data-layer.md#teardown) (`scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`): `scripts/teardown-prep.sh` removes the label, waits for the `observability-*` Applications and the pods in the namespace, and deletes any claims there. The Prometheus Operator does not leave a finalizer behind in this configuration, so teardown does not depend on the operator still running (the reason is in the ADR). If `teardown-prep.sh` stops on the pods in `observability`, read what it printed; it names the finalizer to look for and does not remove it. `scripts/teardown-argocd.sh` then deletes the `observability` namespace with the others.
 
 ## Troubleshooting
 

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# A fake helm for scripts/test-scripts.sh. It answers only the uninstall call scripts/teardown-argocd.sh is
+# expected to make and exits 99 for anything else. Every call is appended to $FAKE_STATE/helm.log. Marker files
+# in $FAKE_STATE:
+#   helm-not-found   the release argocd is not installed (uninstall reports that and fails)
+#   helm-fails       uninstall fails for another reason
+# A successful uninstall creates helm-uninstalled; a second one then reports the release as not found. The
+# fake kubectl reads helm-uninstalled to stop showing the Argo CD controller.
+set -eu
+
+state="${FAKE_STATE:?FAKE_STATE is not set}"
+echo "$*" >> "$state/helm.log"
+
+case "$*" in
+  "--kube-context "*" uninstall argocd -n argocd")
+    if [ -e "$state/helm-fails" ]; then
+      echo "Error: Kubernetes cluster unreachable" >&2
+      exit 1
+    fi
+    if [ -e "$state/helm-not-found" ] || [ -e "$state/helm-uninstalled" ]; then
+      echo "Error: uninstall: Release not loaded: argocd: release: not found" >&2
+      exit 1
+    fi
+    : > "$state/helm-uninstalled"
+    echo 'release "argocd" uninstalled'
+    ;;
+  *)
+    echo "fake helm: unexpected call: $*" >&2
+    exit 99
+    ;;
+esac
