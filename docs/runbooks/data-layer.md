@@ -163,7 +163,7 @@ See the data layer README for what it covers.
 
 ## Teardown
 
-Do this **before `terraform destroy`**, in this order. The aim is zero leftover cloud volumes, load balancers and controller-created security groups. The order comes from the first teardown on a real EKS cluster; the reasons are in [ADR-0018](../adr/0018-secret-generation-and-ordering.md).
+Do this **before `terraform destroy`**, in this order: `scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh` (which removes the namespaces, the storage class and Argo CD; see the [Argo CD teardown](argocd.md#teardown)), then `terraform destroy`. The aim is zero leftover cloud volumes, load balancers and controller-created security groups. The order comes from the first teardown on a real EKS cluster; the reasons are in [ADR-0018](../adr/0018-secret-generation-and-ordering.md).
 
 ### With the script
 
@@ -172,7 +172,7 @@ scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --dry-run    
 scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-name <CLUSTER_NAME>
 ```
 
-`--context` is required (the script never uses the current context). It waits for each step (`--timeout`, 600 seconds a step by default) and stops at the first one that does not finish, so it is safe to run again after fixing the cause. It deletes only the named resources in the `argocd`, `shop`, `data` and `observability` namespaces, never forces a deletion, and does not delete namespaces, the storage class, Argo CD or anything in the cloud. `--skip-aws` stops after step 11 (GKE, or no AWS credentials). It was tested against a fake `kubectl` and a fake `aws`, not against a real cluster: run `--dry-run` first and read the output.
+`--context` is required (the script never uses the current context). It waits for each step (`--timeout`, 600 seconds a step by default) and stops at the first one that does not finish, so it is safe to run again after fixing the cause. It deletes only the named resources in the `argocd`, `shop`, `data` and `observability` namespaces, never forces a deletion, and does not delete namespaces, the storage class, Argo CD or anything in the cloud; that is `scripts/teardown-argocd.sh`, which refuses to start while a volume or a claim is left. `--skip-aws` stops after step 11 (GKE, or no AWS credentials). It was tested against a fake `kubectl` and a fake `aws`, not against a real cluster: run `--dry-run` first and read the output.
 
 The steps, in order:
 
@@ -273,7 +273,7 @@ Nothing else is ever changed. An object stuck on any other finalizer is left alo
    ```
 
    A security group left behind blocks deletion of the VPC. Delete a survivor only after its load balancer and network interfaces are gone.
-7. **Delete the namespaces and the storage class** (Argo CD does not prune them), then continue with the [Argo CD](argocd.md#teardown) and [EKS](aws-eks.md#destroy) or [GKE](gcp-gke.md#destroy-checklist) teardown and `terraform destroy`:
+7. **Delete the namespaces and the storage class** (Argo CD does not prune them; `scripts/teardown-argocd.sh --context <EKS_CONTEXT>` does this and also removes Argo CD), then continue with the [Argo CD](argocd.md#teardown) and [EKS](aws-eks.md#destroy) or [GKE](gcp-gke.md#destroy-checklist) teardown and `terraform destroy`:
 
    ```bash
    kubectl --context <EKS_CONTEXT> delete namespace data shop cnpg-system rabbitmq-system
@@ -288,7 +288,7 @@ Nothing else is ever changed. An object stuck on any other finalizer is left alo
 - [ ] AWS: no `kubernetes.io/created-for/pvc/name` volumes (only node root volumes remain) and no `available` volumes in the region
 - [ ] AWS: no load balancer and no security group tagged `elbv2.k8s.aws/cluster` for this cluster
 - [ ] GCP: no `pvc-` disks and no disks without users
-- [ ] Namespaces and the `platform-data` storage class deleted
+- [ ] Namespaces and the `platform-data` storage class deleted (`scripts/teardown-argocd.sh` does this, then removes Argo CD)
 
 ## Troubleshooting
 

@@ -560,6 +560,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "Dry run finished. Nothing was changed."
 else
   echo "Teardown preparation finished. The cluster holds no data volumes, claims or controller-created load balancers."
-  echo "Next, by hand: delete the data namespaces and the storage class, remove Argo CD, then terraform destroy"
-  echo "(docs/runbooks/data-layer.md, argocd.md, aws-eks.md)."
+  echo "Next: scripts/teardown-argocd.sh --context $CONTEXT removes the namespaces, the storage class and Argo CD."
+  echo "Then terraform destroy (docs/runbooks/aws-eks.md)."
 fi

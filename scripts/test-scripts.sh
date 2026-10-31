@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for the helper scripts: scripts/update-image-values.sh and scripts/changed-services.sh (used by CI),
-# scripts/check-trivyignore.sh, scripts/teardown-prep.sh (against a fake kubectl and a fake aws) and
+# scripts/check-trivyignore.sh, scripts/teardown-prep.sh and scripts/teardown-argocd.sh (against a fake kubectl,
+# a fake aws and a fake helm) and
 # scripts/verify-image.sh (against a fake cosign); the fakes are in scripts/tests/fakes. It also tests the
 # --enable-observability flag of scripts/bootstrap-argocd.sh (dry run only) and the observability checks of
 # scripts/chart-contract-check.py.
@@ -17,6 +18,13 @@ case "${1:-}" in
 esac
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# Start from a clean slate: a region, profile or kubeconfig exported in the caller's shell must not change what
+# the scripts under test see (for example, a region from the environment makes the "no region" tests fail).
+# Tests that need one pass it explicitly.
+for var in $(env | sed -n 's/^\(AWS_[A-Za-z0-9_]*\)=.*/\1/p; s/^\(KUBECONFIG\)=.*/\1/p; s/^\(KUBECTL_[A-Za-z0-9_]*\)=.*/\1/p; s/^\(TEARDOWN_[A-Za-z0-9_]*\)=.*/\1/p; s/^\(TRIVYIGNORE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$var"
+done
 fixtures="scripts/tests/fixtures"
 update="./scripts/update-image-values.sh"
 changed="./scripts/changed-services.sh"
@@ -381,6 +389,226 @@ new_cluster
 run_teardown --context test-cluster --region eu-north-1 --bogus
 check "an unknown option is rejected with exit 2" test "$rc" -eq 2
 check "the script never uses --force or runs version control" test "$(grep -Ec -e '--force|(^|[;&| ])git( |$)' "$teardown")" = 0
+
+echo "teardown-argocd.sh"
+
+teardown_argocd="./scripts/teardown-argocd.sh"
+
+# new_argo_cluster: a cluster as teardown-prep.sh leaves it, with Argo CD still installed: no volumes or claims,
+# the namespaces data, shop, observability and argocd, the storage class, and a running application controller.
+# Tests add stuck-argo-apps, stuck-projects and the like to change that.
+new_argo_cluster() {
+  new_cluster
+  printf '%s\n' applications.argoproj.io applicationsets.argoproj.io appprojects.argoproj.io >> "$state/crds"
+  touch "$state/argocd-script" "$state/ns-data" "$state/ns-shop" "$state/ns-argocd" "$state/obs-namespace" \
+    "$state/storageclass" "$state/argo-controller-up" "$state/pvc-deleted" "$state/obs-pvc-deleted"
+}
+
+# run_argocd ARGS...: run the script with the fakes first on PATH; output in $work/tdout, status in $rc.
+run_argocd() {
+  rc=0
+  PATH="$fakes:$PATH" FAKE_STATE="$state" TEARDOWN_POLL_SECONDS=1 "$teardown_argocd" "$@" > "$work/tdout" 2>&1 || rc=$?
+}
+
+out_line() { grep -n -m1 -e "$1" "$work/tdout" | cut -d: -f1; }
+
+# The only patch the script may send: the finalizer tested and removed at position 0, on one of seven objects.
+argo_patch_re='-n argocd patch (application|appproject)\.argoproj\.io/(platform-root|argocd|platform-addons|platform-apps|platform-data|platform-observability|platform-system) --type=json -p \[\{"op":"test","path":"/metadata/finalizers/0","value":"resources-finalizer\.argocd\.argoproj\.io"\},\{"op":"remove","path":"/metadata/finalizers/0"\}\]$'
+
+new_argo_cluster
+run_argocd --context test-cluster --timeout 5
+check "the normal path exits 0" test "$rc" -eq 0
+check "the steps are numbered 1 to 9" grep -q -e '^\[1/9\]' -e '^\[9/9\]' "$work/tdout"
+check "the volume check comes first, before anything is deleted" test "$(line_of 'get pv')" -lt "$(line_of ' delete ')"
+check "the namespaces data, shop and observability are deleted without waiting in the command" test "$(grep -c -e 'delete namespace data --wait=false' -e 'delete namespace shop --wait=false' -e 'delete namespace observability --wait=false' "$state/kubectl.log")" = 3
+check "the storage class is deleted after the namespaces" test "$(line_of 'delete namespace observability')" -lt "$(line_of 'delete storageclass platform-data')"
+check "platform-root is deleted after the storage class" test "$(line_of 'delete storageclass platform-data')" -lt "$(line_of 'delete application.argoproj.io/platform-root')"
+check "the ApplicationSets are deleted after platform-root, each by name" test "$(line_of 'delete application.argoproj.io/platform-root')" -lt "$(line_of 'delete applicationset.argoproj.io/apps')" -a "$(grep -c 'delete applicationset.argoproj.io/' "$state/kubectl.log")" = 2
+check "helm uninstalls the release argocd once, with the context" test "$(cat "$state/helm.log")" = "--kube-context test-cluster uninstall argocd -n argocd"
+check "helm runs after the Applications are gone" test "$(out_line 'ok: no Application remains')" -lt "$(out_line '+ helm ')"
+check "the argocd namespace is deleted after helm, last" test "$(out_line '+ helm ')" -lt "$(out_line 'delete namespace argocd')" -a "$(line_of 'delete namespace argocd')" = "$(grep -n ' delete ' "$state/kubectl.log" | tail -n 1 | cut -d: -f1)"
+check "with the controller running no finalizer is patched" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "the CRDs are not deleted" test "$(grep -c 'delete crd' "$state/kubectl.log")" = 0
+check "waiting is bounded: every wait line shows its limit" test "$(grep 'waiting (' "$work/tdout" | grep -vc 's of 5s)')" = 0
+check "the commands are echoed with a plus sign" grep -q '^  + kubectl --context test-cluster delete namespace data --wait=false$' "$work/tdout"
+check "the output ends with the next step" grep -q 'Next: terraform destroy' "$work/tdout"
+check "no call uses --force or a grace period" test "$(cat "$state/kubectl.log" "$state/helm.log" | grep -c -e '--force' -e 'grace-period')" = 0
+
+# Run it again on the finished cluster: everything is skipped, helm reports no release, and that is fine.
+deletes_before="$(grep -c ' delete ' "$state/kubectl.log")"
+run_argocd --context test-cluster --timeout 5
+check "a repeat run exits 0" test "$rc" -eq 0
+check "a repeat run deletes nothing more" test "$(grep -c ' delete ' "$state/kubectl.log")" = "$deletes_before"
+check "a repeat run skips what is gone" grep -q 'no data namespace: nothing to delete' "$work/tdout"
+check "a repeat run finds no storage class" grep -q 'no storage class platform-data: nothing to delete' "$work/tdout"
+check "a repeat run tolerates the missing release" grep -q 'the release argocd is not installed: nothing to uninstall' "$work/tdout"
+
+# Argo CD removed itself: no controller, and the Applications and AppProjects are stuck on its finalizer.
+new_argo_cluster
+rm "$state/argo-controller-up"
+touch "$state/stuck-argo-apps" "$state/stuck-projects"
+run_argocd --context test-cluster --timeout 5
+check "with the controller gone and the finalizers stuck the run exits 0" test "$rc" -eq 0
+check "seven finalizers are removed: two Applications and five AppProjects" test "$(grep -c ' patch ' "$state/kubectl.log")" = 7
+check "every patch is the guarded one: test the finalizer at its position, then remove it" test "$(grep ' patch ' "$state/kubectl.log" | grep -cvE -e "$argo_patch_re")" = 0
+check "the Applications patched are platform-root and argocd, once each" test "$(grep -c -e 'patch application.argoproj.io/platform-root ' -e 'patch application.argoproj.io/argocd ' "$state/kubectl.log")" = 2
+check "all five AppProjects are patched" test "$(grep -c 'patch appproject.argoproj.io/platform-' "$state/kubectl.log")" = 5
+check "nothing else is patched, annotated, edited or replaced" test "$(grep -c -e ' annotate ' -e ' edit ' -e ' replace ' -e ' apply ' -e ' label ' "$state/kubectl.log")" = 0
+check "the output says why the Application finalizer is removed" grep -q 'the Argo CD application controller is not running, so nothing is left to run the finalizer resources-finalizer.argocd.argoproj.io on application.argoproj.io/argocd' "$work/tdout"
+check "and says only that finalizer is removed" grep -q 'Removing that finalizer from application.argoproj.io/argocd only; no other finalizer or object is changed' "$work/tdout"
+check "the Application finalizers go before helm uninstall" test "$(out_line 'Removing that finalizer from application.argoproj.io/argocd')" -lt "$(out_line '+ helm ')"
+check "the AppProject finalizers go after helm uninstall and before the namespace is deleted" test "$(out_line '+ helm ')" -lt "$(out_line 'Removing that finalizer from appproject.argoproj.io/platform-addons')" -a "$(out_line 'Removing that finalizer from appproject.argoproj.io/platform-system')" -lt "$(out_line 'delete namespace argocd')"
+check "the namespace is deleted last" test "$(line_of 'patch appproject.argoproj.io/platform-system')" -lt "$(line_of 'delete namespace argocd')"
+check "no call uses --force or a grace period" test "$(cat "$state/kubectl.log" | grep -c -e '--force' -e 'grace-period')" = 0
+
+# Only Applications that are being deleted are patched, and only the Argo CD finalizer is removed from them.
+new_argo_cluster
+rm "$state/argo-controller-up"
+touch "$state/undeleted-argo-app"
+run_argocd --context test-cluster --timeout 2
+check "an Application that is not being deleted stops the script with exit 1" test "$rc" -eq 1
+check "it is not patched" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "the message says it is not being deleted" grep -q 'application.argoproj.io/unmanaged' "$work/tdout"
+check "helm is not run after that" test ! -e "$state/helm.log"
+
+new_argo_cluster
+rm "$state/argo-controller-up"
+touch "$state/stuck-argo-apps" "$state/odd-finalizer-argo"
+run_argocd --context test-cluster --timeout 2
+check "an Application with another finalizer too has only the Argo CD one removed" test "$(grep -c ' patch ' "$state/kubectl.log")" = 2
+check "the Argo CD finalizer is found at its position, after the other one" grep -q 'patch application.argoproj.io/argocd --type=json -p \[{"op":"test","path":"/metadata/finalizers/1","value":"resources-finalizer.argocd.argoproj.io"},{"op":"remove","path":"/metadata/finalizers/1"}\]' "$state/kubectl.log"
+check "the run then stops with exit 1" test "$rc" -eq 1
+check "and names the finalizer it left" grep -q 'Finalizers: example.com/keep' "$work/tdout"
+check "helm is not run after that" test ! -e "$state/helm.log"
+
+new_argo_cluster
+rm "$state/argo-controller-up"
+touch "$state/stuck-projects" "$state/odd-finalizer-projects"
+run_argocd --context test-cluster --timeout 2
+check "AppProjects with another finalizer too have only the Argo CD one removed" test "$(grep -c 'patch appproject' "$state/kubectl.log")" = 5
+check "each AppProject patch is at the position of the Argo CD finalizer" test "$(grep -c 'patch appproject.*"path":"/metadata/finalizers/1","value":"resources-finalizer.argocd.argoproj.io"' "$state/kubectl.log")" = 5
+check "the namespace stays and the run stops with exit 1" test "$rc" -eq 1
+check "and the message names the namespace" grep -q 'namespace/argocd' "$work/tdout"
+
+# The controller is still running: wait, never patch.
+new_argo_cluster
+touch "$state/stuck-argo-apps" "$state/stuck-projects"
+run_argocd --context test-cluster --timeout 2
+check "with the controller running and an Application stuck the script times out with exit 1" test "$rc" -eq 1
+check "no finalizer is patched" test "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "the message names the Application and says the controller is running" grep -q 'The Argo CD application controller is running' "$work/tdout"
+check "the timeout message says what it waited for" grep -q 'timed out after 2s waiting until no Application remains in the argocd namespace' "$work/tdout"
+check "helm is not run and the argocd namespace is not deleted" test ! -e "$state/helm.log" -a "$(grep -c 'delete namespace argocd' "$state/kubectl.log")" = 0
+
+new_argo_cluster
+touch "$state/stuck-argo-apps" "$state/operator-api-error"
+run_argocd --context test-cluster --timeout 2
+check "a controller lookup that fails stops the script and patches nothing" test "$rc" -eq 1 -a "$(grep -c ' patch ' "$state/kubectl.log")" = 0
+check "and the message says the lookup failed" grep -q 'could not check whether the Argo CD application controller is running' "$work/tdout"
+
+# Volumes or claims that are still there: refuse before changing anything.
+new_argo_cluster
+touch "$state/stuck-pv"
+run_argocd --context test-cluster --timeout 2
+check "a persistent volume that is still there makes the script refuse with exit 1" test "$rc" -eq 1
+check "the message names the volume and says to run teardown-prep.sh first" grep -q 'persistent volume: persistentvolume/pvc-0123' "$work/tdout"
+check "and points at the other script" grep -q 'Run scripts/teardown-prep.sh --context test-cluster first' "$work/tdout"
+check "nothing is deleted, patched or uninstalled" test "$(grep -c -e ' delete ' -e ' patch ' -e ' label ' "$state/kubectl.log")" = 0 -a ! -e "$state/helm.log"
+
+new_argo_cluster
+rm "$state/pvc-deleted"
+touch "$state/no-pv"
+run_argocd --context test-cluster --timeout 2
+check "a claim in the data namespace makes the script refuse with exit 1" test "$rc" -eq 1
+check "the message names the claim" grep -q 'claim in the data namespace: persistentvolumeclaim/platform-valkey' "$work/tdout"
+check "nothing is deleted after the refusal" test "$(grep -c -e ' delete ' -e ' patch ' "$state/kubectl.log")" = 0
+
+new_argo_cluster
+rm "$state/pvc-deleted"
+run_argocd --context test-cluster --timeout 2
+check "a volume and a claim together are both named" test "$rc" -eq 1 -a "$(grep -c -e 'persistent volume: ' -e 'claim in the data namespace: ' "$work/tdout")" -ge 2
+check "a refusal also applies to a dry run" test "$(PATH="$fakes:$PATH" FAKE_STATE="$state" "$teardown_argocd" --context test-cluster --dry-run > /dev/null 2>&1; echo $?)" = 1
+
+# Helm.
+new_argo_cluster
+touch "$state/helm-not-found"
+run_argocd --context test-cluster --timeout 5
+check "a release that is not found is fine" test "$rc" -eq 0
+check "and the output says so" grep -q 'the release argocd is not installed: nothing to uninstall' "$work/tdout"
+check "the remaining steps still run" grep -q 'delete namespace argocd' "$state/kubectl.log"
+
+new_argo_cluster
+touch "$state/helm-fails"
+run_argocd --context test-cluster --timeout 5
+check "any other helm failure stops the script with exit 1" test "$rc" -eq 1
+check "and the argocd namespace is not deleted" test "$(grep -c 'delete namespace argocd' "$state/kubectl.log")" = 0
+
+# Namespaces.
+new_argo_cluster
+touch "$state/stuck-ns-data"
+run_argocd --context test-cluster --timeout 2
+check "a namespace that never goes away stops the script with exit 1" test "$rc" -eq 1
+check "the timeout message names the namespace" grep -q 'namespace/data' "$work/tdout"
+check "nothing after that step is run" test "$(grep -c -e 'delete storageclass' -e 'delete application' "$state/kubectl.log")" = 0
+
+new_argo_cluster
+rm "$state/ns-data" "$state/ns-shop" "$state/obs-namespace" "$state/storageclass"
+run_argocd --context test-cluster --timeout 5
+check "namespaces and a storage class that are already gone are skipped" test "$rc" -eq 0
+check "and are not deleted" test "$(grep -c -e 'delete namespace data' -e 'delete namespace shop' -e 'delete namespace observability' -e 'delete storageclass' "$state/kubectl.log")" = 0
+check "and the skip is one short line each" test "$(grep -c -e 'no data namespace: nothing to delete' -e 'no shop namespace: nothing to delete' -e 'no observability namespace: nothing to delete' "$work/tdout")" = 3
+
+# Dry run.
+new_argo_cluster
+rm "$state/argo-controller-up"
+touch "$state/stuck-argo-apps" "$state/stuck-projects"
+run_argocd --context test-cluster --dry-run
+check "a dry run exits 0" test "$rc" -eq 0
+check "a dry run runs no delete, patch or other change" test "$(grep -c -e ' delete ' -e ' patch ' -e ' label ' -e ' apply ' -e ' annotate ' "$state/kubectl.log")" = 0
+check "a dry run does not call helm" test ! -e "$state/helm.log"
+check "a dry run prints the commands it would run" grep -q '^  + kubectl --context test-cluster delete namespace data --wait=false$' "$work/tdout"
+check "including the helm uninstall" grep -q '^  + helm --kube-context test-cluster uninstall argocd -n argocd$' "$work/tdout"
+check "and marks them as not executed" grep -q 'dry run: not executed' "$work/tdout"
+check "a dry run does not wait" test "$(grep -c 'waiting (' "$work/tdout")" = 0
+check "a dry run with the controller gone says it would remove only the Argo CD finalizer" grep -q 'dry run: the Argo CD application controller is not running; if an Application stays stuck on the finalizer resources-finalizer.argocd.argoproj.io, would remove that one finalizer' "$work/tdout"
+check "and says nothing was changed" grep -q 'Nothing was changed' "$work/tdout"
+
+new_argo_cluster
+run_argocd --context test-cluster --dry-run
+check "a dry run with the controller running says it would only wait" grep -q 'dry run: the Argo CD application controller is running; would wait' "$work/tdout"
+
+# Arguments.
+new_argo_cluster
+run_argocd --timeout 5
+check "a missing --context is rejected with exit 2" test "$rc" -eq 2
+check "and the message says so" grep -q -e '--context is required' "$work/tdout"
+check "and kubectl is never called" test ! -e "$state/kubectl.log"
+
+new_argo_cluster
+run_argocd --context
+check "--context without a value is rejected with exit 2" test "$rc" -eq 2
+check "and the message says so" grep -q -e '--context needs a value' "$work/tdout"
+
+new_argo_cluster
+run_argocd --context test-cluster --bogus
+check "an unknown option is rejected with exit 2" test "$rc" -eq 2
+check "and the message names it" grep -q 'unknown argument: --bogus' "$work/tdout"
+check "and nothing is called" test ! -e "$state/kubectl.log"
+
+new_argo_cluster
+run_argocd --context test-cluster --timeout soon
+check "a timeout that is not a number is rejected with exit 2" test "$rc" -eq 2
+
+new_argo_cluster
+run_argocd --context no-such-context
+check "an unknown context is rejected with exit 2" test "$rc" -eq 2
+check "and nothing is changed" test "$(grep -c -e ' delete ' -e ' patch ' "$state/kubectl.log")" = 0
+
+new_argo_cluster
+run_argocd --help
+check "--help prints the usage and exits 0" test "$rc" -eq 0 -a "$(grep -c 'teardown-argocd.sh --context CONTEXT' "$work/tdout")" = 1
+check "the script never uses --force or runs version control" test "$(grep -Ec -e '--force|(^|[;&| ])git( |$)' "$teardown_argocd")" = 0
+check "teardown-prep.sh ends by pointing at teardown-argocd.sh" grep -q 'scripts/teardown-argocd.sh --context' "$teardown"
 
 echo "check-trivyignore.sh"
 

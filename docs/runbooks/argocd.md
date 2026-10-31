@@ -154,14 +154,16 @@ Delete everything that makes AWS create load balancers **while the load balancer
 1. **Delete workloads that create load balancers or volumes, labels first.** Deleting an Application of an ApplicationSet by hand only makes the ApplicationSet create it again while the cluster Secret still has the labels that select the cluster. Delete the label keys (this switches off the services and the data layer on the cluster; setting them to `false` also works, see the [data layer teardown](data-layer.md#teardown)), then delete what is left:
 
    ```bash
-   kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data-
-   kubectl -n argocd get applications | grep -E 'apps-|data-'          # wait until they are gone
+   kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability-
+   kubectl -n argocd get applications | grep -E 'apps-|data-|observability-'     # wait until they are gone
    kubectl -n shop get deployments,statefulsets,jobs,ingresses,pods   # wait until the namespace is empty
    kubectl delete ingress --all -A
    kubectl delete svc -A --field-selector spec.type=LoadBalancer
    ```
 
-   Then tear the data layer down as its runbook says: delete the `Cluster`, the `RabbitmqCluster` and its StatefulSet (a RabbitMQ pod survives the `RabbitmqCluster`), the claims including `platform-valkey`, and confirm the cloud volumes are gone. `scripts/teardown-prep.sh --context <CTX> --region <REGION>` runs that whole order, including these label and workload steps, with waits ([data layer teardown](data-layer.md#teardown)). Do not skip it: volumes outlive the cluster.
+   Then tear the data layer down as its runbook says: delete the `Cluster`, the `RabbitmqCluster` and its StatefulSet (a RabbitMQ pod survives the `RabbitmqCluster`), the claims including `platform-valkey`, and confirm the cloud volumes are gone. `scripts/teardown-prep.sh --context <CTX> --region <REGION>` runs that whole order, including the label and workload commands above, with waits (you do not need to run those yourself) ([data layer teardown](data-layer.md#teardown)). Do not skip it: volumes outlive the cluster.
+
+   The RabbitMQ operator is usually already gone when its cluster is deleted, because the Applications are removed first. The `RabbitmqCluster` then cannot finish deleting, and `teardown-prep.sh` handles that by removing only the operator's own finalizer from it, and saying so.
 
 2. **Wait until the ALBs and target groups are gone:**
 
@@ -171,25 +173,42 @@ Delete everything that makes AWS create load balancers **while the load balancer
    ```
 
    Both must come back empty, or list nothing that belongs to the cluster, before you continue. Also check for security groups the controller created (`aws ec2 describe-security-groups --filters Name=tag:elbv2.k8s.aws/cluster,Values=<CLUSTER_NAME>`); they block deletion of the VPC.
-3. **Delete the root Application and the ApplicationSets**, which removes every add-on through the Application finalizers (the `apps` and `data` labels are already removed, so nothing is recreated for them):
+3. **Remove the rest of the cluster setup and Argo CD with the script**, after `scripts/teardown-prep.sh` has finished and before `terraform destroy`:
 
    ```bash
-   kubectl -n argocd delete application platform-root --wait=true
-   kubectl -n argocd delete applicationset --all
-   kubectl -n argocd get applications          # wait until only the argocd Application, if any, remains
+   scripts/teardown-argocd.sh --context <CTX> --dry-run     # print every step, change nothing
+   scripts/teardown-argocd.sh --context <CTX>
    ```
 
-4. **Remove Argo CD:** `kubectl -n argocd delete application --all`, then `helm uninstall argocd -n argocd` and `kubectl delete namespace argocd`. Argo CD's CRDs are kept by design; delete them (`kubectl delete crd applications.argoproj.io applicationsets.argoproj.io appprojects.argoproj.io`) only when you are removing it for good.
-5. **Destroy with Terraform**, following the [EKS](aws-eks.md) runbook: the cluster and add-on roles first (set `enable_*_iam=false` or run `terraform destroy`), then the network.
+   It refuses to start while `kubectl get pv` lists a volume or a claim is left in the `data` namespace. Then it deletes the `data`, `shop` and `observability` namespaces and the `platform-data` storage class, deletes `platform-root` and the ApplicationSets, waits for the Applications to go, runs `helm uninstall argocd`, and deletes the `argocd` namespace. Every step waits (`--timeout`, 600 seconds by default) and stops at the first one that does not finish; running it again continues from there. Argo CD's CRDs are kept by design; they go with the cluster. Delete them (`kubectl delete crd applications.argoproj.io applicationsets.argoproj.io appprojects.argoproj.io`) only when you are removing Argo CD from a cluster that stays.
+
+   **Why the script exists, and the one finalizer it removes.** When `platform-root` is deleted, Argo CD also deletes its own Application and removes itself. The `argocd` Application and the AppProjects then keep the finalizer `resources-finalizer.argocd.argoproj.io` with no controller left to clear it, and the `argocd` namespace stays in `Terminating` until that one finalizer is removed. The script removes it, and only when the application controller (pods labelled `app.kubernetes.io/name=argocd-application-controller`) is no longer running. It does that for Applications that are being deleted and for AppProjects left in the namespace, with a JSON patch that first tests the finalizer value at its position, so nothing else can change. It never uses `--force`, never touches another finalizer or object, and with the controller still running it only waits.
+
+   **By hand**, if you cannot use the script (the same order):
+
+   ```bash
+   kubectl --context <CTX> -n argocd delete application platform-root --wait=false
+   kubectl --context <CTX> -n argocd delete applicationset --all --wait=false
+   kubectl --context <CTX> -n argocd get applications     # wait until none remain
+   helm --kube-context <CTX> uninstall argocd -n argocd
+   kubectl --context <CTX> -n argocd get pods -l app.kubernetes.io/name=argocd-application-controller     # must list nothing
+   kubectl --context <CTX> -n argocd get applications.argoproj.io,appprojects.argoproj.io -o name
+   kubectl --context <CTX> -n argocd get <OBJECT> -o jsonpath='{.metadata.finalizers}'     # for each object listed
+   kubectl --context <CTX> -n argocd patch <OBJECT> --type=json \
+     -p '[{"op":"test","path":"/metadata/finalizers/0","value":"resources-finalizer.argocd.argoproj.io"},{"op":"remove","path":"/metadata/finalizers/0"}]'
+   kubectl --context <CTX> delete namespace argocd --wait=false
+   ```
+
+   Use `<OBJECT>` as `application.argoproj.io/<NAME>` or `appproject.argoproj.io/<NAME>`. Use the index where `resources-finalizer.argocd.argoproj.io` appears in the list instead of `0` if another finalizer comes first. Remove the finalizer only while the controller pod list is empty, and never use `--force`.
+4. **Destroy with Terraform**, following the [EKS](aws-eks.md) runbook: the cluster and add-on roles first (set `enable_*_iam=false` or run `terraform destroy`), then the network.
 
 ### Teardown checklist
 
 - [ ] Ingress and `LoadBalancer` Services deleted; no PVCs left
-- [ ] The `platform.example/apps` and `platform.example/data` labels removed from the cluster Secret before anything was deleted
+- [ ] The `platform.example/apps`, `platform.example/data` and `platform.example/observability` labels removed from the cluster Secret before anything was deleted (`scripts/teardown-prep.sh` does this)
 - [ ] If the data layer was enabled: all PersistentVolumeClaims deleted, `kubectl get pv` empty and the cloud volumes confirmed gone ([data layer teardown](data-layer.md#teardown)); volumes are not removed by Terraform
 - [ ] No load balancers, target groups or controller-created security groups from the cluster (`aws elbv2 ...`, `aws ec2 describe-security-groups` on the `elbv2.k8s.aws/cluster` tag)
-- [ ] Root Application and ApplicationSets deleted; Applications gone
-- [ ] Argo CD uninstalled
+- [ ] `scripts/teardown-argocd.sh` finished: the namespaces `data`, `shop`, `observability` and `argocd` and the `platform-data` storage class are gone, `platform-root` and the ApplicationSets deleted, Applications gone, Argo CD uninstalled
 - [ ] Terraform destroy of the stack completed
 - [ ] NAT gateways, Elastic IPs, KMS key (pending deletion) and log groups checked, per the EKS runbook
 
@@ -200,4 +219,5 @@ Delete everything that makes AWS create load balancers **while the load balancer
 - **No Applications appear:** the cluster Secret is missing labels. Check `kubectl -n argocd get secret cluster-in-cluster --show-labels` for `platform.example/managed=true` and `platform.example/cloud=aws`.
 - **Load balancer controller crash-loops:** the `cluster-name`, `region`, `vpc-id` or `lbc-role-arn` annotation is empty; re-run the bootstrap script after fixing the Terraform outputs.
 - **`ComparisonError` pulling the repository:** the definitions are not on `main`, or the repository URL is wrong. The repository is public, so no credentials are involved.
+- **The `argocd` namespace stays `Terminating`:** `kubectl get namespace argocd -o jsonpath='{.status.conditions}'` shows `NamespaceFinalizersRemaining` with a message that names `resources-finalizer.argocd.argoproj.io` on `appprojects`. Cause: Argo CD removed itself, so nothing is left to clear that finalizer on the AppProjects. Fix: run `scripts/teardown-argocd.sh --context <CTX>` again, which removes that one finalizer once the controller is gone, or use the patch in the by-hand block of the [teardown](#teardown). Never use `--force`.
 - **Cannot reach the UI:** use the port-forward; there is no ingress by design.
