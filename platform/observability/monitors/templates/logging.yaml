@@ -1,0 +1,60 @@
+{{- if .Values.logging.loki.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: loki
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: loki-monitor
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  jobLabel: app.kubernetes.io/name
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.namespace }}
+  # The chart makes three Services with these labels. The headless one is marked so that it is skipped (it would
+  # list the same pod a second time), and the memberlist one has no metrics port.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loki
+    matchExpressions:
+      - key: prometheus.io/service-monitor
+        operator: NotIn
+        values:
+          - "false"
+  endpoints:
+    - port: http-metrics
+      path: /metrics
+      interval: {{ .Values.logging.interval }}
+{{- end }}
+{{- if and .Values.logging.loki.enabled .Values.logging.alloy.enabled }}
+---
+{{- end }}
+{{- if .Values.logging.alloy.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: alloy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: alloy-monitor
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  jobLabel: app.kubernetes.io/name
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alloy
+  endpoints:
+    - port: http-metrics
+      path: /metrics
+      interval: {{ .Values.logging.interval }}
+{{- end }}

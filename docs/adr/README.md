@@ -24,3 +24,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0018](0018-secret-generation-and-ordering.md) | Secret generation, ordering and teardown | Accepted |
 | [0019](0019-image-supply-chain.md) | Image supply chain | Accepted |
 | [0020](0020-metrics-stack.md) | Metrics stack | Accepted |
+| [0021](0021-logging-stack.md) | Logging stack | Accepted |

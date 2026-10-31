@@ -1,0 +1,12 @@
+apiVersion: v2
+name: loki
+description: Loki log storage in single-binary mode
+type: application
+version: 0.1.0
+appVersion: 3.6.16
+annotations:
+  platform/clouds: "aws,gcp"
+dependencies:
+  - name: loki
+    version: 7.5.0
+    repository: https://grafana.github.io/helm-charts

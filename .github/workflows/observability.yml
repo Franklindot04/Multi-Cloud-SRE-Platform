@@ -62,5 +62,13 @@ jobs:
       - name: Install yamllint
         run: pip install --user yamllint
 
-      - name: Metrics foundation
+      # Renders and checks the metrics and logging charts (including Loki and Alloy), the dashboards and their
+      # LogQL. The configuration checks start the collector, Loki and Alloy images with the Docker that is installed
+      # on the runner; the Loki container is removed by the script when it finishes.
+      - name: Metrics and logging stack
         run: ./scripts/observability-check.sh
+
+      # The tests of the check scripts (fixtures for the contract checks, fake clients for the teardown scripts) run
+      # here too, so a change to a check cannot loosen it unnoticed.
+      - name: Tests of the check scripts
+        run: ./scripts/test-scripts.sh

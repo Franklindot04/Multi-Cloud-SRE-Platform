@@ -36,10 +36,11 @@ Options:
                            off by default. Volumes it creates are not managed by Terraform and are not
                            removed by terraform destroy: see docs/runbooks/data-layer.md
   --data-profile PROFILE   standard (one instance of each, default) or ha (three); needs --enable-data
-  --enable-observability   label the cluster so the metrics foundation (Prometheus Operator, Prometheus, Grafana,
-                           OpenTelemetry Collector, monitors) is deployed to the observability namespace; off by
-                           default. Requests about 0.3 vCPU and 1 GiB of memory on the nodes, and uses no volumes
-                           and no load balancer. Reach Grafana by port-forward: see platform/observability/README.md
+  --enable-observability   label the cluster so the metrics and logging stack (Prometheus Operator, Prometheus,
+                           Grafana, OpenTelemetry Collector, monitors, Loki and Alloy) is deployed to the
+                           observability namespace; off by default. Requests about 0.45 vCPU and 1.4 GiB of
+                           memory on the nodes, and uses no volumes and no load balancer. Reach Grafana by
+                           port-forward: see platform/observability/README.md
   --enable-apps            label the cluster so the sample services (gateway, orders, payments, notifier) are
                            deployed from deploy/helm; off by default. Images must be published first: see
                            docs/runbooks/service-deployment.md

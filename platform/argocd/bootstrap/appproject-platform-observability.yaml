@@ -7,7 +7,7 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: Metrics foundation (Prometheus, Grafana, OpenTelemetry Collector and monitors) deployed from platform/observability
+  description: Metrics and logging stack (Prometheus, Grafana, OpenTelemetry Collector, monitors, Loki, Alloy) from platform/observability
   sourceRepos:
     - https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
   # Any registered cluster, but only the observability namespace, plus kube-system for the Service that the chart
@@ -19,8 +19,8 @@ spec:
     - server: "*"
       namespace: kube-system
   # Cluster-scoped kinds the stack creates: the namespace itself, the operator's CRDs and the read-only roles of the
-  # operator, Prometheus and kube-state-metrics. No webhook configurations, no priority classes. Anything else is
-  # rejected.
+  # operator, Prometheus, kube-state-metrics and the log collector (Alloy reads pods, their logs and namespaces
+  # cluster-wide). No webhook configurations, no priority classes. Anything else is rejected.
   clusterResourceWhitelist:
     - group: ""
       kind: Namespace
@@ -42,6 +42,10 @@ spec:
       kind: ServiceAccount
     - group: apps
       kind: Deployment
+    # Loki runs as a StatefulSet. The claim it would create with values-persistent.yaml comes from the StatefulSet's
+    # volume claim template, not from a manifest in Git.
+    - group: apps
+      kind: StatefulSet
     - group: batch
       kind: Job
     - group: rbac.authorization.k8s.io

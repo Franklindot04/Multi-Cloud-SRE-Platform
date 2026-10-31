@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Offline checks for the metrics foundation under platform/observability and its Argo CD definitions.
+# Offline checks for the metrics and logging stack under platform/observability and its Argo CD definitions.
 #
 #   1. helm lint, helm template and kubeconform for every chart and cloud (scripts/addons-check.sh), including the
 #      optional persistent-volume values of the stack, plus yamllint; custom resources (Prometheus, ServiceMonitor,
 #      PodMonitor) are validated against CRD schemas from a pinned commit of the datreeio CRDs-catalog
 #   2. the Prometheus Operator CRDs the stack renders are present and well formed, and the Application syncs them with
 #      ServerSideApply=true (kubeconform has no schema for the CustomResourceDefinition kind, so addons-check skips it)
-#   3. the vendored chart is pinned: Chart.lock matches Chart.yaml, and the downloaded tarball matches the lock
+#   3. the vendored charts are pinned: Chart.lock matches Chart.yaml, and the downloaded tarball matches the lock
 #   4. contracts that a schema check cannot see (scripts/chart-contract-check.py), on the default render of each chart:
 #        - the stack, the secrets chart and the collector meet the restricted Pod Security level that the
 #          observability namespace enforces (node-exporter would not, which is why it is off)
@@ -14,14 +14,23 @@
 #          persistent values really switch the volumes on
 #        - Grafana reads its admin account from the Secret grafana-admin and no password is rendered anywhere
 #        - the collector image is pinned by digest
+#        - Loki is single tenant with the TSDB index (schema v13), filesystem storage and retention on; Alloy reads
+#          logs only through the Kubernetes API from the shop and data namespaces, turns no log field into a label and
+#          cannot read Secrets; both meet the restricted level, render no claim, hostPath volume or Ingress by default,
+#          and values-persistent.yaml of Loki really switches its volume on
 #        - the secrets chart renders an ordinary resource and its Job is not a Helm hook
 #        - everything every chart renders is allowed by the platform-observability AppProject
 #        - every Grafana dashboard is valid JSON with a unique uid and title, uses the data source variable and no
 #          fixed data source uid, is held by a ConfigMap that carries the label the Grafana sidecar selects, and
 #          uses only metric names confirmed in the service code, the vendored CloudNativePG chart, the vendored
-#          stack chart or platform/observability/dashboards/confirmed-upstream.txt
-#   5. the OpenTelemetry Collector configuration passes `validate` of the pinned image (needs a running Docker; the
-#      image is pulled by digest)
+#          stack chart or platform/observability/dashboards/confirmed-upstream.txt; Loki panels use only the log
+#          stream labels and the level, and no selector can match the empty value
+#   5. the OpenTelemetry Collector configuration passes `validate` of the pinned image, the Loki configuration passes
+#      -verify-config and the Alloy configuration passes `validate` of the images the charts deploy, and the LogQL of
+#      the dashboards is run against a Loki container with sample lines (JSON with a lower-case level, JSON with an
+#      upper-case level, plain text) and must parse and return what is expected (needs a running Docker; the
+#      collector image is pulled by digest, the other two by the tag the chart sets; the Loki container is removed
+#      afterwards)
 #   6. shellcheck on the scripts, through scripts/shellcheck.sh (same flags and version as CI)
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
@@ -58,7 +67,8 @@ if ! have helm; then
 fi
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+logql_container=""
+trap 'rm -rf "$work"; [ -z "$logql_container" ] || docker rm -f "$logql_container" > /dev/null 2>&1 || true' EXIT
 export HELM_CONFIG_HOME="$work/config" HELM_CACHE_HOME="$work/cache" HELM_DATA_HOME="$work/data"
 
 # The tarballs under charts/ are downloaded, not committed; fetch them from the pinned lock files.
@@ -71,6 +81,8 @@ build_dependencies() {
   helm dependency build "$dir" > /dev/null
 }
 build_dependencies "$stack" || status=1
+build_dependencies "$root/loki" || status=1
+build_dependencies "$root/alloy" || status=1
 # The dashboards are checked against the metric names in the vendored CloudNativePG chart, so that one is fetched too.
 build_dependencies "platform/data/cloudnative-pg" || status=1
 
@@ -121,6 +133,26 @@ else
   echo "    FAIL $stack/Chart.lock is missing"
   status=1
 fi
+
+for chart in loki alloy; do
+  dir="$root/$chart"
+  want_chart="$(sed -n 's/^    version: *//p' "$dir/Chart.yaml")"
+  have_chart="$(sed -n 's/^  version: *//p' "$dir/Chart.lock" 2> /dev/null || true)"
+  if [ -n "$want_chart" ] && [ "$want_chart" = "$have_chart" ]; then
+    echo "    Chart.yaml and Chart.lock both pin $chart $want_chart"
+  else
+    echo "    FAIL $dir: Chart.yaml pins '$want_chart' but Chart.lock has '$have_chart'; run helm dependency update"
+    status=1
+  fi
+  if [ ! -f "$dir/charts/$chart-$want_chart.tgz" ]; then
+    echo "    FAIL $dir/charts/$chart-$want_chart.tgz is missing after helm dependency build"
+    status=1
+  fi
+  if ! helm dependency list "$dir" | awk 'NR > 1 && NF > 0 && $NF != "ok" { bad = 1 } END { exit bad }'; then
+    echo "    FAIL helm dependency list reports a dependency of $dir that is not ok"
+    status=1
+  fi
+done
 
 # --- 4. contracts ---
 
@@ -173,6 +205,22 @@ else
 
   contract project-fit "observability-monitors" "$work/monitors.yaml" "$project" "$namespace"
 
+  render loki "$root/loki" -f "$root/loki/values.yaml" > "$work/loki.yaml" || status=1
+  render loki "$root/loki" -f "$root/loki/values.yaml" -f "$root/loki/values-persistent.yaml" > "$work/loki-persistent.yaml" || status=1
+  render alloy "$root/alloy" -f "$root/alloy/values.yaml" > "$work/alloy.yaml" || status=1
+  for check in restricted ephemeral loki; do contract "$check" "loki" "$work/loki.yaml"; done
+  contract project-fit "loki" "$work/loki.yaml" "$project" "$namespace"
+  for check in restricted loki; do contract "$check" "loki + values-persistent.yaml" "$work/loki-persistent.yaml"; done
+  contract project-fit "loki + values-persistent.yaml" "$work/loki-persistent.yaml" "$project" "$namespace"
+  # The persistent values must switch the volume on, or the documented option does nothing.
+  if "$contract_py" scripts/chart-contract-check.py ephemeral persistent < "$work/loki-persistent.yaml" > /dev/null; then
+    echo "    FAIL the Loki values-persistent.yaml does not render any persistent storage"
+    status=1
+  fi
+  contracts=$((contracts + 1))
+  for check in restricted ephemeral alloy; do contract "$check" "alloy" "$work/alloy.yaml"; done
+  contract project-fit "alloy" "$work/alloy.yaml" "$project" "$namespace"
+
   render observability-dashboards "$root/dashboards" > "$work/dashboards.yaml" || status=1
   contract project-fit "observability-dashboards" "$work/dashboards.yaml" "$project" "$namespace"
   cnpg_chart=""
@@ -189,7 +237,7 @@ fi
 
 # --- 5. collector configuration ---
 
-echo "==> OpenTelemetry Collector configuration"
+echo "==> Collector, Loki and Alloy configuration"
 if have docker && docker info > /dev/null 2>&1 && [ -n "$contract_py" ]; then
   collector="$root/otel-collector"
   image="$(helm template otel-collector "$collector" --namespace "$namespace" | sed -n 's/^ *image: *//p' | head -1)"
@@ -203,8 +251,55 @@ if have docker && docker info > /dev/null 2>&1 && [ -n "$contract_py" ]; then
     cat "$work/validate.err"
     status=1
   fi
+  # Loki and Alloy: the configuration the chart renders, checked by the image the chart deploys.
+  loki_image="$(helm template loki "$root/loki" --namespace "$namespace" | sed -n 's/^ *image: *//p' | head -1)"
+  mkdir -p "$work/loki-config"
+  helm template loki "$root/loki" --namespace "$namespace" -s charts/loki/templates/config.yaml \
+    | "$contract_py" -c 'import sys, yaml; print(next(yaml.safe_load_all(sys.stdin))["data"]["config.yaml"], end="")' > "$work/loki-config/config.yaml"
+  if docker run --rm -v "$work/loki-config:/etc/loki/config:ro" "$loki_image" -config.file=/etc/loki/config/config.yaml -verify-config > /dev/null 2> "$work/loki-verify.err"; then
+    echo "    the Loki configuration is valid for $loki_image"
+  else
+    echo "    FAIL the Loki configuration is not valid for $loki_image"
+    cat "$work/loki-verify.err"
+    status=1
+  fi
+  # The LogQL of the dashboards, run against that Loki with sample lines (scripts/logql-check.py).
+  mkdir -p "$work/loki-runtime"
+  : > "$work/loki-runtime/runtime-config.yaml"
+  logql_container="observability-check-loki-$$"
+  if docker run -d --rm --name "$logql_container" -p 127.0.0.1::3100 --tmpfs /var/loki:uid=10001 \
+    -v "$work/loki-config:/etc/loki/config:ro" -v "$work/loki-runtime:/etc/loki/runtime-config:ro" \
+    "$loki_image" -config.file=/etc/loki/config/config.yaml -target=all > /dev/null 2> "$work/logql.err"; then
+    loki_port="$(docker port "$logql_container" 3100/tcp | head -1 | sed 's/.*://')"
+    if "$contract_py" scripts/logql-check.py "http://127.0.0.1:$loki_port" "$root/dashboards/files" > "$work/logql.out" 2>&1; then
+      echo "    the dashboards' LogQL parses and returns the expected lines on $loki_image"
+      sed -n 's/^    ran /    ran /p' "$work/logql.out"
+    else
+      echo "    FAIL the dashboards' LogQL against $loki_image"
+      cat "$work/logql.out"
+      status=1
+    fi
+    docker rm -f "$logql_container" > /dev/null 2>&1 || true
+    logql_container=""
+  else
+    echo "    FAIL could not start Loki to run the dashboards' LogQL"
+    cat "$work/logql.err"
+    logql_container=""
+    status=1
+  fi
+  alloy_image="$(helm template alloy "$root/alloy" --namespace "$namespace" | sed -n 's/^ *image: *\(.*grafana\/alloy:.*\)$/\1/p' | head -1)"
+  mkdir -p "$work/alloy-config"
+  helm template alloy "$root/alloy" --namespace "$namespace" -s charts/alloy/templates/configmap.yaml \
+    | "$contract_py" -c 'import sys, yaml; print(next(yaml.safe_load_all(sys.stdin))["data"]["config.alloy"], end="")' > "$work/alloy-config/config.alloy"
+  if docker run --rm -v "$work/alloy-config:/cfg:ro" "$alloy_image" validate /cfg/config.alloy > /dev/null 2> "$work/alloy-validate.err"; then
+    echo "    the Alloy configuration is valid for $alloy_image"
+  else
+    echo "    FAIL the Alloy configuration is not valid for $alloy_image"
+    cat "$work/alloy-validate.err"
+    status=1
+  fi
 else
-  echo "docker is not available; skipping the collector configuration check"
+  echo "docker is not available; skipping the collector, Loki and Alloy configuration checks"
 fi
 
 # --- 6. shell scripts ---
