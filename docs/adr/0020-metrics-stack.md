@@ -61,7 +61,7 @@ Teardown
 
 ## What this does not cover
 
-- **Nothing has run on a cluster.** See below.
+- **Only part of it is recorded on a cluster.** See below, and [the screenshots](../observability-evidence.md).
 - **No alerting.** No Alertmanager, no alert or recording rules, no SLOs, no burn-rate alerts, no notification route.
 - **No traces, and logs only through [ADR-0021](0021-logging-stack.md).** Traces are accepted and dropped. Logs are collected by the logging stack of that decision.
 - **No long-term or cross-cluster storage.** One Prometheus per cluster, two days, and only the EKS cluster exists.
@@ -75,15 +75,13 @@ Teardown
 
 Checked on a laptop: every chart with `helm lint --strict`, `helm template` and `kubeconform` (custom resources against the pinned CRD catalog), for both clouds and the persistent values; the operator's CRDs for presence, form and the server-side apply rule; chart pinning against `Chart.lock` and the downloaded tarball; restricted Pod Security, no volumes or Alertmanager or ingress in the default profile, Grafana's secret wiring with no password rendered, the collector's digest pin and the AppProject fit, each shown to fail when its rule is broken; the dashboards (valid JSON, unique uid and title, the data source variable, the sidecar label, confirmed metric names, and that the ConfigMaps hold what the files hold); the bootstrap flag in a dry run; the teardown steps against a fake `kubectl`, including the stuck-pod message and the claim deletions. The Collector configuration was validated with the pinned image, and the image was run locally with the Deployment's hardening flags: it accepted OTLP traces and metrics, dropped the traces, and exposed the metrics on both Prometheus ports.
 
-Not exercised, because it needs a cluster:
+Observed on a real EKS cluster ([evidence](../observability-evidence.md)): every Application Synced and Healthy, which covers the sync order and the retries around the CRDs; the operator, Prometheus and Grafana running in the restricted namespace, with the data source and the dashboards loaded; every scrape target up (the four services, PostgreSQL, RabbitMQ, the collector, the kubelet, kube-state-metrics, CoreDNS and the API server); and the Cluster capacity, Sample services and Data layer dashboards showing data. The cluster was temporary and has been destroyed: at the end of the second session `scripts/teardown-prep.sh` and then `scripts/teardown-argocd.sh` were run on it, `terraform destroy` removed all 54 resources, and the AWS checks came back empty.
 
-- the Prometheus Operator and Prometheus pods starting under `restricted` (the operator adds the container settings of Prometheus's own pod, which cannot be rendered offline);
-- Grafana starting with a read-only root filesystem and loading the data source and the three dashboards;
-- the secrets Job creating `grafana-admin` and Grafana waiting for it;
-- the targets (the four services, PostgreSQL, RabbitMQ, the collector, the kubelet, kube-state-metrics) showing as up, and the dashboard queries returning data for them; the queries were checked for metric names, not run;
-- the Argo CD sync order and the retries around the CRDs;
-- the teardown script against a real cluster;
-- the capacity estimate, which is arithmetic on rendered requests and the nodes' documented sizes.
+Not covered by those runs:
+
+- the capacity estimate was not compared with the requests of the running pods in any recorded way;
+- the error-rate panels were empty because there were no 5xx responses, so they have not shown an error;
+- the services are not instrumented, so the collector received no telemetry.
 
 ## Alternatives considered
 

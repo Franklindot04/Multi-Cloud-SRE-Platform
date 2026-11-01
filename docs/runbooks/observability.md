@@ -2,7 +2,7 @@
 
 Turns on Prometheus, Grafana, an OpenTelemetry Collector, Loki and Alloy on the hub cluster, checks that they work, and removes them. What it is and why it looks like this is in [ADR-0020](../adr/0020-metrics-stack.md) (metrics) and [ADR-0021](../adr/0021-logging-stack.md) (logs); the definitions are in [`platform/observability`](../../platform/observability/README.md).
 
-**Loki and Alloy have not run on a real cluster yet.** The definitions are rendered, schema-checked and contract-checked offline, and the collector, Loki and Alloy were run locally from their images (Loki and Alloy together, on sample log lines). The steps below are what to do and what to expect; where something is described as expected, it is expected from the definitions and not yet seen. The [logging section](#logs) ends with a checklist for the first apply. If reality differs, that is a finding: write it down.
+**This has run on a real EKS cluster**, in two sessions, with screenshots in [the evidence page](../observability-evidence.md): every Application Synced and Healthy, every Prometheus target up, the dashboards showing data, and Loki and Alloy running under `restricted` with their logs in the Logs dashboard. The cluster was temporary. Not yet seen: Alloy's behaviour across restarts. The teardown (`scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`) was run on that cluster and left nothing behind. Where this runbook says something is expected, that comes from those sessions or from the definitions; if reality differs, that is a finding: write it down. The [logging section](#logs) ends with a checklist for an apply.
 
 Everything is off unless the cluster Secret carries the label `platform.example/observability=true`. Nothing is exposed outside the cluster; you reach Grafana and Prometheus with a port-forward.
 
@@ -203,6 +203,6 @@ Before `terraform destroy`, follow the [data layer teardown](data-layer.md#teard
 
 **Everything was fine and the history is gone.** A Prometheus or Grafana pod was rescheduled, and the data was in `emptyDir`. Expected in the default profile; see the persistent volumes section.
 
-## What to record when you first run this
+## What to record when you run this
 
-Because this has not run yet, note the following and update the ADR and this runbook with what you see: whether Prometheus started under `restricted`, whether Grafana started and loaded the data source and the three dashboards, which targets were up, whether the dashboard queries returned data, and how long the first sync took.
+The first two runs are written up in [the evidence page](../observability-evidence.md). On a new run, note what differs from it: whether Prometheus and Grafana started under `restricted` and loaded the data source and the dashboards, which targets were up, whether the dashboard queries returned data, how long the first sync took, and, still unseen, what happens to log lines across a restart of Alloy or Loki.

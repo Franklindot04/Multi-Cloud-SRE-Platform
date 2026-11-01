@@ -70,7 +70,7 @@ None of this is meant to be left as it is for a production cluster:
 
 ## What this does not cover
 
-- **Nothing has run on a cluster.** See below.
+- **Only part of it is recorded on a cluster.** See below, and [the screenshots](../observability-evidence.md).
 - **No trace correlation:** no derived fields, no link from a log line to a trace, and the services still do not send OpenTelemetry data ([ADR-0020](0020-metrics-stack.md)). Request IDs and trace IDs are in the lines, searchable with a text filter.
 - **No log-based alerts,** no recording rules from logs, no ruler, no Alertmanager.
 - **No long-term or cross-cluster storage, no replication, no backup.**
@@ -89,15 +89,12 @@ Run locally with the images the charts deploy, with no cluster:
 - Loki and Alloy together on sample lines in the three shapes the services write (JSON with a lower-case level, JSON with an upper-case level, plain text). The level came out as structured metadata in lower case on the JSON lines and was absent on plain text, and the labels API listed no `level`.
 - Every Loki query of the dashboards against Loki with sample lines, with "All" and with concrete values: all parse, the counts come out as expected, error lines are found for both spellings of the level, the pod without an app label is grouped under its container name, and a selector such as `{namespace=~".*"}` is refused with HTTP 400 (which is why "All" for the namespace variable is `.+`). Loki returns a separate stream per value of the structured metadata, so a count of streams is not a count of pods.
 
-Not exercised, because it needs a cluster:
+Observed on a real EKS cluster ([evidence](../observability-evidence.md)): Loki and Alloy started under `restricted` with no claim (`emptyDir`) and both targets were up in Prometheus; logs arrived with the labels `namespace`, `pod`, `container`, `app` and `service`, and `level` was available as structured metadata; Grafana loaded the Loki data source, and the Logs dashboard worked, including the search box and an error view of the PostgreSQL pod; the Argo CD sync of waves 15 and 16 finished Healthy. Alloy's source also adds the labels `job` and `instance`. The cluster was temporary and has been destroyed: the teardown ran with Loki and Alloy deployed (`scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`) and the AWS checks came back empty.
 
-- Loki and Alloy starting under `restricted` (Alloy's user ID in the image and the writable paths were taken from the chart and not run as that user);
-- Alloy listing pods and tailing logs through the API with the trimmed role, and what it does with lines written while it or Loki restarts;
-- Grafana loading the Loki data source and the Logs dashboard, and the panels rendering (the queries were run against Loki directly, not through Grafana);
-- both targets showing as up in Prometheus;
-- the Argo CD sync order of waves 15 and 16;
-- the teardown ending clean with Loki and Alloy deployed;
-- the capacity estimate.
+Not covered by that run:
+
+- what Alloy does with lines written while it or Loki restarts;
+- the capacity estimate, which was not compared with the running pods in any recorded way.
 
 ## Alternatives considered
 
