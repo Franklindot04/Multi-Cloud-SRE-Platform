@@ -1,5 +1,7 @@
 package dev.mcsre.payments.obs;
 
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
 import java.io.PrintStream;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -31,6 +33,11 @@ public final class JsonLog {
         record.put("level", level);
         record.put("message", message);
         record.put("service", service);
+        // A line written inside a span carries its trace ID, in the same form as the request line.
+        SpanContext span = Span.current().getSpanContext();
+        if (span.isValid()) {
+            record.put("trace_id", span.getTraceId());
+        }
         record.putAll(fields);
         out.println(toJson(record));
         out.flush();

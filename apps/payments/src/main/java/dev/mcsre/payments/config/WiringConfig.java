@@ -12,6 +12,7 @@ import dev.mcsre.payments.obs.Drain;
 import dev.mcsre.payments.obs.HttpMetrics;
 import dev.mcsre.payments.obs.JsonLog;
 import dev.mcsre.payments.obs.ObservabilityFilter;
+import dev.mcsre.payments.obs.Tracing;
 import io.prometheus.metrics.model.registry.PrometheusRegistry;
 import java.time.Clock;
 import java.util.Map;
@@ -49,6 +50,15 @@ public class WiringConfig {
         return new JsonLog(SERVICE, config.logLevel(), System.out);
     }
 
+    /**
+     * Tracing is off unless OTEL_EXPORTER_OTLP_ENDPOINT is set. Closing it on shutdown flushes the queued spans, for at
+     * most a few seconds, after the web server has stopped.
+     */
+    @Bean(destroyMethod = "close")
+    Tracing tracing(Environment environment, JsonLog log) {
+        return Tracing.create(environment::getProperty, Map.of(), SERVICE, environment.getProperty("APP_VERSION"), log);
+    }
+
     @Bean(destroyMethod = "close")
     @ConditionalOnProperty(name = "STORAGE", havingValue = "postgres")
     HikariDataSource dataSource(AppConfig config, PrometheusRegistry registry) {
@@ -59,8 +69,9 @@ public class WiringConfig {
 
     @Bean
     @ConditionalOnProperty(name = "STORAGE", havingValue = "postgres")
-    PaymentRepository postgresPaymentRepository(HikariDataSource dataSource, PrometheusRegistry registry, JsonLog log) {
-        return new PostgresPaymentRepository(dataSource, new DbMetrics(registry), log);
+    PaymentRepository postgresPaymentRepository(
+            HikariDataSource dataSource, PrometheusRegistry registry, JsonLog log, Tracing tracing) {
+        return new PostgresPaymentRepository(dataSource, new DbMetrics(registry), log, tracing);
     }
 
     @Bean
@@ -70,16 +81,16 @@ public class WiringConfig {
     }
 
     @Bean
-    AuthorizationService authorizationService(PaymentRepository repository, AppConfig config) {
+    AuthorizationService authorizationService(PaymentRepository repository, AppConfig config, Tracing tracing) {
         DecisionPolicy policy = new DecisionPolicy(config.declineAboveMinor(), config.approvalRatio(), config.allowedCurrencies());
-        return new AuthorizationService(repository, policy, Clock.systemUTC());
+        return new AuthorizationService(repository, policy, Clock.systemUTC(), tracing.tracer());
     }
 
     @Bean
     FilterRegistrationBean<ObservabilityFilter> observabilityFilter(
-            AppConfig config, PrometheusRegistry registry, JsonLog log) {
+            AppConfig config, PrometheusRegistry registry, JsonLog log, Tracing tracing) {
         FilterRegistrationBean<ObservabilityFilter> bean =
-                new FilterRegistrationBean<>(new ObservabilityFilter(SERVICE, config, new HttpMetrics(SERVICE, registry), log));
+                new FilterRegistrationBean<>(new ObservabilityFilter(SERVICE, config, new HttpMetrics(SERVICE, registry), log, tracing));
         bean.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
         return bean;
     }

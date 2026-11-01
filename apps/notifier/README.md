@@ -52,7 +52,7 @@ The handler is idempotent on the event ID: the notification is stored under the 
 | `MAX_NOTIFICATIONS` | `100000` | Notifications kept in memory |
 | `MAX_BODY_BYTES` | `1048576` | Largest accepted request body |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Turns tracing on; see [Tracing](../README.md#tracing-gateway-orders-and-notifier) for this and the other `OTEL_*` settings |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Turns tracing on; see [Tracing](../README.md#tracing-gateway-orders-payments-and-notifier) for this and the other `OTEL_*` settings |
 | `SHUTDOWN_DRAIN_SECONDS` | `5` | Time `/readyz` fails before the listener stops |
 | `SHUTDOWN_TIMEOUT_SECONDS` | `20` | Time allowed for in-flight requests to finish |
 | `FAULT_INJECTION_ENABLED` | `false` | Turn on fault injection |

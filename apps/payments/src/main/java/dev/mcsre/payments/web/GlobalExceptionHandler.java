@@ -4,6 +4,7 @@ import dev.mcsre.payments.data.StorageUnavailableException;
 import dev.mcsre.payments.obs.ErrorJson;
 import dev.mcsre.payments.obs.ObservabilityFilter;
 import dev.mcsre.payments.obs.RequestIds;
+import dev.mcsre.payments.obs.Tracing;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -55,12 +56,14 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(StorageUnavailableException.class)
-    ResponseEntity<String> storageUnavailable(HttpServletRequest request) {
+    ResponseEntity<String> storageUnavailable(StorageUnavailableException e, HttpServletRequest request) {
+        Tracing.recordFailure(e);
         return body(HttpStatus.SERVICE_UNAVAILABLE, "unavailable", "storage is temporarily unavailable", request);
     }
 
     @ExceptionHandler(Exception.class)
     ResponseEntity<String> other(Exception e, HttpServletRequest request) {
+        Tracing.recordFailure(e);
         return body(HttpStatus.INTERNAL_SERVER_ERROR, "internal_error", "internal error", request);
     }
 

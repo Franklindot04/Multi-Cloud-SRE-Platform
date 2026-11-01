@@ -1,6 +1,14 @@
 package dev.mcsre.payments.obs;
 
 import dev.mcsre.payments.config.AppConfig;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanContext;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.context.propagation.TextMapGetter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletException;
@@ -11,6 +19,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,16 +54,34 @@ public final class ObservabilityFilter extends OncePerRequestFilter {
     private static final List<PathPattern> KNOWN_ROUTES = parseRoutes(
             "/payments/authorize", "/payments/{id}", "/healthz", "/readyz", "/metrics");
 
+    private static final TextMapGetter<HttpServletRequest> HEADERS = new TextMapGetter<>() {
+        @Override
+        public Iterable<String> keys(HttpServletRequest request) {
+            return Collections.list(request.getHeaderNames());
+        }
+
+        @Override
+        public String get(HttpServletRequest request, String key) {
+            return request == null ? null : request.getHeader(key);
+        }
+    };
+
     private final String service;
     private final AppConfig config;
     private final HttpMetrics metrics;
     private final JsonLog log;
+    private final Tracing tracing;
 
     public ObservabilityFilter(String service, AppConfig config, HttpMetrics metrics, JsonLog log) {
+        this(service, config, metrics, log, Tracing.off());
+    }
+
+    public ObservabilityFilter(String service, AppConfig config, HttpMetrics metrics, JsonLog log, Tracing tracing) {
         this.service = service;
         this.config = config;
         this.metrics = metrics;
         this.log = log;
+        this.tracing = tracing;
     }
 
     private static List<PathPattern> parseRoutes(String... patterns) {
@@ -71,7 +98,23 @@ public final class ObservabilityFilter extends OncePerRequestFilter {
         if (requestId == null || !REQUEST_ID.matcher(requestId).matches()) {
             requestId = UUID.randomUUID().toString();
         }
-        TraceContext trace = TraceContext.fromHeader(request.getHeader("traceparent"));
+        TraceContext header = TraceContext.fromHeader(request.getHeader("traceparent"));
+        // The server span continues the incoming trace. There is none for the operational endpoints or when tracing is off.
+        Span span = null;
+        Scope scope = null;
+        if (tracing.isEnabled() && !OPERATIONAL.contains(request.getRequestURI())) {
+            Context parent = tracing.propagators().getTextMapPropagator().extract(Context.root(), request, HEADERS);
+            span = tracing.tracer().spanBuilder(request.getMethod())
+                    .setParent(parent)
+                    .setSpanKind(SpanKind.SERVER)
+                    .setAttribute(AttributeKey.stringKey("http.request.method"), request.getMethod())
+                    .setAttribute(AttributeKey.stringKey("url.scheme"), request.getScheme())
+                    .startSpan();
+            scope = span.makeCurrent();
+        }
+        // The trace ID of the log lines is the span's; without a span it is the one in the traceparent header, as before.
+        SpanContext spanContext = Span.current().getSpanContext();
+        TraceContext trace = spanContext.isValid() ? header.withTraceId(spanContext.getTraceId()) : header;
         request.setAttribute(TRACE_ATTRIBUTE, trace);
         request.setAttribute(RequestIds.ATTRIBUTE, requestId);
         response.setHeader("X-Request-Id", requestId);
@@ -91,6 +134,7 @@ public final class ObservabilityFilter extends OncePerRequestFilter {
             fields.put("error", e.getClass().getSimpleName());
             fields.put("detail", String.valueOf(e.getMessage()));
             log.error("unhandled error", fields);
+            Tracing.recordFailure(e);
             if (!response.isCommitted()) {
                 reject(response, requestId, 500, "internal_error", "internal error");
             }
@@ -100,6 +144,16 @@ public final class ObservabilityFilter extends OncePerRequestFilter {
             String route = routeOf(request);
             int status = response.getStatus();
             metrics.finished(request.getMethod(), route, status, seconds);
+            if (span != null) {
+                span.updateName(request.getMethod() + " " + route);
+                span.setAttribute(AttributeKey.stringKey("http.route"), route);
+                span.setAttribute(AttributeKey.longKey("http.response.status_code"), (long) status);
+                if (status >= 500) {
+                    span.setStatus(StatusCode.ERROR, "server error");
+                }
+                scope.close();
+                span.end();
+            }
 
             Map<String, Object> fields = new LinkedHashMap<>();
             fields.put("request_id", requestId);

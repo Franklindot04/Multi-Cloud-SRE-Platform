@@ -30,6 +30,11 @@ public final class TraceContext {
         return new TraceContext(randomHex(16), "01");
     }
 
+    /** The same context with another trace ID, for when a span has the trace. */
+    public TraceContext withTraceId(String id) {
+        return new TraceContext(id, flags);
+    }
+
     public String traceId() {
         return traceId;
     }
