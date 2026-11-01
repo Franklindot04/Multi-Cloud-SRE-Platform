@@ -27,7 +27,7 @@ Storage and sizing
 
 What is switched off, and why
 
-- **Alertmanager is deferred.** Nothing would receive an alert. It arrives with the SLO and burn-rate work, together with the rules it routes. The chart's default rules and the dashboards that depend on them are off for the same reason.
+- **Alertmanager is deferred.** Nothing would receive an alert. It arrives with the SLO and burn-rate work, together with the rules it routes ([ADR-0023](0023-slos-and-alerting.md)). The chart's default rules and the dashboards that depend on them are off for the same reason.
 - **node-exporter is disabled.** It needs `hostNetwork`, `hostPID` and `hostPath` volumes, which `restricted` does not allow, and the namespace enforces `restricted`. Node CPU and memory still come from the kubelet and cAdvisor (the cluster dashboard sums the pods of each node), but node-level disk, network and filesystem metrics are missing. If they are wanted, node-exporter goes into its own namespace that is allowed to be privileged, with its own AppProject, and not into this one.
 
 Grafana
@@ -62,7 +62,7 @@ Teardown
 ## What this does not cover
 
 - **Only part of it is recorded on a cluster.** See below, and [the screenshots](../observability-evidence.md).
-- **No alerting.** No Alertmanager, no alert or recording rules, no SLOs, no burn-rate alerts, no notification route.
+- **No alerting.** No Alertmanager, no alert or recording rules, no SLOs, no burn-rate alerts, no notification route. [ADR-0023](0023-slos-and-alerting.md) later adds the SLO rules and burn-rate alerts; there is still no Alertmanager.
 - **No traces, and logs only through [ADR-0021](0021-logging-stack.md).** Traces were accepted and dropped when this was written; [ADR-0022](0022-tracing-stack.md) adds a trace backend. Logs are collected by the logging stack of [ADR-0021](0021-logging-stack.md).
 - **No long-term or cross-cluster storage.** One Prometheus per cluster, two days, and only the EKS cluster exists.
 - **No RabbitMQ broker metrics in a dashboard**, no Valkey metrics (the chart has no exporter enabled), and the CloudNativePG and RabbitMQ operators are not scraped.

@@ -1,6 +1,6 @@
-# Observability: metrics, logs and traces
+# Observability: metrics, alerts, logs and traces
 
-Turns on Prometheus, Grafana, an OpenTelemetry Collector, Loki, Alloy and Tempo on the hub cluster, checks that they work, and removes them. What it is and why it looks like this is in [ADR-0020](../adr/0020-metrics-stack.md) (metrics) and [ADR-0021](../adr/0021-logging-stack.md) (logs) and [ADR-0022](../adr/0022-tracing-stack.md) (traces); the definitions are in [`platform/observability`](../../platform/observability/README.md).
+Turns on Prometheus, Alertmanager, Grafana, an OpenTelemetry Collector, Loki, Alloy and Tempo on the hub cluster, checks that they work, and removes them. What it is and why it looks like this is in [ADR-0020](../adr/0020-metrics-stack.md) (metrics) and [ADR-0021](../adr/0021-logging-stack.md) (logs) and [ADR-0022](../adr/0022-tracing-stack.md) (traces); the definitions are in [`platform/observability`](../../platform/observability/README.md).
 
 **This has run on a real EKS cluster**, in two sessions, with screenshots in [the evidence page](../observability-evidence.md): every Application Synced and Healthy, every Prometheus target up, the dashboards showing data, and Loki and Alloy running under `restricted` with their logs in the Logs dashboard. The cluster was temporary. Not yet seen: Alloy's behaviour across restarts, and anything about Tempo and traces, which were added after those sessions. All four services (gateway, orders, payments and notifier) send traces to the collector, which has not been seen on a cluster. The teardown (`scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`) was run on that cluster and left nothing behind. Where this runbook says something is expected, that comes from those sessions or from the definitions; if reality differs, that is a finding: write it down. The [logging section](#logs) ends with a checklist for an apply, with the Tempo steps in it.
 
@@ -9,7 +9,7 @@ Everything is off unless the cluster Secret carries the label `platform.example/
 ## Before you start
 
 - Argo CD is installed on the cluster ([Argo CD runbook](argocd.md)) and the `platform/argocd/apps` files of this change are on `main` in GitHub: the root Application reads Git, not your working tree.
-- There is room on the nodes. The stack requests about 0.5 vCPU and 1.5 GiB of memory, on top of everything else. On the default two `t3.large` Spot nodes that is tight when the data layer and the services run too; see the capacity paragraph in the ADR before enabling everything at once.
+- There is room on the nodes. The stack requests about 0.5 vCPU and 1.5 GiB of memory (515m and 1560Mi), on top of everything else. On the default two `t3.large` Spot nodes that is tight when the data layer and the services run too; see the capacity paragraph in the ADR before enabling everything at once.
 - You know which other flags you use. The bootstrap script writes every cluster label on each run, so repeat them (for example `--enable-data`), or they are switched off.
 
 ## Enable
@@ -38,8 +38,8 @@ kubectl --context <EKS_CONTEXT> -n argocd get applications | grep observability-
 | `observability-stack-*` | Prometheus Operator and its CRDs, Prometheus, Grafana, kube-state-metrics | 11 |
 | `observability-tempo-*` | Tempo (single binary, `emptyDir`, 24 hours of retention) | 11 |
 | `observability-collector-*` | the OpenTelemetry Collector and its `ServiceMonitor` | 12 |
-| `observability-monitors-*` | monitors for the four services, PostgreSQL and RabbitMQ | 13 |
-| `observability-dashboards-*` | the four dashboards, as ConfigMaps | 14 |
+| `observability-monitors-*` | monitors for the four services, PostgreSQL and RabbitMQ, Loki, Alloy and Tempo, and the SLO rules ([ADR-0023](../adr/0023-slos-and-alerting.md)) | 13 |
+| `observability-dashboards-*` | the five dashboards, as ConfigMaps | 14 |
 | `observability-loki-*` | Loki (single binary, `emptyDir`, 48 hours of retention) | 15 |
 | `observability-alloy-*` | Alloy, the log collector | 16 |
 
@@ -51,7 +51,7 @@ Check the pods:
 kubectl --context <EKS_CONTEXT> -n observability get pods
 ```
 
-Expected: the operator, Prometheus (`prometheus-kube-prometheus-stack-prometheus-0`, two containers), Grafana (one pod, three containers), kube-state-metrics, the collector, Loki (`loki-0`), Alloy (two containers) and Tempo (`tempo-0`), all `Running` and ready. There is no Alertmanager and no node-exporter pod.
+Expected: the operator, Prometheus (`prometheus-kube-prometheus-stack-prometheus-0`, two containers), Grafana (one pod, three containers), kube-state-metrics, the collector, Alertmanager (`alertmanager-kube-prometheus-stack-alertmanager-0`, two containers), Loki (`loki-0`), Alloy (two containers) and Tempo (`tempo-0`), all `Running` and ready. There is no node-exporter pod.
 
 ## Reach Grafana and Prometheus
 
@@ -60,9 +60,10 @@ There is no ingress. Use a port-forward and leave it running in its own terminal
 ```bash
 kubectl --context <EKS_CONTEXT> -n observability port-forward svc/kube-prometheus-stack-grafana 3000:80
 kubectl --context <EKS_CONTEXT> -n observability port-forward svc/kube-prometheus-stack-prometheus 9090:9090
+kubectl --context <EKS_CONTEXT> -n observability port-forward svc/kube-prometheus-stack-alertmanager 9093:9093
 ```
 
-Grafana is then at <http://localhost:3000> and Prometheus at <http://localhost:9090>.
+Grafana is then at <http://localhost:3000>, Prometheus at <http://localhost:9090> and Alertmanager at <http://localhost:9093>.
 
 ### Read the Grafana admin password
 
@@ -95,7 +96,7 @@ The first lists the jobs that answer; the second must come back with an empty re
 | `loki`, `alloy` | the log stack, port `http-metrics` | the logging stack is deployed (always, with the label) |
 | `tempo` | Tempo, port `tempo-prom-metrics` (3200) | the tracing stack is deployed (always, with the label) |
 | the kubelet (with cAdvisor), the API server and CoreDNS | the cluster, from monitors the stack chart creates | always |
-| kube-state-metrics, Prometheus, the operator and Grafana | the stack itself | always |
+| kube-state-metrics, Prometheus, Alertmanager, the operator and Grafana | the stack itself (the Alertmanager job is `kube-prometheus-stack-alertmanager`) | always |
 
 Targets for the services and the data layer are absent, not down, on a cluster that does not run them: the monitors select nothing. There is no `node-exporter` job; that is deliberate.
 
@@ -175,6 +176,11 @@ Run these once on the first cluster apply, and write down what differs from the 
 - [ ] A test trace sent to the Collector (see [Send a test trace](#send-a-test-trace)) is found in Grafana, in Explore with the data source `Tempo`, by its ID; the collector's log has no `Exporting failed` line.
 - [ ] From the test trace, `Logs for this span` finds nothing (the test span has no log lines) and does not return an error; for a trace from one of the services it finds the lines that carry the trace ID.
 - [ ] After a Tempo restart (`kubectl -n observability delete pod tempo-0`) the pod comes back, the test trace is gone, and a new test trace is found again within a minute without restarting the collector.
+- [ ] `kubectl -n observability get pods`: `alertmanager-kube-prometheus-stack-alertmanager-0` is `Running` with both containers ready under the `restricted` Pod Security level, and `kubectl -n observability get pvc` still shows nothing.
+- [ ] Prometheus knows it: with the port-forward to Prometheus running, `curl -s localhost:9090/api/v1/alertmanagers` lists one active Alertmanager on port 9093, and `up{job="kube-prometheus-stack-alertmanager"} == 1`.
+- [ ] The SLO rules are loaded: `curl -s localhost:9090/api/v1/rules` has the groups `slo-recording-short`, `slo-recording-long`, `slo-alerts` and `slo-blind-spots` with no `lastError`, and `count({__name__=~"slo:.*"})` returns a number above zero once the services have had traffic.
+- [ ] A test alert reaches the Alertmanager UI: post one as shown in [Send a test alert](#send-a-test-alert), see it in <http://localhost:9093> under the receiver `ticket`, and see it hidden when a page alert with the same `slo` and `service` is posted.
+- [ ] In Grafana, Connections, Data sources: `Alertmanager` is present and `Save & test` succeeds, and the dashboard `SLOs` loads with the note about two days of data.
 - [ ] Teardown still ends clean: run `scripts/teardown-prep.sh` as described in the [data layer teardown](data-layer.md#teardown); it waits for the `observability-loki-*`, `observability-alloy-*` and `observability-tempo-*` Applications and for the pods, finds no claim, and `scripts/teardown-argocd.sh` then finishes.
 
 ## Traces
@@ -229,9 +235,46 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:4318/v1/traces
 
 **The `Trace` link on a log line does nothing, or the link from a trace finds no lines.** The first needs the data source `Loki` to have the derived field `trace_id` (Connections, Data sources, Loki) and a trace with that ID in Tempo. The second runs a text search for the ID over the span's time range plus five minutes either side: widen the Explore time range if the logs are older than that, and remember that Loki keeps 48 hours and Tempo 24.
 
+## Alerts
+
+The SLO rules and the alerts of the platform are evaluated by Prometheus (they are the `PrometheusRule` named `slo` in the [monitors chart](../../platform/observability/monitors)) and sent to an Alertmanager in the same namespace: one replica, state in an `emptyDir`, no ingress. What the alerts mean and what to do about each is in the [alert runbook](alerts.md); the reasoning is in [ADR-0023](../adr/0023-slos-and-alerting.md).
+
+**Nothing leaves the cluster.** There is no real notification channel and no secret in the repository, so the receivers `page`, `ticket` and `default` are empty: they take an alert and send it nowhere. An alert is visible in the Alertmanager UI, in the Prometheus Alerts page and on the `SLOs` dashboard, and that is all. The routing tree is: severity `page` to `page`, severity `ticket` to `ticket`, anything else to `default`, grouped by `alertname`, `slo` and `service`; a page alert hides the ticket alerts of the same `slo` and `service`, and `ServiceTargetDown` hides the burn-rate alerts of the same `service`.
+
+### Open Alertmanager
+
+```bash
+kubectl --context <EKS_CONTEXT> -n observability port-forward svc/kube-prometheus-stack-alertmanager 9093:9093
+```
+
+Then open <http://localhost:9093>. The Alerts tab lists the alerts and their receiver; `Inhibited` in the filter shows the hidden ones.
+
+### Send a test alert
+
+With the port-forward running, post an alert straight to Alertmanager. It disappears by itself after five minutes:
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' localhost:9093/api/v2/alerts \
+  -d '[{"labels": {"alertname": "TestAlert", "severity": "ticket", "slo": "test", "service": "test"}}]'
+```
+
+It shows in the UI under the receiver `ticket`. Post the same with `"severity": "page"` and a different `alertname`, and the ticket alert is shown as inhibited. Change `severity` to anything else and it goes to `default`.
+
+### Adding a real receiver later
+
+The receivers are empty on purpose, and `scripts/chart-contract-check.py` (`alertmanager`) fails if one is not. To send to a chat or an on-call tool, change the routing in Git as usual, but keep the address out of it: put the webhook URL in a Kubernetes Secret created in the cluster (by hand, or by the generator Job pattern the platform uses for passwords), list the Secret in `alertmanagerSpec.secrets` of the stack values so that it is mounted under `/etc/alertmanager/secrets/<name>/`, and point the receiver at the file with `url_file`. Then relax the check to allow `url_file` and nothing else. Do not put the URL, a token or a placeholder that looks like one in any file of the repository.
+
+### Troubleshooting alerts
+
+**The alerts page of Prometheus shows a firing alert, but Alertmanager does not.** `curl -s localhost:9090/api/v1/alertmanagers` should list one active Alertmanager. If it lists none, check that the pod is `Running` and that the Service `kube-prometheus-stack-alertmanager` has an endpoint: `kubectl -n observability get endpoints kube-prometheus-stack-alertmanager`.
+
+**The Alertmanager pod does not start or says its configuration is invalid.** `kubectl -n observability logs alertmanager-kube-prometheus-stack-alertmanager-0 -c alertmanager`. The configuration is the Secret `alertmanager-kube-prometheus-stack-alertmanager`; `scripts/observability-check.sh` runs `amtool check-config` on what the chart renders, so a failure on the cluster usually means the chart or the image changed.
+
+**The Application says the Secret is not permitted.** The `platform-observability` AppProject must allow the kind Secret (it does since the Alertmanager was added). On a cluster bootstrapped earlier, run `scripts/bootstrap-argocd.sh` again so that the AppProject is updated.
+
 ## Persistent volumes (optional, off)
 
-By default Prometheus and Grafana keep their data in `emptyDir` and lose it when a pod is rescheduled. (Loki and Tempo have their own optional claims; see the logs and traces sections.) To keep it, add `values-persistent.yaml` after `values.yaml` in the `valueFiles` of `platform/argocd/apps/91-observability-stack.yaml`, merge that to `main`, and let Argo CD sync. It creates a 5 GiB claim for Prometheus and a 1 GiB claim for Grafana on the cluster's default StorageClass.
+By default Prometheus, Grafana and Alertmanager keep their data in `emptyDir` and lose it when a pod is rescheduled (for Alertmanager that is the silences and the notification log). (Loki and Tempo have their own optional claims; see the logs and traces sections.) To keep it, add `values-persistent.yaml` after `values.yaml` in the `valueFiles` of `platform/argocd/apps/91-observability-stack.yaml`, merge that to `main`, and let Argo CD sync. It creates a 5 GiB claim for Prometheus, a 1 GiB claim for Grafana and a 1 GiB claim for Alertmanager on the cluster's default StorageClass.
 
 These volumes outlive `terraform destroy` and keep billing: the Prometheus claim is not removed with the Application, because a StatefulSet keeps its claims. [`scripts/teardown-prep.sh`](data-layer.md#teardown) deletes the claims in the `observability` namespace; if you tear down by hand, delete them before the cloud checks.
 

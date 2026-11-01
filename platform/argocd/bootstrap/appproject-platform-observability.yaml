@@ -7,7 +7,7 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: Metrics and logging stack (Prometheus, Grafana, OpenTelemetry Collector, monitors, Loki, Alloy) from platform/observability
+  description: Metrics, alerting, logging and tracing stack (Prometheus, Alertmanager, Grafana, Loki, Tempo) from platform/observability
   sourceRepos:
     - https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
   # Any registered cluster, but only the observability namespace, plus kube-system for the Service that the chart
@@ -36,6 +36,12 @@ spec:
     # Only rendered when persistence is switched on (values-persistent.yaml): Grafana's claim.
     - group: ""
       kind: PersistentVolumeClaim
+    # Only for the Alertmanager configuration: the Prometheus Operator reads it from a Secret, which the stack chart
+    # renders from the routing in kube-prometheus-stack/values.yaml. It holds routes and empty receivers and no
+    # credential; scripts/chart-contract-check.py (alertmanager) fails if a receiver is not empty. The Grafana admin
+    # password is not affected: it is generated in the cluster by a Job and is not a manifest in Git.
+    - group: ""
+      kind: Secret
     - group: ""
       kind: Service
     - group: ""
@@ -53,7 +59,7 @@ spec:
     - group: rbac.authorization.k8s.io
       kind: RoleBinding
     # Prometheus, ServiceMonitor, PodMonitor, PrometheusRule and the other monitoring.coreos.com kinds. The rules and
-    # the Alertmanager resources of the next steps use the same group.
+    # the Alertmanager resource use the same group.
     - group: monitoring.coreos.com
       kind: "*"
   orphanedResources:

@@ -1,0 +1,657 @@
+# yamllint disable rule:line-length
+---
+# Source: observability-monitors/templates/slo-rules.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: slo-rules
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  groups:
+    # Recording rules. The naming is  slo:<what>:<unit>_<window>  with the labels slo and service:
+    #   slo:objective:ratio                  the target, for example 0.995
+    #   slo:error_budget:ratio               1 - the target
+    #   slo:sli_error:ratio_rate<window>     bad events / valid events over the window (an error ratio, not a success ratio)
+    #   slo:sli_events:increase<window>      valid events in the window, for the low-traffic guard
+    # A window with no valid events has no sample, so a quiet service never looks like a healthy or a failing one.
+    - name: slo-recording-short
+      rules:
+        - record: slo:objective:ratio
+          expr: vector(0.995)
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:error_budget:ratio
+          expr: vector(0.005)
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_error:ratio_rate5m
+          expr: |-
+            (
+              sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[5m]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[5m])))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_error:ratio_rate30m
+          expr: |-
+            (
+              sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[30m]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[30m])))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_error:ratio_rate1h
+          expr: |-
+            (
+              sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[1h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[1h])))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_error:ratio_rate2h
+          expr: |-
+            (
+              sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2h])))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_error:ratio_rate6h
+          expr: |-
+            (
+              sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[6h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[6h])))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_events:increase1h
+          expr: sum(increase(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[1h]))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_events:increase6h
+          expr: sum(increase(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[6h]))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:objective:ratio
+          expr: vector(0.95)
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:error_budget:ratio
+          expr: vector(0.05)
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_error:ratio_rate5m
+          expr: |-
+            (
+              sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[5m])) - sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[5m]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[5m])))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_error:ratio_rate30m
+          expr: |-
+            (
+              sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[30m])) - sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[30m]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[30m])))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_error:ratio_rate1h
+          expr: |-
+            (
+              sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1h])) - sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[1h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1h])))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_error:ratio_rate2h
+          expr: |-
+            (
+              sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[2h])) - sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[2h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[2h])))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_error:ratio_rate6h
+          expr: |-
+            (
+              sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[6h])) - sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[6h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[6h])))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_events:increase1h
+          expr: sum(increase(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1h]))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_events:increase6h
+          expr: sum(increase(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[6h]))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:objective:ratio
+          expr: vector(0.99)
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:error_budget:ratio
+          expr: vector(0.01)
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_error:ratio_rate5m
+          expr: |-
+            (
+              sum(rate(messages_consumed_total{job="notifier", result="dead_letter"}[5m]))
+              or vector(0)
+            )
+            /
+            (sum(rate(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[5m])))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_error:ratio_rate30m
+          expr: |-
+            (
+              sum(rate(messages_consumed_total{job="notifier", result="dead_letter"}[30m]))
+              or vector(0)
+            )
+            /
+            (sum(rate(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[30m])))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_error:ratio_rate1h
+          expr: |-
+            (
+              sum(rate(messages_consumed_total{job="notifier", result="dead_letter"}[1h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[1h])))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_error:ratio_rate2h
+          expr: |-
+            (
+              sum(rate(messages_consumed_total{job="notifier", result="dead_letter"}[2h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[2h])))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_error:ratio_rate6h
+          expr: |-
+            (
+              sum(rate(messages_consumed_total{job="notifier", result="dead_letter"}[6h]))
+              or vector(0)
+            )
+            /
+            (sum(rate(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[6h])))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_events:increase1h
+          expr: sum(increase(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[1h]))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_events:increase6h
+          expr: sum(increase(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[6h]))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+    # The windows of a day and longer change slowly and cost more to compute, so they are evaluated less often.
+    - name: slo-recording-long
+      interval: 5m
+      rules:
+        - record: slo:sli_error:ratio_rate1d
+          expr: |-
+            (
+              sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[1d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[1d])))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_error:ratio_rate3d
+          expr: |-
+            (
+              sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[3d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[3d])))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_error:ratio_rate30d
+          expr: |-
+            (
+              sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[30d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[30d])))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_events:increase1d
+          expr: sum(increase(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[1d]))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_events:increase3d
+          expr: sum(increase(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[3d]))
+          labels:
+            slo: gateway-availability
+            service: gateway
+        - record: slo:sli_error:ratio_rate1d
+          expr: |-
+            (
+              sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1d])) - sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[1d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1d])))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_error:ratio_rate3d
+          expr: |-
+            (
+              sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[3d])) - sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[3d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[3d])))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_error:ratio_rate30d
+          expr: |-
+            (
+              sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[30d])) - sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[30d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[30d])))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_events:increase1d
+          expr: sum(increase(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1d]))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_events:increase3d
+          expr: sum(increase(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[3d]))
+          labels:
+            slo: gateway-latency
+            service: gateway
+        - record: slo:sli_error:ratio_rate1d
+          expr: |-
+            (
+              sum(rate(messages_consumed_total{job="notifier", result="dead_letter"}[1d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[1d])))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_error:ratio_rate3d
+          expr: |-
+            (
+              sum(rate(messages_consumed_total{job="notifier", result="dead_letter"}[3d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[3d])))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_error:ratio_rate30d
+          expr: |-
+            (
+              sum(rate(messages_consumed_total{job="notifier", result="dead_letter"}[30d]))
+              or vector(0)
+            )
+            /
+            (sum(rate(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[30d])))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_events:increase1d
+          expr: sum(increase(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[1d]))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+        - record: slo:sli_events:increase3d
+          expr: sum(increase(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[3d]))
+          labels:
+            slo: notifier-delivery
+            service: notifier
+    # Multi-window, multi-burn-rate alerts. Each needs the error ratio above burn x budget over the long window and
+    # over the short window (the short one makes the alert stop soon after the problem does), and enough events in
+    # the long window that burn x budget x events is at least minBadEvents (the low-traffic guard).
+    - name: slo-alerts
+      rules:
+        - alert: SLOBurnRatePageFast
+          expr: |-
+            slo:sli_error:ratio_rate1h{slo="gateway-availability"} > (14.4 * slo:error_budget:ratio{slo="gateway-availability"})
+            and
+            slo:sli_error:ratio_rate5m{slo="gateway-availability"} > (14.4 * slo:error_budget:ratio{slo="gateway-availability"})
+            and
+            slo:sli_events:increase1h{slo="gateway-availability"} * (14.4 * slo:error_budget:ratio{slo="gateway-availability"}) >= 5
+          for: 2m
+          labels:
+            severity: page
+            slo: gateway-availability
+            service: gateway
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 14.4x or faster over 1h and 5m"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 1h is {{ $value | humanizePercentage }}
+              and it is above 14.4x the error budget (0.005, objective 0.995) over the last
+              5m as well. At this rate: 2% of the budget in an hour; the whole budget in about 2 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-page-fast
+        - alert: SLOBurnRatePageSlow
+          expr: |-
+            slo:sli_error:ratio_rate6h{slo="gateway-availability"} > (6 * slo:error_budget:ratio{slo="gateway-availability"})
+            and
+            slo:sli_error:ratio_rate30m{slo="gateway-availability"} > (6 * slo:error_budget:ratio{slo="gateway-availability"})
+            and
+            slo:sli_events:increase6h{slo="gateway-availability"} * (6 * slo:error_budget:ratio{slo="gateway-availability"}) >= 5
+          for: 5m
+          labels:
+            severity: page
+            slo: gateway-availability
+            service: gateway
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 6x or faster over 6h and 30m"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 6h is {{ $value | humanizePercentage }}
+              and it is above 6x the error budget (0.005, objective 0.995) over the last
+              30m as well. At this rate: 5% of the budget in 6 hours; the whole budget in 5 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-page-slow
+        - alert: SLOBurnRateTicketFast
+          expr: |-
+            slo:sli_error:ratio_rate1d{slo="gateway-availability"} > (3 * slo:error_budget:ratio{slo="gateway-availability"})
+            and
+            slo:sli_error:ratio_rate2h{slo="gateway-availability"} > (3 * slo:error_budget:ratio{slo="gateway-availability"})
+            and
+            slo:sli_events:increase1d{slo="gateway-availability"} * (3 * slo:error_budget:ratio{slo="gateway-availability"}) >= 5
+          for: 15m
+          labels:
+            severity: ticket
+            slo: gateway-availability
+            service: gateway
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 3x or faster over 1d and 2h"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 1d is {{ $value | humanizePercentage }}
+              and it is above 3x the error budget (0.005, objective 0.995) over the last
+              2h as well. At this rate: 10% of the budget in a day; the whole budget in 10 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-ticket-fast
+        - alert: SLOBurnRateTicketSlow
+          expr: |-
+            slo:sli_error:ratio_rate3d{slo="gateway-availability"} > (1 * slo:error_budget:ratio{slo="gateway-availability"})
+            and
+            slo:sli_error:ratio_rate6h{slo="gateway-availability"} > (1 * slo:error_budget:ratio{slo="gateway-availability"})
+            and
+            slo:sli_events:increase3d{slo="gateway-availability"} * (1 * slo:error_budget:ratio{slo="gateway-availability"}) >= 5
+          for: 15m
+          labels:
+            severity: ticket
+            slo: gateway-availability
+            service: gateway
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 1x or faster over 3d and 6h"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 3d is {{ $value | humanizePercentage }}
+              and it is above 1x the error budget (0.005, objective 0.995) over the last
+              6h as well. At this rate: 10% of the budget in 3 days; the whole budget in 30 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-ticket-slow
+        - alert: SLOBurnRatePageFast
+          expr: |-
+            slo:sli_error:ratio_rate1h{slo="gateway-latency"} > (14.4 * slo:error_budget:ratio{slo="gateway-latency"})
+            and
+            slo:sli_error:ratio_rate5m{slo="gateway-latency"} > (14.4 * slo:error_budget:ratio{slo="gateway-latency"})
+            and
+            slo:sli_events:increase1h{slo="gateway-latency"} * (14.4 * slo:error_budget:ratio{slo="gateway-latency"}) >= 5
+          for: 2m
+          labels:
+            severity: page
+            slo: gateway-latency
+            service: gateway
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 14.4x or faster over 1h and 5m"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 1h is {{ $value | humanizePercentage }}
+              and it is above 14.4x the error budget (0.05, objective 0.95) over the last
+              5m as well. At this rate: 2% of the budget in an hour; the whole budget in about 2 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-page-fast
+        - alert: SLOBurnRatePageSlow
+          expr: |-
+            slo:sli_error:ratio_rate6h{slo="gateway-latency"} > (6 * slo:error_budget:ratio{slo="gateway-latency"})
+            and
+            slo:sli_error:ratio_rate30m{slo="gateway-latency"} > (6 * slo:error_budget:ratio{slo="gateway-latency"})
+            and
+            slo:sli_events:increase6h{slo="gateway-latency"} * (6 * slo:error_budget:ratio{slo="gateway-latency"}) >= 5
+          for: 5m
+          labels:
+            severity: page
+            slo: gateway-latency
+            service: gateway
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 6x or faster over 6h and 30m"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 6h is {{ $value | humanizePercentage }}
+              and it is above 6x the error budget (0.05, objective 0.95) over the last
+              30m as well. At this rate: 5% of the budget in 6 hours; the whole budget in 5 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-page-slow
+        - alert: SLOBurnRateTicketFast
+          expr: |-
+            slo:sli_error:ratio_rate1d{slo="gateway-latency"} > (3 * slo:error_budget:ratio{slo="gateway-latency"})
+            and
+            slo:sli_error:ratio_rate2h{slo="gateway-latency"} > (3 * slo:error_budget:ratio{slo="gateway-latency"})
+            and
+            slo:sli_events:increase1d{slo="gateway-latency"} * (3 * slo:error_budget:ratio{slo="gateway-latency"}) >= 5
+          for: 15m
+          labels:
+            severity: ticket
+            slo: gateway-latency
+            service: gateway
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 3x or faster over 1d and 2h"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 1d is {{ $value | humanizePercentage }}
+              and it is above 3x the error budget (0.05, objective 0.95) over the last
+              2h as well. At this rate: 10% of the budget in a day; the whole budget in 10 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-ticket-fast
+        - alert: SLOBurnRateTicketSlow
+          expr: |-
+            slo:sli_error:ratio_rate3d{slo="gateway-latency"} > (1 * slo:error_budget:ratio{slo="gateway-latency"})
+            and
+            slo:sli_error:ratio_rate6h{slo="gateway-latency"} > (1 * slo:error_budget:ratio{slo="gateway-latency"})
+            and
+            slo:sli_events:increase3d{slo="gateway-latency"} * (1 * slo:error_budget:ratio{slo="gateway-latency"}) >= 5
+          for: 15m
+          labels:
+            severity: ticket
+            slo: gateway-latency
+            service: gateway
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 1x or faster over 3d and 6h"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 3d is {{ $value | humanizePercentage }}
+              and it is above 1x the error budget (0.05, objective 0.95) over the last
+              6h as well. At this rate: 10% of the budget in 3 days; the whole budget in 30 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-ticket-slow
+        - alert: SLOBurnRatePageFast
+          expr: |-
+            slo:sli_error:ratio_rate1h{slo="notifier-delivery"} > (14.4 * slo:error_budget:ratio{slo="notifier-delivery"})
+            and
+            slo:sli_error:ratio_rate5m{slo="notifier-delivery"} > (14.4 * slo:error_budget:ratio{slo="notifier-delivery"})
+            and
+            slo:sli_events:increase1h{slo="notifier-delivery"} * (14.4 * slo:error_budget:ratio{slo="notifier-delivery"}) >= 5
+          for: 2m
+          labels:
+            severity: page
+            slo: notifier-delivery
+            service: notifier
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 14.4x or faster over 1h and 5m"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 1h is {{ $value | humanizePercentage }}
+              and it is above 14.4x the error budget (0.01, objective 0.99) over the last
+              5m as well. At this rate: 2% of the budget in an hour; the whole budget in about 2 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-page-fast
+        - alert: SLOBurnRatePageSlow
+          expr: |-
+            slo:sli_error:ratio_rate6h{slo="notifier-delivery"} > (6 * slo:error_budget:ratio{slo="notifier-delivery"})
+            and
+            slo:sli_error:ratio_rate30m{slo="notifier-delivery"} > (6 * slo:error_budget:ratio{slo="notifier-delivery"})
+            and
+            slo:sli_events:increase6h{slo="notifier-delivery"} * (6 * slo:error_budget:ratio{slo="notifier-delivery"}) >= 5
+          for: 5m
+          labels:
+            severity: page
+            slo: notifier-delivery
+            service: notifier
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 6x or faster over 6h and 30m"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 6h is {{ $value | humanizePercentage }}
+              and it is above 6x the error budget (0.01, objective 0.99) over the last
+              30m as well. At this rate: 5% of the budget in 6 hours; the whole budget in 5 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-page-slow
+        - alert: SLOBurnRateTicketFast
+          expr: |-
+            slo:sli_error:ratio_rate1d{slo="notifier-delivery"} > (3 * slo:error_budget:ratio{slo="notifier-delivery"})
+            and
+            slo:sli_error:ratio_rate2h{slo="notifier-delivery"} > (3 * slo:error_budget:ratio{slo="notifier-delivery"})
+            and
+            slo:sli_events:increase1d{slo="notifier-delivery"} * (3 * slo:error_budget:ratio{slo="notifier-delivery"}) >= 5
+          for: 15m
+          labels:
+            severity: ticket
+            slo: notifier-delivery
+            service: notifier
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 3x or faster over 1d and 2h"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 1d is {{ $value | humanizePercentage }}
+              and it is above 3x the error budget (0.01, objective 0.99) over the last
+              2h as well. At this rate: 10% of the budget in a day; the whole budget in 10 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-ticket-fast
+        - alert: SLOBurnRateTicketSlow
+          expr: |-
+            slo:sli_error:ratio_rate3d{slo="notifier-delivery"} > (1 * slo:error_budget:ratio{slo="notifier-delivery"})
+            and
+            slo:sli_error:ratio_rate6h{slo="notifier-delivery"} > (1 * slo:error_budget:ratio{slo="notifier-delivery"})
+            and
+            slo:sli_events:increase3d{slo="notifier-delivery"} * (1 * slo:error_budget:ratio{slo="notifier-delivery"}) >= 5
+          for: 15m
+          labels:
+            severity: ticket
+            slo: notifier-delivery
+            service: notifier
+          annotations:
+            summary: "{{ $labels.slo }}: error budget burning at 1x or faster over 3d and 6h"
+            description: >-
+              The error ratio of {{ $labels.slo }} over the last 3d is {{ $value | humanizePercentage }}
+              and it is above 1x the error budget (0.01, objective 0.99) over the last
+              6h as well. At this rate: 10% of the budget in 3 days; the whole budget in 30 days.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#slo-burn-rate-ticket-slow
+    # Alerts for what the SLOs cannot see. An SLO is built from request and event counts, so a service that is down, a
+    # consumer that is not connected and events that never leave the outbox produce no counts and no burn.
+    - name: slo-blind-spots
+      rules:
+        - alert: ServiceTargetDown
+          expr: up{namespace="shop", job=~"gateway|orders|payments|notifier"} == 0
+          for: 5m
+          labels:
+            severity: page
+            # The same label as the SLO alerts carry, so that Alertmanager can hide the burn-rate alerts of a service
+            # whose target is down.
+            service: "{{ $labels.job }}"
+          annotations:
+            summary: "{{ $labels.job }} cannot be scraped"
+            description: >-
+              Prometheus has not been able to scrape {{ $labels.job }} ({{ $labels.instance }}) for 5 minutes. The
+              pod may be down or not ready, and the SLO alerts cannot see a service that serves no requests.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#service-target-down
+        - alert: NotifierBrokerDisconnected
+          expr: amqp_connected{job="notifier"} == 0
+          for: 10m
+          labels:
+            severity: ticket
+            service: notifier
+          annotations:
+            summary: The notifier has no RabbitMQ connection
+            description: >-
+              The notifier has had no broker connection for 10 minutes ({{ $labels.instance }}). Events wait in the queue
+              and the notification SLO sees none of them until it reconnects.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#notifier-broker-disconnected
+        - alert: OutboxBacklog
+          expr: outbox_oldest_unpublished_age_seconds{job="orders"} > 300
+          for: 10m
+          labels:
+            severity: ticket
+            service: orders
+          annotations:
+            summary: Order events are not leaving the outbox
+            description: >-
+              The oldest unpublished order event is {{ $value | humanizeDuration }} old (for 10 minutes the lag has
+              been above 5 minutes). The notifier receives nothing, so the notification SLO shows no failure.
+            runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#outbox-backlog

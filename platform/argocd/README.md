@@ -32,7 +32,7 @@ platform/argocd/
                     appproject-platform-system.yaml   Argo CD itself and the GitOps definitions
                     appproject-platform-addons.yaml   the add-ons
                     appproject-platform-apps.yaml     the sample services (shop namespace only)
-                    appproject-platform-observability.yaml  the metrics and logging stack (observability namespace)
+                    appproject-platform-observability.yaml  the metrics, alerting, logging and tracing stack (observability namespace)
                     root-application.yaml             app-of-apps, points at apps/
   apps/           synced by the root Application:
                     00-argocd.yaml                    Argo CD manages its own upgrades

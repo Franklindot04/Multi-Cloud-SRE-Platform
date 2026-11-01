@@ -9,3 +9,6 @@ kube_pod_container_status_restarts_total
 #
 # Added by Prometheus itself for every scrape target:
 up
+#
+# Written by Prometheus itself for every alert that is pending or firing (the alerts panel of the SLO dashboard reads it):
+ALERTS

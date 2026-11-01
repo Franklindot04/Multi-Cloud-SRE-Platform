@@ -10,12 +10,16 @@
 #   4. contracts that a schema check cannot see (scripts/chart-contract-check.py), on the default render of each chart:
 #        - the stack, the secrets chart and the collector meet the restricted Pod Security level that the
 #          observability namespace enforces (node-exporter would not, which is why it is off)
-#        - no persistent volume, Alertmanager, Ingress, LoadBalancer or NodePort in the default profile, and the
+#        - no persistent volume, Ingress, LoadBalancer or NodePort in the default profile, and the
 #          persistent values really switch the volumes on
+#        - Alertmanager is on with one replica, requests and limits and no volume, Prometheus sends its alerts to it, and
+#          its configuration routes severity page and ticket to separate receivers (everything else to default), groups by
+#          alertname, slo and service, has the two inhibitions and has only empty receivers (no URL, token or password)
 #        - Grafana reads its admin account from the Secret grafana-admin and no password is rendered anywhere
 #        - the Prometheus, Loki and Tempo data sources have fixed uids; the Loki derived field links to Tempo and its
 #          regular expression finds the trace id in a log line in the format of each service (and in no other line);
-#          the Tempo trace-to-logs link points at Loki; no service graph or node graph is on
+#          the Tempo trace-to-logs link points at Loki; the Alertmanager data source has a fixed uid; no service graph or
+#          node graph is on
 #        - the collector image is pinned by digest
 #        - Loki is single tenant with the TSDB index (schema v13), filesystem storage and retention on; Alloy reads
 #          logs only through the Kubernetes API from the shop and data namespaces, turns no log field into a label and
@@ -24,12 +28,17 @@
 #        - Tempo is single tenant with local storage, at most 72h of retention and only the OTLP receivers, with no
 #          metrics generator; it meets the restricted level, renders no claim by default, and its values-persistent.yaml
 #          really switches its volume on
+#        - the SLO rules (PrometheusRule "slo" in the monitors chart) have, for every SLO, the recording rules for every
+#          window and the four multi-window burn-rate alerts with their thresholds, the low-traffic guard, severity,
+#          annotations and a runbook link; they use only metrics the service code defines, leave the operational routes
+#          and client errors out, and use a histogram threshold that is a bucket boundary
 #        - the secrets chart renders an ordinary resource and its Job is not a Helm hook
 #        - everything every chart renders is allowed by the platform-observability AppProject
 #        - every Grafana dashboard is valid JSON with a unique uid and title, uses the data source variable and no
 #          fixed data source uid, is held by a ConfigMap that carries the label the Grafana sidecar selects, and
 #          uses only metric names confirmed in the service code, the vendored CloudNativePG chart, the vendored
-#          stack chart or platform/observability/dashboards/confirmed-upstream.txt; Loki panels use only the log
+#          stack chart, platform/observability/dashboards/confirmed-upstream.txt or the recording rules the monitors
+#          chart renders; Loki panels use only the log
 #          stream labels and the level, and no selector can match the empty value
 #   5. the OpenTelemetry Collector configuration passes `validate` of the pinned image, the Loki configuration passes
 #      -verify-config and the Alloy configuration passes `validate` of the images the charts deploy, and the LogQL of
@@ -38,6 +47,12 @@
 #      collector image is pulled by digest, the other two by the tag the chart sets; the Loki container is removed
 #      afterwards); Tempo has no verify option, so its configuration is checked by starting it, and a trace sent to a collector with the chart's
 #      configuration is found in a Tempo that runs with a read-only root filesystem (scripts/trace-check.py)
+#      the SLO rules are checked and their unit tests are run with promtool from the Prometheus image the stack deploys
+#      (`promtool check rules --lint-fatal`, then `promtool test rules` on monitors/tests/slo-rules.test.yaml)
+#      the Alertmanager configuration passes `amtool check-config` and `amtool config routes test` (page, ticket and
+#      other alerts go to their receivers), and an Alertmanager started from the image the stack deploys, with that
+#      configuration, a read-only root filesystem and no capabilities, receives six test alerts through its API
+#      (scripts/alertmanager-check.py): they go to the right receivers and the inhibitions hide what they should
 #   6. shellcheck on the scripts, through scripts/shellcheck.sh (same flags and version as CI)
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
@@ -84,6 +99,7 @@ cleanup() {
   # shellcheck disable=SC2086 # a list of container names, none of which has a space
   [ -z "$trace_containers" ] || docker rm -f $trace_containers > /dev/null 2>&1 || true
   [ -z "$trace_network" ] || docker network rm "$trace_network" > /dev/null 2>&1 || true
+  [ -z "${am_container:-}" ] || docker rm -f "$am_container" > /dev/null 2>&1 || true
 }
 trap cleanup EXIT
 export HELM_CONFIG_HOME="$work/config" HELM_CACHE_HOME="$work/cache" HELM_DATA_HOME="$work/data"
@@ -201,10 +217,11 @@ else
   render otel-collector "$root/otel-collector" > "$work/collector.yaml" || status=1
   render observability-monitors "$root/monitors" > "$work/monitors.yaml" || status=1
 
-  for check in restricted ephemeral grafana-admin; do contract "$check" "kube-prometheus-stack" "$work/stack.yaml"; done
+  for check in restricted ephemeral grafana-admin alertmanager; do contract "$check" "kube-prometheus-stack" "$work/stack.yaml"; done
   contract project-fit "kube-prometheus-stack" "$work/stack.yaml" "$project" "$namespace"
   contract restricted "kube-prometheus-stack + values-persistent.yaml" "$work/stack-persistent.yaml"
   contract grafana-admin "kube-prometheus-stack + values-persistent.yaml" "$work/stack-persistent.yaml"
+  contract alertmanager "kube-prometheus-stack + values-persistent.yaml" "$work/stack-persistent.yaml"
   contract project-fit "kube-prometheus-stack + values-persistent.yaml" "$work/stack-persistent.yaml" "$project" "$namespace"
   contract grafana-datasources "kube-prometheus-stack" "$work/stack.yaml"
   # The persistent values must switch the volumes on, or the documented option does nothing.
@@ -223,6 +240,7 @@ else
   contract project-fit "otel-collector" "$work/collector.yaml" "$project" "$namespace"
 
   contract project-fit "observability-monitors" "$work/monitors.yaml" "$project" "$namespace"
+  contract slo-rules "observability-monitors" "$work/monitors.yaml" apps/gateway apps/notifier apps/orders
 
   render loki "$root/loki" -f "$root/loki/values.yaml" > "$work/loki.yaml" || status=1
   render loki "$root/loki" -f "$root/loki/values.yaml" -f "$root/loki/values-persistent.yaml" > "$work/loki-persistent.yaml" || status=1
@@ -261,7 +279,7 @@ else
     status=1
   else
     contract dashboards "observability-dashboards" "$work/dashboards.yaml" "$root/dashboards/files" "$stack/values.yaml" \
-      apps "$cnpg_chart" "$stack/charts/kube-prometheus-stack-$want.tgz" "$root/dashboards/confirmed-upstream.txt"
+      apps "$cnpg_chart" "$stack/charts/kube-prometheus-stack-$want.tgz" "$root/dashboards/confirmed-upstream.txt" "$work/monitors.yaml"
   fi
   echo "    ran $contracts contract check(s)"
 fi
@@ -359,6 +377,95 @@ if have docker && docker info > /dev/null 2>&1 && [ -n "$contract_py" ]; then
   trace_containers=""
   docker network rm "$trace_network" > /dev/null 2>&1 || true
   trace_network=""
+  # Alertmanager: the configuration the stack renders, checked by amtool of the image the stack deploys, and then used by
+  # a running Alertmanager (read-only root filesystem, no capabilities, a non-root user) that is sent six test alerts.
+  am_image="$(sed -n 's/^ *image: *"\{0,1\}\(quay\.io\/prometheus\/alertmanager:[^" ]*\)"\{0,1\} *$/\1/p' "$work/stack.yaml" | head -1)"
+  if [ -z "$am_image" ]; then
+    echo "    FAIL could not find the Alertmanager image in the rendered stack, so its configuration cannot be tested"
+    status=1
+  else
+    mkdir -p "$work/am"
+    "$contract_py" -c 'import base64, sys, yaml
+yaml.SafeLoader.add_constructor("tag:yaml.org,2002:value", lambda loader, node: loader.construct_scalar(node))
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d.get("kind") == "Secret" and d["metadata"]["name"].startswith("alertmanager-"):
+        sys.stdout.write(base64.b64decode(d["data"]["alertmanager.yaml"]).decode())' < "$work/stack.yaml" > "$work/am/alertmanager.yaml"
+    amtool() { docker run --rm --entrypoint /bin/amtool -v "$work/am:/c:ro" "$am_image" "$@"; }
+    if amtool check-config /c/alertmanager.yaml > "$work/amtool-check.out" 2>&1; then
+      echo "    amtool check-config: $(sed -n 's/^ *- //p' "$work/amtool-check.out" | tr '\n' ',' | sed 's/,$//; s/,/, /g') in $am_image"
+    else
+      echo "    FAIL amtool check-config on the Alertmanager configuration"
+      cat "$work/amtool-check.out"
+      status=1
+    fi
+    # route_test RECEIVER LABEL=VALUE...: the labels must resolve to exactly that receiver.
+    route_test() {
+      local want="$1"
+      shift
+      if amtool config routes test --config.file=/c/alertmanager.yaml --verify.receivers="$want" "$@" > "$work/amtool-route.out" 2>&1; then
+        echo "    routing: $* -> $want"
+      else
+        echo "    FAIL routing: $* should go to $want"
+        cat "$work/amtool-route.out"
+        status=1
+      fi
+    }
+    route_test page severity=page alertname=SLOBurnRatePageFast slo=gateway-availability service=gateway
+    route_test ticket severity=ticket alertname=SLOBurnRateTicketSlow slo=notifier-delivery service=notifier
+    route_test default severity=warning alertname=SomethingElse
+    route_test default alertname=NoSeverity
+    am_container="observability-check-am-$$"
+    if docker run -d --rm --name "$am_container" -p 127.0.0.1::9093 --read-only --tmpfs /alertmanager --cap-drop ALL \
+      --security-opt no-new-privileges --user 65534:65534 -v "$work/am:/c:ro" "$am_image" \
+      --config.file=/c/alertmanager.yaml --storage.path=/alertmanager --cluster.listen-address= > /dev/null 2> "$work/am-run.err"; then
+      am_port="$(docker port "$am_container" 9093/tcp | head -1 | sed 's/.*://')"
+      if "$contract_py" scripts/alertmanager-check.py "http://127.0.0.1:$am_port" > "$work/am-live.out" 2>&1; then
+        sed -n 's/^    sent /    Alertmanager: sent /p' "$work/am-live.out"
+      else
+        echo "    FAIL the test alerts did not go where they should in $am_image"
+        cat "$work/am-live.out"
+        docker logs "$am_container" 2>&1 | tail -10
+        status=1
+      fi
+      docker rm -f "$am_container" > /dev/null 2>&1 || true
+    else
+      echo "    FAIL could not start Alertmanager to run the routing and inhibition check"
+      cat "$work/am-run.err"
+      status=1
+    fi
+  fi
+  # The SLO rules: promtool from the Prometheus image the stack deploys lints the rules and runs the unit tests.
+  # The rules are the spec of the PrometheusRule "slo" that the monitors chart renders; the tests sit next to the
+  # chart and list the rule file by the name it gets here.
+  prom_image="$(sed -n 's/^ *image: *"\{0,1\}\(quay\.io\/prometheus\/prometheus:[^" ]*\)"\{0,1\} *$/\1/p' "$work/stack.yaml" | head -1)"
+  if [ -z "$prom_image" ]; then
+    echo "    FAIL could not find the Prometheus image in the rendered stack, so the SLO rules cannot be tested"
+    status=1
+  else
+    mkdir -p "$work/slo"
+    "$contract_py" -c 'import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d.get("kind") == "PrometheusRule" and d["metadata"]["name"] == "slo":
+        yaml.safe_dump({"groups": d["spec"]["groups"]}, sys.stdout, sort_keys=False, width=250)' < "$work/monitors.yaml" > "$work/slo/slo-rules.yaml"
+    cp "$root/monitors/tests/slo-rules.test.yaml" "$work/slo/"
+    promtool="docker run --rm --entrypoint /bin/promtool -v $work/slo:/slo -w /slo $prom_image"
+    # shellcheck disable=SC2086 # the command is a fixed word list
+    if $promtool check rules --lint-fatal slo-rules.yaml > "$work/promtool-check.out" 2>&1; then
+      echo "    promtool check rules: $(sed -n 's/^ *SUCCESS: *//p' "$work/promtool-check.out" | head -1) in $prom_image"
+    else
+      echo "    FAIL promtool check rules on the SLO rules"
+      cat "$work/promtool-check.out"
+      status=1
+    fi
+    # shellcheck disable=SC2086
+    if $promtool test rules slo-rules.test.yaml > "$work/promtool-test.out" 2>&1; then
+      echo "    the SLO unit tests pass (promtool $(docker run --rm --entrypoint /bin/promtool "$prom_image" --version 2> /dev/null | sed -n 's/^promtool, version \([^ ]*\).*/\1/p'))"
+    else
+      echo "    FAIL the SLO unit tests"
+      cat "$work/promtool-test.out"
+      status=1
+    fi
+  fi
   alloy_image="$(helm template alloy "$root/alloy" --namespace "$namespace" | sed -n 's/^ *image: *\(.*grafana\/alloy:.*\)$/\1/p' | head -1)"
   mkdir -p "$work/alloy-config"
   helm template alloy "$root/alloy" --namespace "$namespace" -s charts/alloy/templates/configmap.yaml \

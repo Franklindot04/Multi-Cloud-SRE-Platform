@@ -1,6 +1,7 @@
 ---
 # Prometheus Operator, Prometheus and Grafana for a small cluster of a couple of Spot nodes. Everything here is sized
-# for that: modest requests, a short retention, no persistent volumes, no Alertmanager and no node-exporter.
+# for that: modest requests, a short retention, no persistent volumes, an Alertmanager that only records alerts and no
+# node-exporter.
 # Access is by port-forward only (see platform/observability/README.md); there is no ingress.
 kube-prometheus-stack:
   # The operator's CRDs (Prometheus, ServiceMonitor, PodMonitor, PrometheusRule and so on) are rendered by the chart
@@ -8,10 +9,92 @@ kube-prometheus-stack:
   crds:
     enabled: true
 
-  # No Alertmanager yet: nothing would receive an alert. Alert and recording rules arrive with the SLO work,
-  # so the chart's default rules (and the dashboards that depend on them) are off as well.
+  # Alertmanager: one replica, state in an emptyDir, reached by port-forward only. There is no real notification
+  # channel and no secret in this repository, so the receivers are empty: they accept an alert and send it nowhere, and
+  # the alert is visible in the Alertmanager UI. A real receiver (a chat webhook, for example) is added through a Secret
+  # that holds the Alertmanager configuration, never as a URL in this file; see docs/runbooks/alerts.md.
+  #
+  # The routing tree, in order: alerts with severity page go to the receiver "page", severity ticket to "ticket", and
+  # everything else to "default". Alerts are grouped by alertname, slo and service. A page alert for an SLO hides the
+  # ticket alerts of the same SLO and service, and ServiceTargetDown hides the burn-rate alerts of the same service
+  # (the rules are in platform/observability/monitors). scripts/observability-check.sh runs amtool check-config and
+  # routing tests on the rendered configuration.
   alertmanager:
-    enabled: false
+    enabled: true
+    config:
+      global:
+        resolve_timeout: 5m
+      route:
+        receiver: default
+        group_by:
+          - alertname
+          - slo
+          - service
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h
+        routes:
+          # Page: tell as soon as it is known, and repeat every hour while it lasts.
+          - matchers:
+              - severity = "page"
+            receiver: page
+            group_wait: 10s
+            group_interval: 2m
+            repeat_interval: 1h
+          # Ticket: wait a little so a flapping alert is one entry, and repeat once a day.
+          - matchers:
+              - severity = "ticket"
+            receiver: ticket
+            group_wait: 2m
+            group_interval: 15m
+            repeat_interval: 24h
+      receivers:
+        - name: default
+        - name: page
+        - name: ticket
+      inhibit_rules:
+        - source_matchers:
+            - severity = "page"
+          target_matchers:
+            - severity = "ticket"
+          equal:
+            - slo
+            - service
+        - source_matchers:
+            - alertname = "ServiceTargetDown"
+          target_matchers:
+            - alertname =~ "SLOBurnRate.*"
+          equal:
+            - service
+    service:
+      type: ClusterIP
+    ingress:
+      enabled: false
+    alertmanagerSpec:
+      replicas: 1
+      # The pod settings are repeated from the chart so a chart change cannot loosen them. The operator gives the
+      # containers a read-only root filesystem, no privilege escalation and no capabilities.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 2000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+      # No storage: the operator uses an emptyDir, so silences and the notification log are lost when the pod is
+      # rescheduled. To keep them, use values-persistent.yaml.
+      storage: {}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+
+  # The chart's default rules come in groups, not one by one, and bring dozens of alerts and the recording rules they
+  # use, several for components this platform does not run. The rules of the platform are in the monitors chart, so
+  # the defaults stay off (docs/adr/0023-slos-and-alerting.md).
   defaultRules:
     create: false
 
@@ -193,6 +276,14 @@ kube-prometheus-stack:
       datasources:
         enabled: true
         searchNamespace: null
+        # The Alertmanager data source the chart adds next to Prometheus, with a fixed uid. Grafana does not manage
+        # alerts of its own here; the data source only lets the alert list and Explore read Alertmanager.
+        alertmanager:
+          enabled: true
+          name: Alertmanager
+          uid: alertmanager
+          handleGrafanaManagedAlerts: false
+          implementation: prometheus
       resources:
         requests:
           cpu: 10m

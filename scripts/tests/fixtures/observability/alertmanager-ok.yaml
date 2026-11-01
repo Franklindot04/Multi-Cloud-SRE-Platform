@@ -1,0 +1,95 @@
+---
+# What the stack renders for Alertmanager, reduced to what the check reads: the Alertmanager, its Service, the Prometheus
+# that sends alerts to it, and the Secret with its configuration.
+apiVersion: monitoring.coreos.com/v1
+kind: Alertmanager
+metadata:
+  name: demo-alertmanager
+  namespace: observability
+spec:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-alertmanager
+  namespace: observability
+spec:
+  type: ClusterIP
+  ports:
+    - name: http-web
+      port: 9093
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: demo-prometheus
+  namespace: observability
+spec:
+  alerting:
+    alertmanagers:
+      - namespace: observability
+        name: demo-alertmanager
+        port: http-web
+        apiVersion: v2
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-demo-alertmanager
+  namespace: observability
+stringData:
+  alertmanager.yaml: |-
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: default
+      group_by:
+        - alertname
+        - slo
+        - service
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes:
+        - matchers:
+            - severity = "page"
+          receiver: page
+          group_wait: 10s
+        - matchers:
+            - severity = "ticket"
+          receiver: ticket
+          group_wait: 2m
+    receivers:
+      - name: default
+      - name: page
+      - name: ticket
+    inhibit_rules:
+      - source_matchers:
+          - severity = "page"
+        target_matchers:
+          - severity = "ticket"
+        equal:
+          - slo
+          - service
+      - source_matchers:
+          - alertname = "ServiceTargetDown"
+        target_matchers:
+          - alertname =~ "SLOBurnRate.*"
+        equal:
+          - service
