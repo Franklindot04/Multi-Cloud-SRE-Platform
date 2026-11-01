@@ -42,6 +42,15 @@ The observability charts (platform/observability) add checks on the rendered out
   loki LABEL          the Loki configuration is single tenant, uses the TSDB index with schema v13 and the filesystem,
                       has the compactor's retention on with a retention period of at most 168h, and sets ingestion and
                       line size limits
+  tempo LABEL         the Tempo configuration is single tenant, stores traces on the local filesystem, deletes them after
+                      at most 72h, receives only OTLP (no Jaeger, Zipkin or OpenCensus receiver), has no metrics generator
+                      and sends no usage report
+  grafana-datasources LABEL
+                      the data sources Grafana provisions (the ConfigMap with the label grafana_datasource) are the
+                      Prometheus, Loki and Tempo ones with unique uids; the Loki derived field links to Tempo by uid and
+                      its regular expression finds the trace id in a request log line in the format each service
+                      writes and in no other; the Tempo trace-to-logs link points at Loki by uid with a time shift on
+                      both sides and a query that uses the trace id; no service graph or node graph is turned on
   alloy LABEL         the Alloy configuration reads logs only with loki.source.kubernetes (no file or CRD source), from
                       exactly the namespaces data and shop, turns no part of a log line into a label (the level goes
                       to structured metadata), and its role cannot read Secrets or ConfigMaps
@@ -59,7 +68,7 @@ The observability charts (platform/observability) add checks on the rendered out
 
 The per-chart checks read a multi-document YAML stream (the output of `helm template`) on stdin.
 
-Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned|loki|alloy LABEL
+Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned|loki|tempo|grafana-datasources|alloy LABEL
        helm template ... | chart-contract-check.py project-fit LABEL PROJECT_FILE DEFAULT_NAMESPACE
        helm template ... --include-crds | chart-contract-check.py crds LABEL APPLICATIONSET_FILE
        helm template ... | chart-contract-check.py dashboards LABEL DASHBOARD_DIR STACK_VALUES SOURCE...
@@ -387,6 +396,153 @@ def check_loki(docs, label):
     for key in ("ingestion_rate_mb", "ingestion_burst_size_mb", "per_stream_rate_limit", "max_line_size"):
         if not limits.get(key):
             fail("limits_config.{} must be set".format(key))
+    return problems
+
+
+def check_tempo(docs, label):
+    """The Tempo configuration the chart renders: one tenant, local storage, short retention, OTLP only."""
+    data = _config_map(docs, "tempo")
+    if data is None or "tempo.yaml" not in data:
+        return ["{}: no ConfigMap tempo with a tempo.yaml".format(label)]
+    cfg = yaml.safe_load(data["tempo.yaml"]) or {}
+    problems = []
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    if cfg.get("multitenancy_enabled") is not False:
+        fail("multitenancy_enabled must be false (single tenant)")
+    backend = (((cfg.get("storage") or {}).get("trace")) or {}).get("backend")
+    if backend != "local":
+        fail("storage.trace.backend must be local; object storage needs a bucket and a role this profile does not have (it is {})".format(backend))
+    retention = str((((cfg.get("compactor") or {}).get("compaction")) or {}).get("block_retention", ""))
+    if not re.fullmatch(r"\d+h", retention) or int(retention[:-1]) > 72:
+        fail("compactor.compaction.block_retention must be set in hours and be at most 72h (it is '{}')".format(retention))
+    receivers = ((cfg.get("distributor") or {}).get("receivers")) or {}
+    if sorted(receivers) != ["otlp"]:
+        fail("the distributor must receive only otlp (it has {})".format(", ".join(sorted(receivers)) or "no receiver"))
+    else:
+        protocols = sorted((receivers["otlp"] or {}).get("protocols") or {})
+        if protocols != ["grpc", "http"]:
+            fail("the otlp receiver must have the protocols grpc and http (it has {})".format(", ".join(protocols) or "none"))
+    if "metrics_generator" in cfg:
+        fail("the metrics generator needs a remote-write endpoint and is off in this profile")
+    if (cfg.get("usage_report") or {}).get("reporting_enabled") is not False:
+        fail("usage_report.reporting_enabled must be false")
+    return problems
+
+
+# Request log lines in the format the services write (apps/README.md): one compact JSON object, the trace id as
+# "trace_id" with 32 lower-case hex digits (the W3C trace id, which every service takes from the traceparent header or
+# makes). Go (gateway, notifier), Python (orders) and Java (payments) differ in the timestamp and nothing else that
+# matters here.
+TRACE_ID_SAMPLES = [
+    ("gateway", '{"timestamp":"2026-10-31T22:04:24.479+00:00","level":"info","message":"request","service":"gateway","request_id":"5de8b2f4-9a1d-4983-8621-f5139aa6aeb1","trace_id":"343160a1f0116b35eab91f1166aa2d76","method":"GET","route":"/readyz","status":200,"duration_ms":7.144}',
+     "343160a1f0116b35eab91f1166aa2d76"),
+    ("orders", '{"timestamp":"2026-10-31T22:04:24.947+00:00","level":"info","message":"request","service":"orders","request_id":"1a106aea-b94a-42c1-a62c-74e1e4bf3b28","trace_id":"4d882ad0c96aa04fd94d935e7fbc3a40","method":"GET","route":"/healthz","status":200,"duration_ms":0.566}',
+     "4d882ad0c96aa04fd94d935e7fbc3a40"),
+    ("payments", '{"timestamp":"2026-10-31T22:04:25.910Z","level":"info","message":"request","service":"payments","request_id":"70bbda7d-d590-4cf5-a9a5-da0c407e56ec","trace_id":"844318253e7de74d01eb0f1dddc41a7b","method":"GET","route":"/readyz","status":200,"duration_ms":1.21}',
+     "844318253e7de74d01eb0f1dddc41a7b"),
+]
+# Lines that carry something like a trace id and must not match: the notifier's event line (a traceparent, not a
+# trace_id), a short id, an upper-case id, a line with spaces after the colon (not what the services write) and a line
+# with no trace at all (PostgreSQL).
+TRACE_ID_NEGATIVES = [
+    '{"level":"info","message":"event","request_id":"abc","traceparent":"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}',
+    '{"message":"request","trace_id":"4bf92f3577b34da6"}',
+    '{"message":"request","trace_id":"4BF92F3577B34DA6A3CE929D0E0E4736"}',
+    '{"message":"request", "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"}',
+    '{"message":"request","trace_id":"4bf92f3577b34da6a3ce929d0e0e47360"}',
+    "LOG:  checkpoint starting: time",
+]
+
+
+def _unescape(value):
+    """Grafana's provisioning turns $$ into a dollar sign; the rendered file has the doubled form."""
+    return str(value).replace("$$", "$")
+
+
+def check_grafana_datasources(docs, label):
+    """The data sources Grafana provisions, and the links between Loki and Tempo."""
+    problems = []
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    sources = []
+    for d in docs:
+        if d.get("kind") == "ConfigMap" and ((d.get("metadata") or {}).get("labels") or {}).get("grafana_datasource") == "1":
+            for text in (d.get("data") or {}).values():
+                sources.extend((yaml.safe_load(text) or {}).get("datasources") or [])
+    if not sources:
+        return ["{}: no ConfigMap with the label grafana_datasource and a datasources list".format(label)]
+    by_uid = {}
+    for s in sources:
+        uid = s.get("uid")
+        if not uid:
+            fail("the data source {} has no fixed uid".format(s.get("name")))
+        elif uid in by_uid:
+            fail("the uid {} is used by two data sources".format(uid))
+        by_uid[uid] = s
+    for uid, kind in (("prometheus", "prometheus"), ("loki", "loki"), ("tempo", "tempo")):
+        if uid not in by_uid:
+            fail("no data source with the uid {}".format(uid))
+        elif by_uid[uid].get("type") != kind:
+            fail("the data source {} must be of type {} (it is {})".format(uid, kind, by_uid[uid].get("type")))
+    if problems:
+        return problems
+
+    loki, tempo = by_uid["loki"], by_uid["tempo"]
+    derived = (loki.get("jsonData") or {}).get("derivedFields") or []
+    if len(derived) != 1:
+        fail("the Loki data source must have exactly one derived field (it has {})".format(len(derived)))
+    for field in derived:
+        if field.get("name") != "trace_id":
+            fail("the derived field must be named trace_id (it is {})".format(field.get("name")))
+        target = by_uid.get(field.get("datasourceUid"))
+        if target is None or target.get("type") != "tempo":
+            fail("the derived field must link to the Tempo data source by its uid (it links to {})".format(field.get("datasourceUid")))
+        if field.get("matcherType") != "regex":
+            fail("the derived field must use matcherType regex (it is {})".format(field.get("matcherType")))
+        if _unescape(field.get("url", "")) != "${__value.raw}":
+            fail("the derived field url must be $${{__value.raw}} in the file, the value the regex captured (it is {})".format(field.get("url")))
+        try:
+            rx = re.compile(str(field.get("matcherRegex", "")))
+        except re.error as e:
+            fail("the derived field regular expression does not compile: {}".format(e))
+            continue
+        if rx.groups != 1:
+            fail("the derived field regular expression must have exactly one group, the trace id (it has {})".format(rx.groups))
+            continue
+        for service, line, want in TRACE_ID_SAMPLES:
+            m = rx.search(line)
+            if not m or m.group(1) != want:
+                fail("the derived field regular expression does not find the trace id in a {} log line".format(service))
+        for line in TRACE_ID_NEGATIVES:
+            if rx.search(line):
+                fail("the derived field regular expression matches a line that has no trace id in the format of the services: {}".format(line))
+
+    tj = tempo.get("jsonData") or {}
+    link = tj.get("tracesToLogsV2")
+    if not link:
+        fail("the Tempo data source has no tracesToLogsV2 (the link from a trace to its logs)")
+    else:
+        target = by_uid.get(link.get("datasourceUid"))
+        if target is None or target.get("type") != "loki":
+            fail("the trace to logs link must point at the Loki data source by its uid (it points at {})".format(link.get("datasourceUid")))
+        before, after = str(link.get("spanStartTimeShift", "")), str(link.get("spanEndTimeShift", ""))
+        if not re.fullmatch(r"-\d+[smh]", before) or not re.fullmatch(r"\d+[smh]", after):
+            fail("the trace to logs link needs a time shift before (negative) and after (positive) the span (it has '{}' and '{}')".format(before, after))
+        query = _unescape(link.get("query", ""))
+        if link.get("customQuery") is not True or "${__trace.traceId}" not in query:
+            fail("the trace to logs link must be a custom query that uses ${{__trace.traceId}} (it is '{}')".format(link.get("query")))
+        else:
+            problems.extend(check_logql(query.replace("${__trace.traceId}", "x"), {}, label + ": the trace to logs query"))
+    for key in ("serviceMap", "tracesToMetrics"):
+        if tj.get(key):
+            fail("{} needs metrics from Tempo's metrics generator, which is off".format(key))
+    if (tj.get("nodeGraph") or {}).get("enabled"):
+        fail("the node graph needs the metrics generator of Tempo, which is off")
     return problems
 
 
@@ -850,6 +1006,7 @@ def check_waves(apps_dir, readme):
         ("observability-stack", "observability-dashboards"),
         ("observability-stack", "observability-loki"),
         ("observability-loki", "observability-alloy"),
+        ("observability-tempo", "observability-collector"),
     ]
     for first, second in before:
         a, b = wave(first), wave(second)
@@ -882,6 +1039,8 @@ def main(argv):
         "grafana-admin": check_grafana_admin,
         "digest-pinned": check_digest_pinned,
         "loki": check_loki,
+        "tempo": check_tempo,
+        "grafana-datasources": check_grafana_datasources,
         "alloy": check_alloy,
     }
     if len(argv) == 3 and argv[1] in per_chart:

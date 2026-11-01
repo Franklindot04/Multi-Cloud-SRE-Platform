@@ -38,3 +38,10 @@ logging:
     enabled: true
   alloy:
     enabled: true
+
+# The trace backend lives in the same namespace as the monitors. It exposes Prometheus metrics on the port
+# "tempo-prom-metrics" of its Service (3200).
+tracing:
+  interval: 30s
+  tempo:
+    enabled: true

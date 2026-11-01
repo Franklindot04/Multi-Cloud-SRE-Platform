@@ -39,7 +39,7 @@ platform/argocd/
                     10-... 61-...                     ApplicationSets for the add-ons
                     70-... 78-...                     the data layer (and the RabbitMQ credential copy)
                     80-... 83-...                     the sample services, one ApplicationSet each
-                    90-... 96-...                     the metrics and logging stack (platform/observability)
+                    90-... 97-...                     the metrics, logging and tracing stack (platform/observability)
 ```
 
 ## How clusters are described
@@ -90,7 +90,7 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 7 | `data-postgres`, `data-valkey`, `data-rabbitmq` |
 | 8 | `data-rabbitmq-credentials` (copies the broker credentials into `shop`) |
 | 10 | `observability-secrets` (only on clusters labelled `platform.example/observability=true`) |
-| 11 | `observability-stack` (Prometheus Operator, Prometheus, Grafana) |
+| 11 | `observability-stack` (Prometheus Operator, Prometheus, Grafana), `observability-tempo` (the trace backend, before the collector exports to it) |
 | 12 | `observability-collector` |
 | 13 | `observability-monitors` |
 | 14 | `observability-dashboards` (Grafana dashboards as ConfigMaps) |

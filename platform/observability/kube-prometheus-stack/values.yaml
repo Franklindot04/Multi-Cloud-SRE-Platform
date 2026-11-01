@@ -132,10 +132,17 @@ kube-prometheus-stack:
     # Dashboards are added in a later change. They will be ConfigMaps in this namespace labelled
     # grafana_dashboard: "1", which the sidecar loads; the chart's own dashboards need the default rules.
     defaultDashboardsEnabled: false
-    # The Prometheus data source is a ConfigMap created by the chart and loaded by the sidecar. Loki is added next to
-    # it the same way, from the chart's additionalDataSources list. The URL is the Service the loki chart creates in
-    # this namespace (platform/observability/loki). maxLines caps how many lines one log query returns to the browser.
-    # There are no derived fields or trace links: traces come later.
+    # The Prometheus data source is a ConfigMap created by the chart and loaded by the sidecar. Loki and Tempo are added
+    # next to it the same way, from the chart's additionalDataSources list. The URLs are the Services the loki and tempo
+    # charts create in this namespace (platform/observability/loki and tempo). maxLines caps how many lines one log
+    # query returns to the browser. A dollar sign that Grafana, not provisioning, must expand is written $$.
+    #
+    # The two are linked by their uids, which are fixed: a log line links to its trace, and a trace links to its logs.
+    # The services write the trace id as "trace_id":"<32 lower-case hex digits>" in every request log line (apps/README.md),
+    # so that is what the derived field matches, with the quotes and the length. scripts/chart-contract-check.py checks the
+    # uids and tries the regular expression on sample lines in the format of each service.
+    #
+    # No service graph or node graph: both need the metrics generator of Tempo, which is off.
     additionalDataSources:
       - name: Loki
         type: loki
@@ -147,6 +154,35 @@ kube-prometheus-stack:
         jsonData:
           maxLines: 1000
           timeout: 60
+          derivedFields:
+            - name: trace_id
+              matcherType: regex
+              matcherRegex: '"trace_id":"([0-9a-f]{32})"'
+              url: $${__value.raw}
+              urlDisplayLabel: Trace
+              datasourceUid: tempo
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        url: http://tempo.observability.svc.cluster.local:3200
+        access: proxy
+        isDefault: false
+        editable: false
+        jsonData:
+          timeout: 60
+          nodeGraph:
+            enabled: false
+          # From a trace to its log lines: every line that carries the trace id, from five minutes before the span
+          # starts to five minutes after it ends. The lines are found by the text of the id, not by a label, because the
+          # trace id is not a label (it would be a new stream per request).
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: -5m
+            spanEndTimeShift: 5m
+            filterByTraceID: false
+            filterBySpanID: false
+            customQuery: true
+            query: '{namespace=~".+"} |= `$${__trace.traceId}`'
     sidecar:
       dashboards:
         enabled: true

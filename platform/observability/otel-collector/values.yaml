@@ -29,10 +29,19 @@ memoryLimiter:
   limitMiB: 192
   spikeLimitMiB: 48
 
-# Traces are received and dropped: the debug exporter at the lowest verbosity prints one line per batch.
-# Replace it with an exporter when a trace backend exists.
+# The debug exporter at the lowest verbosity prints one line per batch. It is defined but not used by a pipeline; add it
+# to the traces pipeline in the ConfigMap to see in the collector's log that traces arrive.
 debug:
   verbosity: basic
+
+# Traces are exported to Tempo (platform/observability/tempo): the Service "tempo" in this namespace, OTLP over gRPC.
+tempo:
+  endpoint: tempo.observability.svc.cluster.local:4317
+  timeout: 10s
+  # A failed export is retried for this long and then dropped.
+  retryMaxElapsedTime: 60s
+  # Batches held while Tempo is not reachable, at most; each batch is small, so this is a few MiB.
+  queueSize: 100
 
 ports:
   otlpGrpc: 4317

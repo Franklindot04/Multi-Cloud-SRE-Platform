@@ -1,6 +1,6 @@
 apiVersion: v2
 name: otel-collector
-description: OpenTelemetry Collector that receives OTLP and exposes a Prometheus metrics endpoint
+description: OpenTelemetry Collector that receives OTLP, exposes a Prometheus metrics endpoint and exports traces to Tempo
 type: application
 version: 0.1.0
 appVersion: 0.164.0

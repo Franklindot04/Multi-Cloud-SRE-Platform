@@ -25,3 +25,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0019](0019-image-supply-chain.md) | Image supply chain | Accepted |
 | [0020](0020-metrics-stack.md) | Metrics stack | Accepted |
 | [0021](0021-logging-stack.md) | Logging stack | Accepted |
+| [0022](0022-tracing-stack.md) | Tracing stack | Accepted |

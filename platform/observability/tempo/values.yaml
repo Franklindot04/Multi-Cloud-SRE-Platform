@@ -1,0 +1,139 @@
+---
+# Tempo for a small dev cluster: one binary, one replica, local storage on an emptyDir and a short retention. Traces are
+# lost when the pod is rescheduled; values-persistent.yaml keeps them on a volume, and production would use object
+# storage (see that file). Access is by port-forward only; there is no ingress and no query front end in front of it.
+# The only receivers are OTLP over gRPC (4317) and HTTP (4318), reachable inside the cluster through the Service.
+tempo:
+  # The values of the Grafana chart are nested one level down, under its name; the second tempo: is the chart's own key.
+  tempo:
+    # Only the collector in this namespace writes, and only Grafana reads.
+    multitenancyEnabled: false
+    # No usage reporting to the vendor.
+    reportingEnabled: false
+    # The chart starts Tempo with a 1 GiB memory ballast by default, which is more than the container's memory limit.
+    memBallastSizeMbs: 0
+    # Traces older than this are deleted by the compactor.
+    retention: 24h
+
+    # Off: it would need a Prometheus remote-write endpoint, and nothing here asks for service graphs or span metrics.
+    metricsGenerator:
+      enabled: false
+
+    # The Service of the chart lists a port for every receiver that has an endpoint here, and the configuration below
+    # takes only the OTLP ones. An empty endpoint leaves the Jaeger ports out of the Service. The chart's template reads
+    # these keys, so they cannot be deleted.
+    receivers:
+      jaeger:
+        protocols:
+          grpc:
+            endpoint: ""
+          thrift_binary:
+            endpoint: ""
+          thrift_compact:
+            endpoint: ""
+          thrift_http:
+            endpoint: ""
+      opencensus: null
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    server:
+      http_listen_port: 3200
+
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+        wal:
+          path: /var/tempo/wal
+
+    # The chart mounts /var/tempo only when it creates a claim, and the root filesystem is read-only, so the data
+    # directory is an emptyDir here. The size limit evicts the pod instead of filling the node's disk; 1 GiB is many
+    # times what 24 hours of traces from a few small services need.
+    extraVolumeMounts:
+      - name: tempo-data
+        mountPath: /var/tempo
+
+    # Repeated from the chart's default, because an empty value (the chart's own default for the container) would
+    # leave the container with whatever the image allows.
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+
+    # No priority class, on purpose: when a node is short of room the tracing stack goes before the services.
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 300m
+        memory: 384Mi
+
+  # The chart's configuration file, with the same blocks as the chart's default, except that the distributor takes only
+  # the OTLP receivers.
+  config: |
+    memberlist:
+      cluster_label: "{{ .Release.Name }}.{{ .Release.Namespace }}"
+    multitenancy_enabled: {{ .Values.tempo.multitenancyEnabled }}
+    usage_report:
+      reporting_enabled: {{ .Values.tempo.reportingEnabled }}
+    compactor:
+      compaction:
+        block_retention: {{ .Values.tempo.retention }}
+    distributor:
+      receivers:
+        {{- toYaml (dict "otlp" .Values.tempo.receivers.otlp) | nindent 8 }}
+    ingester:
+      {{- toYaml .Values.tempo.ingester | nindent 6 }}
+    server:
+      {{- toYaml .Values.tempo.server | nindent 6 }}
+    storage:
+      {{- toYaml .Values.tempo.storage | nindent 6 }}
+    querier:
+      {{- toYaml .Values.tempo.querier | nindent 6 }}
+    query_frontend:
+      {{- toYaml .Values.tempo.queryFrontend | nindent 6 }}
+    overrides:
+      {{- toYaml .Values.tempo.overrides | nindent 6 }}
+
+  # The pod runs as the user and group of the image (10001), as non-root.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+
+  replicas: 1
+
+  # Tempo does not call the Kubernetes API.
+  serviceAccount:
+    automountServiceAccountToken: false
+
+  persistence:
+    enabled: false
+
+  extraVolumes:
+    - name: tempo-data
+      emptyDir:
+        sizeLimit: 1Gi
+
+  # The chart's ServiceMonitor also lists a port that exists only with the query front end, so the monitor is in the
+  # monitors chart instead (platform/observability/monitors).
+  serviceMonitor:
+    enabled: false
+
+  tempoQuery:
+    enabled: false

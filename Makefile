@@ -81,7 +81,7 @@ data-check: ## Wait for the local data layer healthchecks and test each componen
 data-check-manifests: ## Lint, render and schema-check the data layer manifests (skips missing tools)
 	@./scripts/data-manifests-check.sh
 
-observability-check: ## Lint, render and schema-check the metrics and logging stack, check its contracts, configs and LogQL (skips missing tools)
+observability-check: ## Lint, render and schema-check the metrics, logging and tracing stack, check its contracts, configs, LogQL and trace path (skips missing tools)
 	@./scripts/observability-check.sh
 
 deploy-check: ## Lint, render, schema-check and security-check the service chart under every profile and cloud (skips missing tools)
