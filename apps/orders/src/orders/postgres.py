@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
+from opentelemetry import trace
 
 from orders.config import DbConfig
 from orders.metrics import DbMetrics
@@ -62,8 +65,17 @@ def _order_from(row: asyncpg.Record, items: list[asyncpg.Record]) -> Order:
 
 
 class PostgresOrderRepository(OrderRepository):
-    def __init__(self, pool: asyncpg.Pool, metrics: DbMetrics, logger: JsonLogger, *, emit_events: bool) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        metrics: DbMetrics,
+        logger: JsonLogger,
+        *,
+        emit_events: bool,
+        tracer: trace.Tracer | None = None,
+    ) -> None:
         self._pool = pool
+        self._tracer = tracer or trace.NoOpTracer()
         self._metrics = metrics
         self._logger = logger
         self._emit = emit_events
@@ -111,7 +123,7 @@ class PostgresOrderRepository(OrderRepository):
         )
 
     def _timed(self, operation: str):
-        return _Timed(self._metrics, self._logger, operation)
+        return _Timed(self._metrics, self._logger, self._tracer, operation)
 
     # --- OrderRepository ---
 
@@ -242,23 +254,39 @@ class PostgresOrderRepository(OrderRepository):
 
 
 class _Timed:
-    """Times one repository operation for the metrics and logs a slow query with the request ID."""
+    """Times one repository operation for the metrics, wraps it in a span and logs a slow query with the request ID.
 
-    def __init__(self, metrics: DbMetrics, logger: JsonLogger, operation: str) -> None:
+    The span is named after the operation ("db create_order"), a fixed set of names. It carries no SQL text and no
+    parameters, and a failure records the type of the error, not its message, because a database error message can
+    contain the values of the statement.
+    """
+
+    def __init__(self, metrics: DbMetrics, logger: JsonLogger, tracer: trace.Tracer, operation: str) -> None:
         self._cm = metrics.timed(operation)
         self._logger = logger
+        self._tracer = tracer
         self._operation = operation
+        self._stack = ExitStack()
 
     def __enter__(self) -> None:
-        import time
-
         self._start = time.perf_counter()
         self._cm.__enter__()
+        self._span = self._stack.enter_context(
+            self._tracer.start_as_current_span(
+                f"db {self._operation}",
+                kind=trace.SpanKind.CLIENT,
+                attributes={"db.system.name": "postgresql", "db.operation.name": self._operation},
+                record_exception=False,
+                set_status_on_exception=False,
+            )
+        )
 
-    def __exit__(self, *exc: object) -> None:
-        import time
-
-        self._cm.__exit__(*exc)
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object) -> None:
+        if exc_type is not None:
+            self._span.add_event("exception", {"exception.type": exc_type.__name__})
+            self._span.set_status(trace.Status(trace.StatusCode.ERROR, "database operation failed"))
+        self._stack.close()
+        self._cm.__exit__(exc_type, exc, tb)
         elapsed = time.perf_counter() - self._start
         if elapsed > SLOW_QUERY_SECONDS:
             self._logger.warn(

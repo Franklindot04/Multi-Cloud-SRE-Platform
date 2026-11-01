@@ -10,6 +10,7 @@ import httpx
 from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -30,8 +31,12 @@ from orders.outbox import OutboxRelay
 from orders.postgres import PostgresOrderRepository, create_pool, pool_sizes
 from orders.repository import MemoryOrderRepository, OrderRepository
 from orders.service import OrderService
+from orders.tracing import Tracing
 
 SERVICE = "orders"
+
+# No span for the operational endpoints: probes and scrapes arrive every few seconds and would drown the traces.
+UNTRACED_URLS = "/healthz$,/readyz$,/metrics$,/version$"
 
 _CODES = {
     400: "bad_request",
@@ -59,6 +64,7 @@ def create_app(
     drain: Drain | None = None,
     logger: JsonLogger | None = None,
     registry: CollectorRegistry | None = None,
+    tracing: Tracing | None = None,
 ) -> FastAPI:
     logger = logger or JsonLogger(SERVICE, config.log_level)
     registry = registry or CollectorRegistry()
@@ -67,8 +73,9 @@ def create_app(
     cache_metrics = CacheMetrics(registry)
     outbox_metrics = OutboxMetrics(registry)
     drain = drain or Drain()
+    tracing = tracing or Tracing()
     http_client = httpx.AsyncClient()
-    payments = payments or HttpPaymentsClient(http_client, config.payments_url, config.payments_timeout_s)
+    payments = payments or HttpPaymentsClient(http_client, config.payments_url, config.payments_timeout_s, tracing)
     notifier = notifier or HttpNotifierClient(http_client, config.notifier_url, config.notifier_timeout_s, logger)
     if cache is None:
         cache = (
@@ -78,7 +85,7 @@ def create_app(
         )
     use_outbox = config.messaging == "rabbitmq"
     if use_outbox and publisher is None:
-        publisher = AmqpPublisher(config.amqp)
+        publisher = AmqpPublisher(config.amqp, tracing, logger)
 
     # The service needs the repository, which for PostgreSQL needs the pool created at startup.
     ctx: dict[str, Any] = {"repo": repo, "pool": None, "relay_task": None}
@@ -104,7 +111,9 @@ def create_app(
             pool = await create_pool(config.db)
             ctx["pool"] = pool
             db_metrics.bind_pool(lambda: pool_sizes(pool))
-            ctx["repo"] = PostgresOrderRepository(pool, db_metrics, logger, emit_events=use_outbox)
+            ctx["repo"] = PostgresOrderRepository(
+                pool, db_metrics, logger, emit_events=use_outbox, tracer=tracing.tracer()
+            )
             ctx["service"] = build_service()
             if use_outbox:
                 assert publisher is not None
@@ -144,6 +153,12 @@ def create_app(
         fault=config.fault,
         routes=lambda: app.router.routes,
     )
+    if tracing.provider is not None:
+        # Added last, so it is the outermost middleware and the server span is active in the one above. The span is
+        # named "METHOD route template", never the raw path. The internal receive and send spans are left out.
+        FastAPIInstrumentor.instrument_app(
+            app, tracer_provider=tracing.provider, excluded_urls=UNTRACED_URLS, exclude_spans=["receive", "send"]
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:

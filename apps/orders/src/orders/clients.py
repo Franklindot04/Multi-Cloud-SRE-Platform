@@ -10,6 +10,7 @@ import httpx
 
 from orders.models import Order
 from orders.observability import JsonLogger, outbound_headers
+from orders.tracing import Tracing, http_client_span, record_http_failure, record_http_status
 
 
 @dataclass(frozen=True)
@@ -53,26 +54,34 @@ class NotifierClient(Protocol):
 
 
 class HttpPaymentsClient:
-    def __init__(self, client: httpx.AsyncClient, base_url: str, timeout_s: float) -> None:
+    def __init__(
+        self, client: httpx.AsyncClient, base_url: str, timeout_s: float, tracing: Tracing | None = None
+    ) -> None:
         self._client = client
         self._base = base_url
         self._timeout = timeout_s
+        self._tracer = (tracing or Tracing()).tracer()
 
     async def authorize(self, order_id: str, amount_minor: int, currency: str) -> PaymentResult:
-        # The payment key is derived from the order, so retrying the same order can never charge twice.
-        headers = {"Idempotency-Key": f"order-{order_id}", **outbound_headers()}
-        try:
-            response = await asyncio.wait_for(
-                self._client.post(
-                    f"{self._base}/payments/authorize",
-                    json={"order_id": order_id, "amount_minor": amount_minor, "currency": currency},
-                    headers=headers,
+        url = f"{self._base}/payments/authorize"
+        # The headers are built inside the client span, so the traceparent names that span.
+        with http_client_span(self._tracer, "POST", url) as span:
+            # The payment key is derived from the order, so retrying the same order can never charge twice.
+            headers = {"Idempotency-Key": f"order-{order_id}", **outbound_headers()}
+            try:
+                response = await asyncio.wait_for(
+                    self._client.post(
+                        url,
+                        json={"order_id": order_id, "amount_minor": amount_minor, "currency": currency},
+                        headers=headers,
+                        timeout=self._timeout,
+                    ),
                     timeout=self._timeout,
-                ),
-                timeout=self._timeout,
-            )
-        except (httpx.HTTPError, TimeoutError) as exc:
-            return PaymentUnavailable(type(exc).__name__)
+                )
+            except (httpx.HTTPError, TimeoutError) as exc:
+                record_http_failure(span, exc)
+                return PaymentUnavailable(type(exc).__name__)
+            record_http_status(span, response.status_code)
 
         if response.status_code in (200, 201):
             try:

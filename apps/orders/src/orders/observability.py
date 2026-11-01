@@ -20,11 +20,13 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from fastapi import HTTPException
+from opentelemetry import trace
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from orders.config import FaultConfig
+from orders.tracing import PROPAGATOR, current_trace
 
 # Shared by every service so latency can be compared across them.
 BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
@@ -47,12 +49,20 @@ def parse_traceparent(header: str) -> tuple[str, str] | None:
 
 
 def outbound_headers() -> dict[str, str]:
-    """Headers to send on a call to another service: same request ID and trace, new span."""
+    """Headers to send on a call to another service: same request ID and trace, new span.
+
+    With tracing on, the traceparent (and any tracestate and baggage) describes the active span. Without it, the
+    trace of the request is kept and the span ID is new.
+    """
     headers: dict[str, str] = {}
     if request_id := request_id_var.get():
         headers["X-Request-Id"] = request_id
-    if trace := trace_var.get():
-        headers["traceparent"] = f"00-{trace[0]}-{secrets.token_hex(8)}-{trace[1]}"
+    propagated: dict[str, str] = {}
+    PROPAGATOR.inject(propagated)
+    if "traceparent" in propagated:
+        headers.update(propagated)
+    elif trace_info := trace_var.get():
+        headers["traceparent"] = f"00-{trace_info[0]}-{secrets.token_hex(8)}-{trace_info[1]}"
     return headers
 
 
@@ -100,8 +110,11 @@ class JsonLogger:
             "level": level,
             "message": message,
             "service": self.service,
-            **fields,
         }
+        # A line written inside a span carries its trace ID, in the same form as the request line.
+        if (active := current_trace()) is not None:
+            record["trace_id"] = active[0]
+        record.update(fields)
         self.stream.write(json.dumps(record, default=str, separators=(",", ":")) + "\n")
         self.stream.flush()
 
@@ -162,10 +175,12 @@ class ObservabilityMiddleware:
         request_id = headers.get("x-request-id", "")
         if not _REQUEST_ID.match(request_id):
             request_id = str(uuid.uuid4())
-        parsed = parse_traceparent(headers.get("traceparent", ""))
-        trace = parsed or (secrets.token_hex(16), "01")
+        # The server span's trace when there is one; otherwise (tracing off, or an operational endpoint) the trace of
+        # the traceparent header, or a new one.
+        parsed = current_trace() or parse_traceparent(headers.get("traceparent", ""))
+        trace_info = parsed or (secrets.token_hex(16), "01")
         request_id_var.set(request_id)
-        trace_var.set(trace)
+        trace_var.set(trace_info)
 
         method = scope["method"]
         path = scope["path"]
@@ -216,6 +231,9 @@ class ObservabilityMiddleware:
                 await self.app(scope, limited_receive, send_wrapper)
         except Exception as exc:
             self.logger.error("unhandled error", request_id=request_id, error=type(exc).__name__, detail=str(exc))
+            span = trace.get_current_span()
+            span.add_event("exception", {"exception.type": type(exc).__name__})  # not the message: it may hold data
+            span.set_status(trace.Status(trace.StatusCode.ERROR, "unhandled error"))
             if not started:
                 await reject(500, "internal_error", "internal error")
         finally:
@@ -226,7 +244,7 @@ class ObservabilityMiddleware:
             self.logger.info(
                 "request",
                 request_id=request_id,
-                trace_id=trace[0],
+                trace_id=trace_info[0],
                 method=method,
                 route=route,
                 status=status,
