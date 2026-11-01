@@ -29,7 +29,13 @@ The path
 Correlation with logs
 
 - **From a log line to a trace.** The Loki data source has a derived field named `trace_id` with the expression `"trace_id":"([0-9a-f]{32})"` and a link to the Tempo data source by its uid. The expression is anchored on what the services write: the key in quotes, a colon with no space, and 32 lower-case hex digits in quotes. That is the format of the Go services (gateway and notifier, `slog`), of orders (Python, compact JSON) and of payments (Java), read from their code and from the lines the Logs dashboard showed on the cluster. It does not match the `traceparent` field of the notifier's event lines, a short or upper-case ID, or a line with spaces around the colon.
-- **From a trace to its log lines.** The Tempo data source has a trace-to-logs link to Loki with a custom query, `{namespace=~".+"} |= `${__trace.traceId}``, and a time shift of five minutes before the span starts and five after it ends. The lines are found by the text of the ID and not by a label, because the trace ID must not be a label: it would make a new stream per request ([ADR-0021](0021-logging-stack.md)). The selector uses `.+` because Loki refuses a selector that can match the empty value.
+- **From a trace to its log lines.** The Tempo data source has a trace-to-logs link to Loki with this custom query, in which the text between the backticks is a raw LogQL string that Grafana fills with the trace ID:
+
+  ```text
+  {namespace=~".+"} |= `${__trace.traceId}`
+  ```
+
+  The link has a time shift of five minutes before the span starts and five after it ends. The lines are found by the text of the ID and not by a label, because the trace ID must not be a label: it would make a new stream per request ([ADR-0021](0021-logging-stack.md)). The selector uses `.+` because Loki refuses a selector that can match the empty value.
 - **Not turned on:** the service graph, the node graph and trace-to-metrics. They need the metrics generator of Tempo, which is off.
 
 Grafana, monitors and Argo CD
