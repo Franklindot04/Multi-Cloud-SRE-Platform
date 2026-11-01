@@ -1,0 +1,159 @@
+{{- if .Values.slo.enabled }}
+{{- $shortWindows := list "5m" "30m" "1h" "2h" "6h" }}
+{{- $longWindows := list "1d" "3d" "30d" }}
+{{- $shortEvents := list "1h" "6h" }}
+{{- $longEvents := list "1d" "3d" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: slo-rules
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  groups:
+    # Recording rules. The naming is  slo:<what>:<unit>_<window>  with the labels slo and service:
+    #   slo:objective:ratio                  the target, for example 0.995
+    #   slo:error_budget:ratio               1 - the target
+    #   slo:sli_error:ratio_rate<window>     bad events / valid events over the window (an error ratio, not a success ratio)
+    #   slo:sli_events:increase<window>      valid events in the window, for the low-traffic guard
+    # A window with no valid events has no sample, so a quiet service never looks like a healthy or a failing one.
+    - name: slo-recording-short
+      rules:
+        {{- range .Values.slo.slos }}
+        {{- $slo := . }}
+        - record: slo:objective:ratio
+          expr: vector({{ .objective }})
+          labels:
+            slo: {{ .name }}
+            service: {{ .service }}
+        - record: slo:error_budget:ratio
+          expr: vector({{ .budget }})
+          labels:
+            slo: {{ .name }}
+            service: {{ .service }}
+        {{- range $shortWindows }}
+        - record: slo:sli_error:ratio_rate{{ . }}
+          expr: |-
+            (
+              {{ include "slo.expr" (dict "expr" $slo.bad "fn" "rate" "window" .) }}
+              or vector(0)
+            )
+            /
+            ({{ include "slo.expr" (dict "expr" $slo.total "fn" "rate" "window" .) }})
+          labels:
+            slo: {{ $slo.name }}
+            service: {{ $slo.service }}
+        {{- end }}
+        {{- range $shortEvents }}
+        - record: slo:sli_events:increase{{ . }}
+          expr: {{ include "slo.expr" (dict "expr" $slo.total "fn" "increase" "window" .) }}
+          labels:
+            slo: {{ $slo.name }}
+            service: {{ $slo.service }}
+        {{- end }}
+        {{- end }}
+    # The windows of a day and longer change slowly and cost more to compute, so they are evaluated less often.
+    - name: slo-recording-long
+      interval: 5m
+      rules:
+        {{- range .Values.slo.slos }}
+        {{- $slo := . }}
+        {{- range $longWindows }}
+        - record: slo:sli_error:ratio_rate{{ . }}
+          expr: |-
+            (
+              {{ include "slo.expr" (dict "expr" $slo.bad "fn" "rate" "window" .) }}
+              or vector(0)
+            )
+            /
+            ({{ include "slo.expr" (dict "expr" $slo.total "fn" "rate" "window" .) }})
+          labels:
+            slo: {{ $slo.name }}
+            service: {{ $slo.service }}
+        {{- end }}
+        {{- range $longEvents }}
+        - record: slo:sli_events:increase{{ . }}
+          expr: {{ include "slo.expr" (dict "expr" $slo.total "fn" "increase" "window" .) }}
+          labels:
+            slo: {{ $slo.name }}
+            service: {{ $slo.service }}
+        {{- end }}
+        {{- end }}
+    # Multi-window, multi-burn-rate alerts. Each needs the error ratio above burn x budget over the long window and
+    # over the short window (the short one makes the alert stop soon after the problem does), and enough events in
+    # the long window that burn x budget x events is at least minBadEvents (the low-traffic guard).
+    - name: slo-alerts
+      rules:
+        {{- range .Values.slo.slos }}
+        {{- $slo := . }}
+        {{- range $.Values.slo.alerts }}
+        {{- $alert := . }}
+        - alert: SLOBurnRate{{ .name }}
+          expr: |-
+            slo:sli_error:ratio_rate{{ .long }}{slo="{{ $slo.name }}"} > ({{ .burn }} * slo:error_budget:ratio{slo="{{ $slo.name }}"})
+            and
+            slo:sli_error:ratio_rate{{ .short }}{slo="{{ $slo.name }}"} > ({{ .burn }} * slo:error_budget:ratio{slo="{{ $slo.name }}"})
+            and
+            slo:sli_events:increase{{ .long }}{slo="{{ $slo.name }}"} * ({{ .burn }} * slo:error_budget:ratio{slo="{{ $slo.name }}"}) >= {{ $.Values.slo.minBadEvents }}
+          for: {{ .for }}
+          labels:
+            severity: {{ .severity }}
+            slo: {{ $slo.name }}
+            service: {{ $slo.service }}
+          annotations:
+            summary: "{{ `{{ $labels.slo }}` }}: error budget burning at {{ .burn }}x or faster over {{ .long }} and {{ .short }}"
+            description: >-
+              The error ratio of {{ `{{ $labels.slo }}` }} over the last {{ .long }} is {{ `{{ $value | humanizePercentage }}` }}
+              and it is above {{ .burn }}x the error budget ({{ $slo.budget }}, objective {{ $slo.objective }}) over the last
+              {{ .short }} as well. At this rate: {{ .uses }}.
+            runbook_url: {{ $.Values.slo.runbookUrl }}#{{ .anchor }}
+        {{- end }}
+        {{- end }}
+    # Alerts for what the SLOs cannot see. An SLO is built from request and event counts, so a service that is down, a
+    # consumer that is not connected and events that never leave the outbox produce no counts and no burn.
+    - name: slo-blind-spots
+      rules:
+        - alert: ServiceTargetDown
+          expr: up{namespace="shop", job=~"gateway|orders|payments|notifier"} == 0
+          for: 5m
+          labels:
+            severity: page
+            # The same label as the SLO alerts carry, so that Alertmanager can hide the burn-rate alerts of a service
+            # whose target is down.
+            service: "{{ `{{ $labels.job }}` }}"
+          annotations:
+            summary: "{{ `{{ $labels.job }}` }} cannot be scraped"
+            description: >-
+              Prometheus has not been able to scrape {{ `{{ $labels.job }}` }} ({{ `{{ $labels.instance }}` }}) for 5 minutes. The
+              pod may be down or not ready, and the SLO alerts cannot see a service that serves no requests.
+            runbook_url: {{ .Values.slo.runbookUrl }}#service-target-down
+        - alert: NotifierBrokerDisconnected
+          expr: amqp_connected{job="notifier"} == 0
+          for: 10m
+          labels:
+            severity: ticket
+            service: notifier
+          annotations:
+            summary: The notifier has no RabbitMQ connection
+            description: >-
+              The notifier has had no broker connection for 10 minutes ({{ `{{ $labels.instance }}` }}). Events wait in the queue
+              and the notification SLO sees none of them until it reconnects.
+            runbook_url: {{ .Values.slo.runbookUrl }}#notifier-broker-disconnected
+        - alert: OutboxBacklog
+          expr: outbox_oldest_unpublished_age_seconds{job="orders"} > 300
+          for: 10m
+          labels:
+            severity: ticket
+            service: orders
+          annotations:
+            summary: Order events are not leaving the outbox
+            description: >-
+              The oldest unpublished order event is {{ `{{ $value | humanizeDuration }}` }} old (for 10 minutes the lag has
+              been above 5 minutes). The notifier receives nothing, so the notification SLO shows no failure.
+            runbook_url: {{ .Values.slo.runbookUrl }}#outbox-backlog
+{{- end }}

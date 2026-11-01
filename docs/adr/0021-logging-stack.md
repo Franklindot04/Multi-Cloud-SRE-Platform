@@ -72,7 +72,7 @@ None of this is meant to be left as it is for a production cluster:
 
 - **Only part of it is recorded on a cluster.** See below, and [the screenshots](../observability-evidence.md).
 - **No trace correlation:** no derived fields, no link from a log line to a trace, and the services still do not send OpenTelemetry data ([ADR-0020](0020-metrics-stack.md)). Request IDs and trace IDs are in the lines, searchable with a text filter.
-- **No log-based alerts,** no recording rules from logs, no ruler, no Alertmanager.
+- **No log-based alerts,** no recording rules from logs, no ruler. (Alertmanager came with [ADR-0023](0023-slos-and-alerting.md), for alerts on metrics.)
 - **No long-term or cross-cluster storage, no replication, no backup.**
 - **Only the `shop` and `data` namespaces,** and only pod logs: no Kubernetes events, no audit logs, no node logs.
 - **No parsing beyond the level.** Fields such as `route` or `status` stay in the line. Querying them is `| json | status >= 500`, which parses at query time.

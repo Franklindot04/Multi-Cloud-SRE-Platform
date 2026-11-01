@@ -2,3 +2,4 @@
 demo_requests_total
 demo_duration_seconds
 up
+ALERTS

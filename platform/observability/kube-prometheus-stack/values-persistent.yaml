@@ -22,6 +22,17 @@ kube-prometheus-stack:
             resources:
               requests:
                 storage: 5Gi
+  alertmanager:
+    alertmanagerSpec:
+      # Keeps silences and the notification log over a restart. Small, but the same zone restriction applies.
+      storage:
+        volumeClaimTemplate:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
   grafana:
     persistence:
       enabled: true

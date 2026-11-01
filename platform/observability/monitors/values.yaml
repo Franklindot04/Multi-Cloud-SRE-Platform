@@ -45,3 +45,96 @@ tracing:
   interval: 30s
   tempo:
     enabled: true
+
+# Service level objectives for the order flow: recording rules for the error ratio over several windows, and
+# multi-window burn-rate alerts (docs/adr/0023-slos-and-alerting.md). Prometheus evaluates them. There is no
+# Alertmanager in this profile yet, so an alert is visible in the Prometheus UI and delivered nowhere. The default
+# retention of Prometheus is two days, so the 3d and 30d windows are computed over what is there until it is raised.
+slo:
+  enabled: true
+  # The low-traffic guard. An alert also needs enough events in its long window that the burn-rate threshold means at
+  # least this many bad events: events x burn x error budget >= minBadEvents. One failed request out of a few
+  # therefore never pages. With 5, the gateway availability SLO (budget 0.5%) needs 70 requests in the last hour for
+  # the fast page alert, 167 in 6h, 334 in 1d and 1000 in 3d; the latency SLO (budget 5%) needs 7, 17, 34 and 100.
+  minBadEvents: 5
+  # Where the alerts point; the anchor of each alert is below. The runbook is written separately.
+  runbookUrl: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md
+
+  # The burn-rate alerts, the same for every SLO (Google SRE Workbook, "Alerting on SLOs", table of recommended
+  # parameters). burn is how many times faster than the budget allows; the alert needs the long and the short
+  # window above burn x budget. A burn of 14.4 for one hour uses 2% of a 30-day budget, 6 for six hours 5%, 3 for a
+  # day 10% and 1 for three days 10%.
+  alerts:
+    - name: PageFast
+      severity: page
+      burn: "14.4"
+      long: 1h
+      short: 5m
+      for: 2m
+      anchor: slo-burn-rate-page-fast
+      uses: 2% of the budget in an hour; the whole budget in about 2 days
+    - name: PageSlow
+      severity: page
+      burn: "6"
+      long: 6h
+      short: 30m
+      for: 5m
+      anchor: slo-burn-rate-page-slow
+      uses: 5% of the budget in 6 hours; the whole budget in 5 days
+    - name: TicketFast
+      severity: ticket
+      burn: "3"
+      long: 1d
+      short: 2h
+      for: 15m
+      anchor: slo-burn-rate-ticket-fast
+      uses: 10% of the budget in a day; the whole budget in 10 days
+    - name: TicketSlow
+      severity: ticket
+      burn: "1"
+      long: 3d
+      short: 6h
+      for: 15m
+      anchor: slo-burn-rate-ticket-slow
+      uses: 10% of the budget in 3 days; the whole budget in 30 days
+
+  # Each SLO is a ratio of bad events to valid events over a window. bad and total are PromQL with two placeholders:
+  # __FN__ (rate for the ratios, increase for the event counts) and __WINDOW__. The operational routes are written out
+  # in every selector, so the rules do not depend on a shared recording rule. The metric names are the ones the
+  # services expose (apps/README.md). objective + budget = 1; scripts/chart-contract-check.py checks that.
+  slos:
+    # Gateway availability. Good: every request that is not a server error. Excluded: the operational routes, and
+    # client errors (4xx), which say nothing about the service and are in neither count.
+    - name: gateway-availability
+      service: gateway
+      objective: 0.995
+      budget: 0.005
+      bad: >-
+        sum(__FN__(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version",
+        status=~"5.."}[__WINDOW__]))
+      total: >-
+        sum(__FN__(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version",
+        status!~"4.."}[__WINDOW__]))
+    # Gateway latency. Good: a request that took 0.5 s or less, which is a bucket boundary of the histogram. The
+    # histogram has no status label, so every request of a business route counts, including client and server errors.
+    - name: gateway-latency
+      service: gateway
+      objective: 0.95
+      budget: 0.05
+      bad: >-
+        sum(__FN__(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[__WINDOW__]))
+        - sum(__FN__(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version",
+        le="0.5"}[__WINDOW__]))
+      total: >-
+        sum(__FN__(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[__WINDOW__]))
+    # Notification delivery (notifier). Good: an event recorded (or recognised as a duplicate of one that was). Bad: an
+    # event moved to the dead-letter queue. Retries are not counted, because the same event is counted again when it
+    # is finally recorded or dead-lettered. The notifier has no handling-time metric, so this is success only.
+    - name: notifier-delivery
+      service: notifier
+      objective: 0.99
+      budget: 0.01
+      bad: >-
+        sum(__FN__(messages_consumed_total{job="notifier", result="dead_letter"}[__WINDOW__]))
+      total: >-
+        sum(__FN__(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[__WINDOW__]))

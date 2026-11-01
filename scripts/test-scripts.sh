@@ -844,8 +844,9 @@ run_bootstrap --enable-observability
 check "the flag exits 0 on its own" test "$rc" -eq 0
 check "the flag sets the label to true" grep -q '"platform.example/observability": "true"' "$work/bout"
 check "the label is written once" test "$(grep -c 'platform.example/observability' "$work/bout")" = 1
-check "the output says what the flag does and costs" grep -q 'observability enabled: Prometheus, Grafana, Loki and Tempo keep their data in emptyDir' "$work/bout"
-check "the output gives the current size of the stack" grep -q 'about 0.5 vCPU and 1.5 GiB of memory' "$work/bout"
+check "the output says what the flag does and costs" grep -q 'observability enabled: Prometheus, Alertmanager, Grafana, Loki and Tempo keep their data in emptyDir' "$work/bout"
+check "the output gives the current size of the stack, as rendered" grep -q 'about 0.5 vCPU and 1.5 GiB of memory (515m and 1560Mi)' "$work/bout"
+check "and says that alerts are sent nowhere" grep -q 'alerts are recorded in Alertmanager and sent nowhere' "$work/bout"
 check "and that there is no ingress" grep -q 'there is no ingress' "$work/bout"
 check "the other feature labels stay false" test "$(grep -c -e '"platform.example/data": "false"' -e '"platform.example/apps": "false"' -e '"platform.example/external-dns": "false"' -e '"platform.example/dns01": "false"' "$work/bout")" = 4
 check "the cluster is still registered as managed on AWS" grep -q '"platform.example/cloud": "aws"' "$work/bout"
@@ -930,6 +931,12 @@ else
   check "the missing time shift is named" grep -q 'needs a time shift before (negative) and after (positive) the span' "$work/cout"
   check "the service map is named" grep -q 'serviceMap needs metrics from Tempo' "$work/cout"
   check "the node graph is named" grep -q 'the node graph needs the metrics generator of Tempo' "$work/cout"
+  check "the wrong Alertmanager port is named" grep -q 'must point at port 9093 of the Alertmanager Service' "$work/cout"
+  check "and an Alertmanager that handles Grafana-managed alerts" grep -q 'must not handle Grafana-managed alerts' "$work/cout"
+  sed '/- name: Alertmanager/,/implementation: prometheus/d' "$obs/datasources-ok.yaml" > "$work/datasources-no-am.yaml"
+  contract "$work/datasources-no-am.yaml" grafana-datasources t
+  check "data sources without Alertmanager fail" test "$rc" -eq 1
+  check "and the missing uid is named" grep -q 'no data source with the uid alertmanager' "$work/cout"
   contract "$obs/alloy-ok.yaml" alloy t
   check "an Alloy that reads the API for two namespaces and stores the level as metadata passes" test "$rc" -eq 0
   contract "$obs/alloy-bad.yaml" alloy t
@@ -943,11 +950,11 @@ else
   contract "$obs/compliant.yaml" ephemeral t
   check "a workload with only an emptyDir is ephemeral" test "$rc" -eq 0
   contract "$obs/stateful.yaml" ephemeral t
-  check "claims, Prometheus storage, an Alertmanager, an Ingress and a load balancer are refused" test "$rc" -eq 1
+  check "claims, Prometheus and Alertmanager storage, an Ingress and a load balancer are refused" test "$rc" -eq 1
   check "the claim is named" grep -q 'PersistentVolumeClaim/data is rendered' "$work/cout"
   check "the claim template is named" grep -q 'StatefulSet/db has volume claim templates' "$work/cout"
   check "the Prometheus storage is named" grep -q 'Prometheus/demo has persistent storage' "$work/cout"
-  check "the Alertmanager is named" grep -q 'Alertmanager/demo is rendered' "$work/cout"
+  check "the Alertmanager storage is named" grep -q 'Alertmanager/demo has persistent storage' "$work/cout"
   check "the Ingress is named" grep -q 'Ingress/demo is rendered' "$work/cout"
   check "the load balancer is named" grep -q 'is a LoadBalancer Service' "$work/cout"
 
@@ -970,7 +977,7 @@ else
   contract "$obs/outside-project.yaml" project-fit t "$project" observability
   check "resources it does not allow fail" test "$rc" -eq 1
   check "the cluster-scoped kind is named" grep -q 'ValidatingWebhookConfiguration/demo (admissionregistration.k8s.io) is cluster-scoped and not in clusterResourceWhitelist' "$work/cout"
-  check "the namespaced kind is named" grep -q 'Secret/demo (core) is not in namespaceResourceWhitelist' "$work/cout"
+  check "the namespaced kind is named" grep -q 'DaemonSet/demo (apps) is not in namespaceResourceWhitelist' "$work/cout"
   check "the namespace is named" grep -q 'Deployment/demo is in the namespace shop' "$work/cout"
 
   # CRDs are built here because a realistic one is far larger than a fixture should be.
@@ -1051,6 +1058,206 @@ PYEOF
   rc=0
   "$contract_py" scripts/chart-contract-check.py waves "$work/apps" platform/argocd/README.md > "$work/cout" 2>&1 || rc=$?
   check "an observability ApplicationSet without a wave fails" test "$rc" -eq 1
+fi
+
+echo "chart-contract-check.py (Alertmanager)"
+
+if [ -z "$contract_py" ]; then
+  echo "  skip  no Python with PyYAML found (installing yamllint provides it)"
+else
+  am="$work/am-cases"
+  rm -rf "$am"
+  mkdir -p "$am"
+  # The good case is a reduced render of the stack; each bad case changes one thing in it.
+  "$contract_py" - "$obs/alertmanager-ok.yaml" "$am" << 'AMPY'
+import copy
+import sys
+
+import yaml
+
+src, out = sys.argv[1], sys.argv[2]
+base = list(yaml.safe_load_all(open(src, encoding="utf-8")))
+
+
+def of(docs, kind):
+    return next(d for d in docs if d["kind"] == kind)
+
+
+def config_of(docs):
+    return yaml.safe_load(of(docs, "Secret")["stringData"]["alertmanager.yaml"])
+
+
+def save_config(docs, config):
+    of(docs, "Secret")["stringData"]["alertmanager.yaml"] = yaml.safe_dump(config, sort_keys=False)
+
+
+cases = {}
+
+
+def case(name, change):
+    docs = copy.deepcopy(base)
+    change(docs)
+    cases[name] = docs
+
+
+def edit_config(change):
+    def apply(docs):
+        config = config_of(docs)
+        change(config)
+        save_config(docs, config)
+    return apply
+
+
+case("good", lambda d: None)
+case("replicas", lambda d: of(d, "Alertmanager")["spec"].update(replicas=2))
+case("limits", lambda d: of(d, "Alertmanager")["spec"]["resources"].pop("limits"))
+case("local", lambda d: of(d, "Alertmanager")["spec"].update(listenLocal=True))
+case("unwired", lambda d: of(d, "Prometheus")["spec"].update(alerting={}))
+case("ingress", lambda d: d.append({"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": "am", "namespace": "observability"}, "spec": {}}))
+case("nosecret", lambda d: d.remove(of(d, "Secret")))
+case("receiver", edit_config(lambda c: c["receivers"][2].update(webhook_configs=[{"url_file": "/etc/alertmanager/secrets/hook"}])))
+case("global", edit_config(lambda c: c["global"].update(slack_api_url="x")))
+case("pageroute", edit_config(lambda c: c["route"]["routes"][0].update(receiver="ticket")))
+case("ticketroute", edit_config(lambda c: c["route"]["routes"].pop(1)))
+case("extraroute", edit_config(lambda c: c["route"]["routes"].append({"matchers": ['severity = "critical"'], "receiver": "page"})))
+case("defaultroute", edit_config(lambda c: c["route"].update(receiver="page")))
+case("groupby", edit_config(lambda c: c["route"].update(group_by=["alertname"])))
+case("timing", edit_config(lambda c: c["route"].pop("repeat_interval")))
+case("noreceiver", edit_config(lambda c: c["receivers"].pop(0)))
+case("inhibit-page", edit_config(lambda c: c["inhibit_rules"].pop(0)))
+case("inhibit-down", edit_config(lambda c: c["inhibit_rules"].pop(1)))
+case("inhibit-equal", edit_config(lambda c: c["inhibit_rules"][0].update(equal=["slo"])))
+for name, docs in cases.items():
+    yaml.safe_dump_all(docs, open("{}/{}.yaml".format(out, name), "w", encoding="utf-8"), sort_keys=False)
+AMPY
+
+  am_fails() {
+    # am_fails CASE MESSAGE LABEL: the case fails and the output names the problem.
+    contract "$am/$1.yaml" alertmanager t
+    if [ "$rc" -eq 1 ] && grep -qF -- "$2" "$work/cout"; then ok "$3"; else bad "$3 (exit $rc)"; fi
+  }
+  contract "$am/good.yaml" alertmanager t
+  check "an Alertmanager with one replica, limits, a wired Prometheus, page and ticket routes, empty receivers and both inhibitions passes" test "$rc" -eq 0
+  am_fails replicas "the Alertmanager must have one replica (it has 2)" "two replicas are refused"
+  am_fails limits "the Alertmanager needs resources.limits.cpu" "missing limits are named"
+  am_fails local "listens on localhost only" "an Alertmanager Prometheus cannot reach is named"
+  am_fails unwired "Prometheus does not send alerts to the Alertmanager demo-alertmanager" "a Prometheus that does not send alerts to it is named"
+  am_fails ingress "an Ingress is rendered; access is by port-forward only" "an Ingress is refused"
+  am_fails nosecret "no Secret alertmanager-demo-alertmanager with the configuration" "a missing configuration Secret is named"
+  am_fails receiver "the receiver ticket is not empty (it has webhook_configs)" "a receiver that sends somewhere is refused"
+  am_fails global "the global section holds something that looks like a URL, token or password" "a credential in the global section is refused"
+  am_fails pageroute "severity page must be routed to the receiver page (it goes to ticket)" "a page alert routed to the ticket receiver is named"
+  am_fails ticketroute "severity ticket must be routed to the receiver ticket (it goes to None)" "a missing ticket route is named"
+  am_fails extraroute "only the severities page and ticket have routes (found critical, page, ticket)" "a route for another severity is named"
+  am_fails defaultroute "the root route must send to the receiver default (it sends to page)" "a default route to the page receiver is named"
+  am_fails groupby "the root route must group by alertname, slo and service" "the wrong grouping is named"
+  am_fails timing "the root route needs repeat_interval" "a missing repeat interval is named"
+  am_fails noreceiver "the configuration has no receiver default" "a missing receiver is named"
+  am_fails inhibit-page "the inhibition from ['severity = \"page\"'] to ['severity = \"ticket\"'] on ['slo', 'service'] is missing" "a missing page-hides-ticket inhibition is named"
+  am_fails inhibit-down "the inhibition from ['alertname = \"ServiceTargetDown\"'] to ['alertname =~ \"SLOBurnRate.*\"'] on ['service'] is missing" "a missing target-down inhibition is named"
+  am_fails inhibit-equal "the inhibition from ['severity = \"page\"'] to ['severity = \"ticket\"'] on ['slo', 'service'] is missing" "an inhibition on too few labels is named"
+fi
+
+echo "chart-contract-check.py (SLO rules)"
+
+if [ -z "$contract_py" ]; then
+  echo "  skip  no Python with PyYAML found (installing yamllint provides it)"
+else
+  slo="$work/slo-cases"
+  rm -rf "$slo"
+  mkdir -p "$slo"
+  # The rendered PrometheusRule of the monitors chart is the good case; each bad case changes one thing in it.
+  "$contract_py" - "$obs/slo-rules-ok.yaml" "$slo" << 'SLOPY'
+import copy
+import re
+import sys
+
+import yaml
+
+src, out = sys.argv[1], sys.argv[2]
+base = yaml.safe_load(open(src, encoding="utf-8"))
+
+
+def rules(doc):
+    return [r for g in doc["spec"]["groups"] for r in g["rules"]]
+
+
+def find(doc, name, slo):
+    for r in rules(doc):
+        if (r.get("record") == name or r.get("alert") == name) and (r.get("labels") or {}).get("slo") == slo:
+            return r
+    raise KeyError(name + " " + slo)
+
+
+def drop(doc, name, slo):
+    for g in doc["spec"]["groups"]:
+        g["rules"] = [r for r in g["rules"] if not ((r.get("record") == name or r.get("alert") == name) and r["labels"].get("slo") == slo)]
+
+
+GA, GL = "gateway-availability", "gateway-latency"
+cases = {}
+
+
+def case(name, change):
+    doc = copy.deepcopy(base)
+    change(doc)
+    cases[name] = doc
+
+
+case("good", lambda d: None)
+case("burn", lambda d: find(d, "SLOBurnRatePageFast", GA).update(expr=find(d, "SLOBurnRatePageFast", GA)["expr"].replace("14.4", "10")))
+case("window", lambda d: find(d, "SLOBurnRatePageSlow", GA).update(expr=find(d, "SLOBurnRatePageSlow", GA)["expr"].replace("ratio_rate30m", "ratio_rate1h")))
+case("noguard", lambda d: find(d, "SLOBurnRateTicketFast", GA).update(expr=find(d, "SLOBurnRateTicketFast", GA)["expr"].rsplit("\nand\n", 1)[0]))
+case("lowguard", lambda d: find(d, "SLOBurnRatePageFast", GA).update(expr=re.sub(r">= [0-9.]+$", ">= 1", find(d, "SLOBurnRatePageFast", GA)["expr"])))
+case("bucket", lambda d: find(d, "slo:sli_error:ratio_rate5m", GL).update(expr=find(d, "slo:sli_error:ratio_rate5m", GL)["expr"].replace('le="0.5"', 'le="0.3"')))
+case("budget", lambda d: find(d, "slo:error_budget:ratio", GA).update(expr="vector(0.01)"))
+case("norunbook", lambda d: find(d, "SLOBurnRatePageFast", GA)["annotations"].pop("runbook_url"))
+case("noanchor", lambda d: find(d, "SLOBurnRatePageFast", GA)["annotations"].update(runbook_url="https://example.com/docs/runbooks/alerts.md"))
+case("route", lambda d: find(d, "slo:sli_error:ratio_rate1h", GA).update(expr=find(d, "slo:sli_error:ratio_rate1h", GA)["expr"].replace("/readyz|", "")))
+case("client", lambda d: find(d, "slo:sli_error:ratio_rate5m", GA).update(expr=find(d, "slo:sli_error:ratio_rate5m", GA)["expr"].replace('status!~"4.."', 'status!~"9.."')))
+case("metric", lambda d: find(d, "slo:sli_error:ratio_rate1h", "notifier-delivery").update(expr=find(d, "slo:sli_error:ratio_rate1h", "notifier-delivery")["expr"].replace("messages_consumed_total", "messages_handled_total")))
+case("nowindow", lambda d: drop(d, "slo:sli_error:ratio_rate2h", GA))
+case("noevents", lambda d: drop(d, "slo:sli_events:increase1d", GL))
+case("severity", lambda d: find(d, "SLOBurnRateTicketFast", GA)["labels"].update(severity="page"))
+case("name", lambda d: find(d, "slo:sli_error:ratio_rate6h", GA).update(record="slo_sli_error_6h"))
+case("range", lambda d: find(d, "slo:sli_error:ratio_rate1h", GA).update(expr=find(d, "slo:sli_error:ratio_rate1h", GA)["expr"].replace("[1h]", "[5m]")))
+case("nofor", lambda d: find(d, "SLOBurnRateTicketSlow", GA).pop("for"))
+case("noservice", lambda d: [r["labels"].pop("service") for r in rules(d) if r.get("alert") == "OutboxBacklog"])
+case("noalert", lambda d: drop(d, "SLOBurnRatePageSlow", "notifier-delivery"))
+for name, doc in cases.items():
+    yaml.safe_dump(doc, open("{}/{}.yaml".format(out, name), "w", encoding="utf-8"), sort_keys=False, width=250)
+SLOPY
+
+  slo_check() {
+    # slo_check CASE: run the check on one case; output in $work/cout, status in $rc.
+    contract "$slo/$1.yaml" slo-rules t "$obs/slo-sources"
+  }
+  slo_check good
+  check "the SLO rules of the monitors chart pass: every window, the four alerts per SLO with their thresholds and guard" test "$rc" -eq 0
+  slo_fails() {
+    # slo_fails CASE MESSAGE LABEL: the case fails and the output names the problem.
+    slo_check "$1"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$2" "$work/cout"; then ok "$3"; else bad "$3 (exit $rc)"; fi
+  }
+  slo_fails burn "SLOBurnRatePageFast must compare slo:sli_error:ratio_rate1h to 14.4 x the error budget" "a fast page alert with the wrong burn rate is named"
+  slo_fails window "must compare slo:sli_error:ratio_rate30m to 6 x the error budget" "an alert whose short window is not the documented one is named"
+  slo_fails noguard "needs the low-traffic guard" "an alert without the minimum-traffic guard is named"
+  slo_fails lowguard "has a low-traffic guard of 1, below the minimum of 3" "a guard that lets one failed request alert is named"
+  slo_fails bucket 'uses le="0.3", which is not a bucket boundary' "a latency threshold that is not a bucket is named"
+  slo_fails budget "do not add up to 1" "an objective and error budget that do not add up to 1 are named"
+  slo_fails norunbook "needs the annotation runbook_url" "an alert without a runbook link is named"
+  slo_fails noanchor "runbook_url must end in docs/runbooks/alerts.md#<anchor>" "a runbook link without an anchor is named"
+  slo_fails route "without leaving out the routes /healthz, /readyz, /metrics" "a gateway selector that counts the readiness route is named"
+  slo_fails client 'must leave out client errors (status!~"4..")' "an availability SLI that counts client errors is named"
+  slo_fails metric "uses the metric messages_handled_total, which is not confirmed" "a metric no service defines is named"
+  slo_fails nowindow "gateway-availability has no recording rule slo:sli_error:ratio_rate2h" "a missing window is named"
+  slo_fails noevents "gateway-latency has no recording rule slo:sli_events:increase1d" "a missing event count is named"
+  slo_fails severity "SLOBurnRateTicketFast must have severity ticket" "a ticket alert that pages is named"
+  slo_fails name "does not follow slo:<what>:<unit>[_<window>]" "a recording rule outside the naming convention is named"
+  slo_fails range "slo:sli_error:ratio_rate1h for gateway-availability does not use a [1h] range" "a recording rule whose name and range disagree is named"
+  slo_fails nofor "needs a 'for' duration" "an alert without a for duration is named"
+  slo_fails noalert "notifier-delivery has no alert SLOBurnRatePageSlow" "a missing alert is named"
+  slo_fails noservice "alert OutboxBacklog (no slo) needs the label service" "an alert without the service label is named"
 fi
 
 echo "chart-contract-check.py (dashboards)"
@@ -1154,6 +1361,9 @@ make("logs-unclosed-backtick", {"ok-logs.json": logs_changed(lambda b: logs_expr
 make("logs-unbalanced", {"ok-logs.json": logs_changed(lambda b: logs_expr(b, "sum(rate({namespace=~\"$namespace\"} [$__auto])"))})
 make("logs-all-matches-empty", {"ok-logs.json": logs_changed(lambda b: b["templating"]["list"][1].update(allValue=".*"))})
 make("logs-bad-variable-label", {"ok-logs.json": logs_changed(lambda b: b["templating"]["list"][2].update(query={"query": "label_values({namespace=~\"$namespace\"}, host)", "refId": "x"}))})
+make("slo-recorded", {"ok-board.json": changed(lambda b: b["panels"][1]["targets"][0].update(expr="1 - slo:sli_error:ratio_rate1h{slo=\"gateway-availability\"} / slo:error_budget:ratio{slo=\"gateway-availability\"}"))})
+make("slo-unknown", {"ok-board.json": changed(lambda b: b["panels"][1]["targets"][0].update(expr="slo:sli_error:ratio_rate9m{slo=\"gateway-availability\"}"))})
+make("alerts-series", {"ok-board.json": changed(lambda b: b["panels"][1]["targets"][0].update(expr="count(ALERTS{alertstate=\"firing\"}) or vector(0)"))})
 DASHPY
 
   # dash_check CASE: run the dashboard check on a case; output in $work/cout, status in $rc.
@@ -1162,8 +1372,24 @@ DASHPY
     "$contract_py" scripts/chart-contract-check.py dashboards t "$dash/$1" "$obs/dashboards/stack-values.yaml" "$obs/dashboards/sources.txt" < "$dash/$1.yaml" > "$work/cout" 2>&1 || rc=$?
   }
 
+  # dash_check_rules CASE: the same, with the rendered recording rules of the monitors chart as one more source.
+  dash_check_rules() {
+    rc=0
+    "$contract_py" scripts/chart-contract-check.py dashboards t "$dash/$1" "$obs/dashboards/stack-values.yaml" "$obs/dashboards/sources.txt" "$obs/slo-rules-ok.yaml" < "$dash/$1.yaml" > "$work/cout" 2>&1 || rc=$?
+  }
+
   dash_check good
   check "a dashboard that follows the rules passes" test "$rc" -eq 0
+  dash_check_rules slo-recorded
+  check "a dashboard that uses recording rules the monitors chart renders passes" test "$rc" -eq 0
+  dash_check slo-recorded
+  check "the same dashboard fails when the rules are not a source" test "$rc" -eq 1
+  check "and the recording rule is named" grep -q 'uses the metric slo:sli_error:ratio_rate1h, which is not confirmed' "$work/cout"
+  dash_check_rules slo-unknown
+  check "a dashboard that uses a recording rule nobody defines fails" test "$rc" -eq 1
+  check "and the name is given" grep -q 'uses the metric slo:sli_error:ratio_rate9m, which is not confirmed' "$work/cout"
+  dash_check_rules alerts-series
+  check "the ALERTS series passes once it is in the confirmed list" test "$rc" -eq 0
   dash_check not-json
   check "a file that is not JSON fails" test "$rc" -eq 1
   check "and the file is named" grep -q 'ok-board.json is not valid JSON' "$work/cout"

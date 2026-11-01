@@ -26,7 +26,7 @@ The observability charts (platform/observability) add checks on the rendered out
                       host ports or hostPath, no privileged container, privilege escalation off, all capabilities
                       dropped, a non-root user and a seccomp profile
   ephemeral LABEL     the default profile has no persistent storage and no way in: no PersistentVolumeClaim, volume
-                      claim template or Prometheus storage, no Alertmanager, no Ingress, no LoadBalancer or
+                      claim template or Prometheus or Alertmanager storage, no Ingress, no LoadBalancer or
                       NodePort Service
   grafana-admin LABEL Grafana reads its admin account from the Secret grafana-admin and no password is set in the
                       rendered output
@@ -35,7 +35,7 @@ The observability charts (platform/observability) add checks on the rendered out
                       every Grafana dashboard in DIR is valid JSON with a unique uid (the file name) and title, uses
                       a data source variable (datasource for Prometheus, loki for Loki) and no fixed data source uid,
                       and uses only metric names that are confirmed in a SOURCE (a source directory, a vendored chart
-                      tarball, or a list of names). LogQL queries may use only the log stream labels (namespace, pod,
+                      tarball, a list of names, or rendered rules: the record and alert names of its PrometheusRules). LogQL queries may use only the log stream labels (namespace, pod,
                       container, app, service, service_name) and the level, and every selector must exclude the empty
                       value, as Loki requires. The
                       rendered ConfigMaps (stdin) carry the label that the Grafana sidecar in STACK_VALUES selects
@@ -45,9 +45,15 @@ The observability charts (platform/observability) add checks on the rendered out
   tempo LABEL         the Tempo configuration is single tenant, stores traces on the local filesystem, deletes them after
                       at most 72h, receives only OTLP (no Jaeger, Zipkin or OpenCensus receiver), has no metrics generator
                       and sends no usage report
+  alertmanager LABEL  Alertmanager is on with one replica and resource requests and limits, Prometheus sends its alerts to
+                      it, its configuration routes severity page to the receiver page and severity ticket to the
+                      receiver ticket (everything else to default), groups by alertname, slo and service, has the two
+                      inhibitions (a page alert hides the ticket alerts of the same slo and service; ServiceTargetDown
+                      hides the burn-rate alerts of the same service), and its receivers are empty: no URL, token or
+                      password is rendered anywhere in the configuration
   grafana-datasources LABEL
                       the data sources Grafana provisions (the ConfigMap with the label grafana_datasource) are the
-                      Prometheus, Loki and Tempo ones with unique uids; the Loki derived field links to Tempo by uid and
+                      Prometheus, Alertmanager, Loki and Tempo ones with unique uids; the Loki derived field links to Tempo by uid and
                       its regular expression finds the trace id in a request log line in the format each service
                       writes and in no other; the Tempo trace-to-logs link points at Loki by uid with a time shift on
                       both sides and a query that uses the trace id; no service graph or node graph is turned on
@@ -62,19 +68,32 @@ The observability charts (platform/observability) add checks on the rendered out
   loki-queries DIR    prints, one per line (dashboard, panel, query type, query, tab separated), every Loki query of the
                       dashboards in DIR with the Grafana variables filled in, with "All" selected and with concrete
                       values; scripts/observability-check.sh runs them against a Loki image
+  slo-rules LABEL SOURCE...
+                      the PrometheusRule "slo" holds, for every SLO, the recording rules the burn-rate alerts need (the
+                      objective, the error budget, the error ratio over 5m, 30m, 1h, 2h, 6h, 1d, 3d and 30d, and the number
+                      of events over 1h, 6h, 1d and 3d), named slo:<what>:<unit>[_<window>] with the labels slo and service;
+                      objective + budget = 1; the four alerts per SLO (page 14.4x over 1h and 5m, page 6x over 6h and 30m,
+                      ticket 3x over 1d and 2h, ticket 1x over 3d and 6h) use exactly those windows and burn rates and have
+                      the minimum-event guard, a severity, the service label (and the slo label for burn rates), a summary, a description and a
+                      runbook_url that ends in docs/runbooks/alerts.md#<anchor>; the rules use only metric names confirmed
+                      in a SOURCE (service code), leave the operational routes out of every gateway HTTP selector, leave
+                      client errors out of the availability SLI, and use a histogram threshold (le) that is a bucket
+                      boundary of the services' histogram
   project-fit LABEL PROJECT DEFAULT_NAMESPACE
                       every rendered resource is allowed by the AppProject file: its kind, and its namespace
                       (DEFAULT_NAMESPACE where the manifest names none)
 
 The per-chart checks read a multi-document YAML stream (the output of `helm template`) on stdin.
 
-Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned|loki|tempo|grafana-datasources|alloy LABEL
+Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned|loki|tempo|alertmanager|grafana-datasources|alloy LABEL
        helm template ... | chart-contract-check.py project-fit LABEL PROJECT_FILE DEFAULT_NAMESPACE
        helm template ... --include-crds | chart-contract-check.py crds LABEL APPLICATIONSET_FILE
        helm template ... | chart-contract-check.py dashboards LABEL DASHBOARD_DIR STACK_VALUES SOURCE...
+       helm template ... | chart-contract-check.py slo-rules LABEL SOURCE...
        chart-contract-check.py waves platform/argocd/apps platform/argocd/README.md
 """
 
+import base64
 import glob
 import json
 import os
@@ -308,13 +327,13 @@ def check_ephemeral(docs, label):
     problems = []
     for d in docs:
         where = name_of(d)
-        if d["kind"] in ("PersistentVolumeClaim", "Alertmanager", "Ingress"):
+        if d["kind"] in ("PersistentVolumeClaim", "Ingress"):
             problems.append("{}: {} is rendered, which the default profile must not".format(label, where))
         if d["kind"] == "Service" and (d.get("spec") or {}).get("type") in ("LoadBalancer", "NodePort"):
             problems.append("{}: {} is a {} Service; access is by port-forward only".format(label, where, d["spec"]["type"]))
         if d["kind"] == "StatefulSet" and (d.get("spec") or {}).get("volumeClaimTemplates"):
             problems.append("{}: {} has volume claim templates".format(label, where))
-        if d["kind"] == "Prometheus" and (d.get("spec") or {}).get("storage"):
+        if d["kind"] in ("Prometheus", "Alertmanager") and (d.get("spec") or {}).get("storage"):
             problems.append("{}: {} has persistent storage configured; the default profile uses emptyDir".format(label, where))
     for where, spec, _meta in pod_specs(docs):
         for v in spec.get("volumes") or []:
@@ -462,6 +481,101 @@ def _unescape(value):
     return str(value).replace("$$", "$")
 
 
+AM_REQUIRED_INHIBITIONS = (
+    # (source matchers, target matchers, equal labels)
+    ({"severity = \"page\""}, {"severity = \"ticket\""}, ["slo", "service"]),
+    ({"alertname = \"ServiceTargetDown\""}, {"alertname =~ \"SLOBurnRate.*\""}, ["service"]),
+)
+AM_SECRET_WORDS = re.compile(r"(?i)(url|token|password|secret|key|webhook|api_|routing_key|auth|smtp|http_config|_configs)")
+
+
+def check_alertmanager(docs, label):
+    problems = []
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    ams = [d for d in docs if d.get("kind") == "Alertmanager"]
+    if len(ams) != 1:
+        return ["{}: expected exactly one Alertmanager, found {}".format(label, len(ams))]
+    am = ams[0]
+    name = (am.get("metadata") or {}).get("name")
+    spec = am.get("spec") or {}
+    if spec.get("replicas") != 1:
+        fail("the Alertmanager must have one replica (it has {})".format(spec.get("replicas")))
+    res = spec.get("resources") or {}
+    for kind in ("requests", "limits"):
+        for resource in ("cpu", "memory"):
+            if not (res.get(kind) or {}).get(resource):
+                fail("the Alertmanager needs resources.{}.{}".format(kind, resource))
+    if spec.get("listenLocal"):
+        fail("the Alertmanager listens on localhost only, so Prometheus cannot reach it")
+    if any(d.get("kind") == "Ingress" for d in docs):
+        fail("an Ingress is rendered; access is by port-forward only")
+    services = [d for d in docs if d.get("kind") == "Service" and (d.get("metadata") or {}).get("name") == name]
+    if not services or (services[0].get("spec") or {}).get("type", "ClusterIP") != "ClusterIP":
+        fail("the Alertmanager Service must exist and be a ClusterIP Service")
+
+    # Prometheus sends its alerts to it.
+    wired = False
+    for d in docs:
+        if d.get("kind") == "Prometheus":
+            for target in ((d.get("spec") or {}).get("alerting") or {}).get("alertmanagers") or []:
+                wired = wired or (target.get("name") == name and target.get("namespace") == (am.get("metadata") or {}).get("namespace"))
+    if not wired:
+        fail("Prometheus does not send alerts to the Alertmanager {} (spec.alerting.alertmanagers)".format(name))
+
+    # The configuration is held in the Secret alertmanager-<name>.
+    secrets = [d for d in docs if d.get("kind") == "Secret" and (d.get("metadata") or {}).get("name") == "alertmanager-" + name]
+    if not secrets:
+        return problems + ["{}: no Secret alertmanager-{} with the configuration".format(label, name)]
+    raw = (secrets[0].get("data") or {}).get("alertmanager.yaml")
+    text = base64.b64decode(raw).decode("utf-8") if raw else (secrets[0].get("stringData") or {}).get("alertmanager.yaml")
+    if not text:
+        return problems + ["{}: the Secret has no alertmanager.yaml".format(label)]
+    config = yaml.safe_load(text)
+
+    receivers = {r.get("name"): r for r in config.get("receivers") or []}
+    for needed in ("default", "page", "ticket"):
+        if needed not in receivers:
+            fail("the configuration has no receiver {}".format(needed))
+    for rname, receiver in receivers.items():
+        extra = set(receiver) - {"name"}
+        if extra:
+            fail("the receiver {} is not empty (it has {}); a real receiver is added through a Secret, not in this file".format(rname, ", ".join(sorted(extra))))
+    if AM_SECRET_WORDS.search(yaml.safe_dump(config.get("global") or {})):
+        fail("the global section holds something that looks like a URL, token or password")
+
+    route = config.get("route") or {}
+    if route.get("receiver") != "default":
+        fail("the root route must send to the receiver default (it sends to {})".format(route.get("receiver")))
+    if route.get("group_by") != ["alertname", "slo", "service"]:
+        fail("the root route must group by alertname, slo and service (it groups by {})".format(route.get("group_by")))
+    for key in ("group_wait", "group_interval", "repeat_interval"):
+        if not route.get(key):
+            fail("the root route needs {}".format(key))
+    by_severity = {}
+    for child in route.get("routes") or []:
+        for m in child.get("matchers") or []:
+            mm = re.fullmatch(r'severity = "(\w+)"', m)
+            if mm:
+                by_severity[mm.group(1)] = child.get("receiver")
+        if child.get("routes"):
+            fail("a sub-route has routes of its own; the tree is meant to be two routes deep")
+    for severity in ("page", "ticket"):
+        if by_severity.get(severity) != severity:
+            fail("severity {} must be routed to the receiver {} (it goes to {})".format(severity, severity, by_severity.get(severity)))
+    if set(by_severity) - {"page", "ticket"}:
+        fail("only the severities page and ticket have routes (found {})".format(", ".join(sorted(by_severity))))
+
+    rules = config.get("inhibit_rules") or []
+    for source, target, equal in AM_REQUIRED_INHIBITIONS:
+        found = any(set(r.get("source_matchers") or []) == source and set(r.get("target_matchers") or []) == target and sorted(r.get("equal") or []) == sorted(equal) for r in rules)
+        if not found:
+            fail("the inhibition from {} to {} on {} is missing".format(sorted(source), sorted(target), equal))
+    return problems
+
+
 def check_grafana_datasources(docs, label):
     """The data sources Grafana provisions, and the links between Loki and Tempo."""
     problems = []
@@ -484,7 +598,7 @@ def check_grafana_datasources(docs, label):
         elif uid in by_uid:
             fail("the uid {} is used by two data sources".format(uid))
         by_uid[uid] = s
-    for uid, kind in (("prometheus", "prometheus"), ("loki", "loki"), ("tempo", "tempo")):
+    for uid, kind in (("prometheus", "prometheus"), ("alertmanager", "alertmanager"), ("loki", "loki"), ("tempo", "tempo")):
         if uid not in by_uid:
             fail("no data source with the uid {}".format(uid))
         elif by_uid[uid].get("type") != kind:
@@ -492,6 +606,10 @@ def check_grafana_datasources(docs, label):
     if problems:
         return problems
 
+    if ":9093" not in str(by_uid["alertmanager"].get("url", "")):
+        fail("the Alertmanager data source must point at port 9093 of the Alertmanager Service (it is {})".format(by_uid["alertmanager"].get("url")))
+    if (by_uid["alertmanager"].get("jsonData") or {}).get("handleGrafanaManagedAlerts"):
+        fail("the Alertmanager data source must not handle Grafana-managed alerts: Grafana has no alerts of its own here")
     loki, tempo = by_uid["loki"], by_uid["tempo"]
     derived = (loki.get("jsonData") or {}).get("derivedFields") or []
     if len(derived) != 1:
@@ -667,6 +785,14 @@ def load_sources(paths):
                 for member in tar.getmembers():
                     if member.isfile():
                         chunks.append(tar.extractfile(member).read().decode("utf-8", errors="replace"))
+        elif path.endswith((".yaml", ".yml")):
+            # Rendered rules: a recording rule defines the series it records, an alert defines ALERTS and its state.
+            for doc in yaml.safe_load_all(open(path, encoding="utf-8")):
+                if isinstance(doc, dict) and doc.get("kind") == "PrometheusRule":
+                    for group in (doc.get("spec") or {}).get("groups") or []:
+                        for rule in group.get("rules") or []:
+                            if rule.get("record"):
+                                declared.add(rule["record"])
         elif path.endswith(".txt"):
             for line in open(path, encoding="utf-8"):
                 line = line.split("#", 1)[0].strip()
@@ -817,8 +943,8 @@ def loki_queries(files_dir, searches=()):
     return out
 
 
-def check_dashboards(docs, label, files_dir, stack_values, sources):
-    problems = []
+def make_confirmer(sources):
+    """(confirmed, text): confirmed(name) is true when a metric name (or its histogram base) appears in a source."""
     declared, text = load_sources(sources)
 
     def confirmed(name):
@@ -826,6 +952,13 @@ def check_dashboards(docs, label, files_dir, stack_values, sources):
             if candidate in declared or re.search(r"(?<![A-Za-z0-9_:])" + re.escape(candidate) + r"(?![A-Za-z0-9_:])", text):
                 return True
         return False
+
+    return confirmed, text
+
+
+def check_dashboards(docs, label, files_dir, stack_values, sources):
+    problems = []
+    confirmed, _text = make_confirmer(sources)
 
     files = sorted(glob.glob(files_dir + "/*.json"))
     if not files:
@@ -925,6 +1058,160 @@ def check_dashboards(docs, label, files_dir, stack_values, sources):
     others = [d for d in docs if d["kind"] != "ConfigMap"]
     for d in others:
         problems.append("{}: {} is rendered; the dashboards chart holds ConfigMaps only".format(label, name_of(d)))
+    return problems
+
+
+SLO_WINDOWS = ("5m", "30m", "1h", "2h", "6h", "1d", "3d", "30d")
+SLO_EVENT_WINDOWS = ("1h", "6h", "1d", "3d")
+# alert name, severity, burn rate, long window, short window (Google SRE Workbook, multi-window multi-burn-rate)
+SLO_ALERTS = (
+    ("PageFast", "page", "14.4", "1h", "5m"),
+    ("PageSlow", "page", "6", "6h", "30m"),
+    ("TicketFast", "ticket", "3", "1d", "2h"),
+    ("TicketSlow", "ticket", "1", "3d", "6h"),
+)
+SLO_OPERATIONAL_ROUTES = ("/healthz", "/readyz", "/metrics")
+SLO_MIN_GUARD = 3  # fewer bad events than this at the alert threshold would let one or two failures alert
+SLO_RUNBOOK = re.compile(r"^https://\S+/docs/runbooks/alerts\.md#[a-z0-9]+(?:-[a-z0-9]+)*$")
+SLO_RECORD = re.compile(r"^slo:(?:objective:ratio|error_budget:ratio|sli_error:ratio_rate(\d+[mhd])|sli_events:increase(\d+[mhd]))$")
+
+
+def _selectors(expr, metric):
+    """The {...} selector bodies that follow a metric name in a PromQL expression."""
+    return re.findall(r"(?<![A-Za-z0-9_:])" + re.escape(metric) + r"\{([^}]*)\}", expr)
+
+
+def check_slo_rules(docs, label, sources):
+    problems = []
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    rules_docs = [d for d in docs if d.get("kind") == "PrometheusRule" and (d.get("metadata") or {}).get("name") == "slo"]
+    if len(rules_docs) != 1:
+        return ["{}: expected exactly one PrometheusRule named slo, found {}".format(label, len(rules_docs))]
+    groups = (rules_docs[0].get("spec") or {}).get("groups") or []
+    rules = [r for g in groups for r in g.get("rules") or []]
+    recording = {}  # (name, slo) -> rule
+    alerts = {}  # (name, slo) -> rule
+    for r in rules:
+        labels = r.get("labels") or {}
+        if "record" in r:
+            m = SLO_RECORD.match(r["record"])
+            if not m:
+                fail("the recording rule {} does not follow slo:<what>:<unit>[_<window>] (objective:ratio, error_budget:ratio, sli_error:ratio_rate<window>, sli_events:increase<window>)".format(r["record"]))
+                continue
+            if not labels.get("slo") or not labels.get("service"):
+                fail("the recording rule {} needs the labels slo and service".format(r["record"]))
+                continue
+            recording[(r["record"], labels["slo"])] = r
+            window = m.group(1) or m.group(2)
+            if window and ("[{}]".format(window) not in r.get("expr", "")):
+                fail("{} for {} does not use a [{}] range".format(r["record"], labels["slo"], window))
+        elif "alert" in r:
+            alerts[(r["alert"], labels.get("slo", ""))] = r
+
+    slos = sorted({slo for (name, slo) in recording if name == "slo:objective:ratio"})
+    if not slos:
+        return ["{}: no SLO found (no slo:objective:ratio rule)".format(label)]
+
+    confirmed, text = make_confirmer(sources)
+    buckets = set()
+    for m in re.finditer(r"Buckets\s*=\s*\[\]float64\{([^}]*)\}", text):
+        buckets.update(float(x) for x in re.findall(r"[0-9.]+", m.group(1)))
+
+    def vector_value(rule):
+        m = re.fullmatch(r"vector\(([0-9.]+)\)", (rule.get("expr") or "").strip())
+        return float(m.group(1)) if m else None
+
+    for slo in slos:
+        objective = vector_value(recording[("slo:objective:ratio", slo)])
+        budget_rule = recording.get(("slo:error_budget:ratio", slo))
+        budget = vector_value(budget_rule) if budget_rule else None
+        if objective is None or budget is None:
+            fail("{}: slo:objective:ratio and slo:error_budget:ratio must be vector(<number>)".format(slo))
+        elif abs(objective + budget - 1) > 1e-9:
+            fail("{}: the objective {} and the error budget {} do not add up to 1".format(slo, objective, budget))
+        for w in SLO_WINDOWS:
+            if ("slo:sli_error:ratio_rate" + w, slo) not in recording:
+                fail("{} has no recording rule slo:sli_error:ratio_rate{}".format(slo, w))
+        for w in SLO_EVENT_WINDOWS:
+            if ("slo:sli_events:increase" + w, slo) not in recording:
+                fail("{} has no recording rule slo:sli_events:increase{}".format(slo, w))
+        for name, severity, burn, long_w, short_w in SLO_ALERTS:
+            alert = alerts.get(("SLOBurnRate" + name, slo))
+            where = "{} alert SLOBurnRate{}".format(slo, name)
+            if alert is None:
+                fail("{} has no alert SLOBurnRate{}".format(slo, name))
+                continue
+            expr = " ".join((alert.get("expr") or "").split())
+            labels = alert.get("labels") or {}
+            if labels.get("severity") != severity:
+                fail("{} must have severity {} (it has {})".format(where, severity, labels.get("severity")))
+            if labels.get("slo") != slo or not labels.get("service"):
+                fail("{} needs the labels slo ({}) and service".format(where, slo))
+            threshold = r"\(" + re.escape(burn) + r" \* slo:error_budget:ratio\{slo=\"" + re.escape(slo) + r"\"\}\)"
+            for window in (long_w, short_w):
+                pattern = r"slo:sli_error:ratio_rate" + window + r"\{slo=\"" + re.escape(slo) + r"\"\} > " + threshold
+                if not re.search(pattern, expr):
+                    fail("{} must compare slo:sli_error:ratio_rate{} to {} x the error budget".format(where, window, burn))
+            guard = re.search(r"slo:sli_events:increase" + long_w + r"\{slo=\"" + re.escape(slo) + r"\"\} \* " + threshold + r" >= ([0-9.]+)", expr)
+            if not guard:
+                fail("{} needs the low-traffic guard: slo:sli_events:increase{} x ({} x the error budget) >= a minimum".format(where, long_w, burn))
+            elif float(guard.group(1)) < SLO_MIN_GUARD:
+                fail("{} has a low-traffic guard of {}, below the minimum of {} bad events".format(where, guard.group(1), SLO_MIN_GUARD))
+            if " and " not in expr or expr.count(" and ") != 2:
+                fail("{} must join the long window, the short window and the guard with 'and'".format(where))
+            if not alert.get("for"):
+                fail("{} needs a 'for' duration".format(where))
+
+    for (name, slo), alert in sorted(alerts.items()):
+        where = "alert {}".format(name)
+        ann = alert.get("annotations") or {}
+        for key in ("summary", "description", "runbook_url"):
+            if not (ann.get(key) or "").strip():
+                fail("{} ({}) needs the annotation {}".format(where, slo or "no slo", key))
+        if ann.get("runbook_url") and not SLO_RUNBOOK.match(ann["runbook_url"]):
+            fail("{} runbook_url must end in docs/runbooks/alerts.md#<anchor> (lower case, hyphens), it is {}".format(where, ann["runbook_url"]))
+        if (alert.get("labels") or {}).get("severity") not in ("page", "ticket"):
+            fail("{} needs severity page or ticket".format(where))
+        if not (alert.get("labels") or {}).get("service"):
+            fail("{} ({}) needs the label service, which the Alertmanager inhibitions and the grouping use".format(where, slo or "no slo"))
+        if not name.startswith("SLOBurnRate") and slo:
+            fail("{} has an slo label but is not a burn-rate alert".format(where))
+    anchors = {}
+    for (name, _slo), alert in alerts.items():
+        url = (alert.get("annotations") or {}).get("runbook_url") or ""
+        anchors.setdefault(name, set()).add(url)
+    for name, urls in sorted(anchors.items()):
+        if len(urls) > 1:
+            fail("alert {} has more than one runbook_url".format(name))
+    if len({next(iter(u)) for u in anchors.values() if len(u) == 1}) != len([u for u in anchors.values() if len(u) == 1]):
+        fail("two different alerts share a runbook anchor")
+
+    # What the expressions select.
+    for r in rules:
+        expr = r.get("expr") or ""
+        where = r.get("record") or r.get("alert")
+        for metric in sorted({n for n in metrics_in(expr) if not n.startswith("slo:") and n not in ("up", "vector")}):
+            if not confirmed(metric):
+                fail("{} uses the metric {}, which is not confirmed in any source (service code)".format(where, metric))
+        for le in re.findall(r'le="([^"]+)"', expr):
+            if le != "+Inf" and buckets and float(le) not in buckets:
+                fail("{} uses le=\"{}\", which is not a bucket boundary of the services' histogram ({})".format(where, le, ", ".join("{:g}".format(b) for b in sorted(buckets))))
+            if not buckets:
+                fail("{} uses le=\"{}\", but no histogram buckets were found in the sources".format(where, le))
+        if where and where.startswith("slo:sli_"):
+            for metric in ("http_requests_total", "http_request_duration_seconds_count", "http_request_duration_seconds_bucket"):
+                for body in _selectors(expr, metric):
+                    if 'service="gateway"' in body and not all(route in body for route in SLO_OPERATIONAL_ROUTES):
+                        fail("{} selects {} without leaving out the routes {}".format(where, metric, ", ".join(SLO_OPERATIONAL_ROUTES)))
+    for slo in slos:
+        if slo.endswith("availability"):
+            rule = recording.get(("slo:sli_error:ratio_rate5m", slo))
+            totals = _selectors(re.split(r"\n/\n", (rule or {}).get("expr", ""))[-1], "http_requests_total")
+            if rule and not any('status!~"4.."' in body for body in totals):
+                fail("{}: the valid events must leave out client errors (status!~\"4..\")".format(slo))
     return problems
 
 
@@ -1040,6 +1327,7 @@ def main(argv):
         "digest-pinned": check_digest_pinned,
         "loki": check_loki,
         "tempo": check_tempo,
+        "alertmanager": check_alertmanager,
         "grafana-datasources": check_grafana_datasources,
         "alloy": check_alloy,
     }
@@ -1047,6 +1335,8 @@ def main(argv):
         problems = per_chart[argv[1]](load_stdin(), argv[2])
     elif len(argv) >= 6 and argv[1] == "dashboards":
         problems = check_dashboards(load_stdin(), argv[2], argv[3], argv[4], argv[5:])
+    elif len(argv) >= 4 and argv[1] == "slo-rules":
+        problems = check_slo_rules(load_stdin(), argv[2], argv[3:])
     elif len(argv) == 4 and argv[1] == "crds":
         problems = check_crds(load_stdin(), argv[2], argv[3])
     elif len(argv) == 5 and argv[1] == "project-fit":

@@ -1,4 +1,4 @@
-# Everything the default profile must not render: a claim, a claim template, Prometheus storage, an Alertmanager,
+# Everything the default profile must not render: a claim, a claim template, Prometheus storage, Alertmanager storage,
 # an Ingress and a load balancer.
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -58,6 +58,12 @@ metadata:
   namespace: observability
 spec:
   replicas: 1
+  storage:
+    volumeClaimTemplate:
+      spec:
+        resources:
+          requests:
+            storage: 1Gi
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress

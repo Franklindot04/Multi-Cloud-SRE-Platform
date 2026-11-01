@@ -13,6 +13,13 @@ data:
       type: prometheus
       uid: prometheus
       url: http://prometheus:9090/
+    - name: Alertmanager
+      type: alertmanager
+      uid: alertmanager
+      url: http://alertmanager:9093/
+      jsonData:
+        handleGrafanaManagedAlerts: false
+        implementation: prometheus
     - name: Loki
       type: loki
       uid: loki
