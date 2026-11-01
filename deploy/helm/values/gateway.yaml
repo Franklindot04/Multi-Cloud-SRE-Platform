@@ -9,6 +9,16 @@ env:
   UPSTREAM_TIMEOUT_MS: "5000"
   READINESS_TIMEOUT_MS: "500"
   LOG_LEVEL: info
+  # Traces go to the OpenTelemetry Collector (platform/observability/otel-collector, Service otel-collector in the
+  # observability namespace, OTLP/gRPC on 4317). The http:// scheme means a plain connection, which is only right
+  # inside the cluster; use https:// for anything else. Set the endpoint to an empty string to turn tracing off. If the Collector is
+  # not installed the spans are dropped and the service logs one warning a minute.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.observability.svc.cluster.local:4317
+  OTEL_SERVICE_NAME: gateway
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=shop
+  # Follow the caller's decision, and sample every trace that starts here (traffic is low). Lower the ratio to sample less.
+  OTEL_TRACES_SAMPLER: parentbased_traceidratio
+  OTEL_TRACES_SAMPLER_ARG: "1.0"
 resources:
   requests:
     cpu: 20m

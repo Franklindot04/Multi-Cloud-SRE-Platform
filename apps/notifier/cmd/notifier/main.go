@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,12 +21,19 @@ import (
 const service = "notifier"
 
 func main() {
-	cfg, err := config.Load(platform.NewEnv())
+	env := platform.NewEnv()
+	cfg, err := config.Load(env)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid configuration:\n%v\n", err)
 		os.Exit(2)
 	}
 	log := platform.NewLogger(os.Stdout, service, cfg.LogLevel)
+
+	// Tracing is off unless OTEL_EXPORTER_OTLP_ENDPOINT is set, and a failure here never stops the service.
+	flushTracing, err := platform.InitTracing(context.Background(), env, service, cfg.Version, log)
+	if err != nil {
+		log.Warn("tracing is disabled", "error", err.Error())
+	}
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
@@ -60,7 +68,14 @@ func main() {
 		log.Warn("fault injection is ENABLED",
 			"latency_ms", cfg.Fault.LatencyMs, "error_rate", cfg.Fault.ErrorRate)
 	}
-	if err := platform.Run(":"+strconv.Itoa(cfg.Port), handler, drain, cfg.DrainPeriod, cfg.ShutdownTimeout, log, workers...); err != nil {
+	// Run returns after the consumer has finished its messages, so their spans are queued by now.
+	err = platform.Run(":"+strconv.Itoa(cfg.Port), handler, drain, cfg.DrainPeriod, cfg.ShutdownTimeout, log, workers...)
+	flushCtx, cancel := context.WithTimeout(context.Background(), platform.TracingFlushTimeout)
+	if ferr := flushTracing(flushCtx); ferr != nil {
+		log.Warn("could not flush traces", "error", ferr.Error())
+	}
+	cancel()
+	if err != nil {
 		log.Error("server failed", "error", err.Error())
 		os.Exit(1)
 	}

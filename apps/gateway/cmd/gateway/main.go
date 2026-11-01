@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,18 +19,25 @@ import (
 const service = "gateway"
 
 func main() {
-	cfg, err := config.Load(platform.NewEnv())
+	env := platform.NewEnv()
+	cfg, err := config.Load(env)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid configuration:\n%v\n", err)
 		os.Exit(2)
 	}
 	log := platform.NewLogger(os.Stdout, service, cfg.LogLevel)
 
+	// Tracing is off unless OTEL_EXPORTER_OTLP_ENDPOINT is set, and a failure here never stops the service.
+	flushTracing, err := platform.InitTracing(context.Background(), env, service, cfg.Version, log)
+	if err != nil {
+		log.Warn("tracing is disabled", "error", err.Error())
+	}
+
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	metrics := platform.NewMetrics(service, reg)
 
-	upstream := &http.Client{Timeout: cfg.UpstreamTimeout}
+	upstream := &http.Client{Timeout: cfg.UpstreamTimeout, Transport: platform.NewTracedTransport(nil, nil, nil)}
 	probe := &http.Client{Timeout: cfg.ReadinessTimeout}
 	drain := &platform.Drain{}
 
@@ -51,7 +59,13 @@ func main() {
 		log.Warn("fault injection is ENABLED",
 			"latency_ms", cfg.Fault.LatencyMs, "error_rate", cfg.Fault.ErrorRate)
 	}
-	if err := platform.Run(":"+strconv.Itoa(cfg.Port), handler, drain, cfg.DrainPeriod, cfg.ShutdownTimeout, log); err != nil {
+	err = platform.Run(":"+strconv.Itoa(cfg.Port), handler, drain, cfg.DrainPeriod, cfg.ShutdownTimeout, log)
+	flushCtx, cancel := context.WithTimeout(context.Background(), platform.TracingFlushTimeout)
+	if ferr := flushTracing(flushCtx); ferr != nil {
+		log.Warn("could not flush traces", "error", ferr.Error())
+	}
+	cancel()
+	if err != nil {
 		log.Error("server failed", "error", err.Error())
 		os.Exit(1)
 	}

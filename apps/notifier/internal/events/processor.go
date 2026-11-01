@@ -6,7 +6,10 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier/internal/notifications"
+	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier/internal/platform"
 )
 
 // Disposition is what to do with a message after handling it.
@@ -41,7 +44,11 @@ type Processor struct {
 // Handle processes one delivery and says what to do with it. It never returns an error: a failure is a
 // retry or a dead letter, with the reason.
 func (p *Processor) Handle(ctx context.Context, d Delivery) (Disposition, string) {
-	base := p.Log.With("request_id", d.RequestID, "traceparent", d.Trace)
+	fields := []any{"request_id", d.RequestID}
+	if id := platform.LogTraceID(ctx, d.Trace); id != "" {
+		fields = append(fields, "trace_id", id) // same name and format as the request log lines
+	}
+	base := p.Log.With(append(fields, "traceparent", d.Trace)...)
 
 	ev, err := Parse(d.Body)
 	if err != nil {
@@ -83,7 +90,14 @@ func (p *Processor) Handle(ctx context.Context, d Delivery) (Disposition, string
 
 // record stores the notification. The notification ID is the event ID, so recording the same event
 // twice (after a restart forgot the dedupe set) overwrites instead of duplicating.
-func (p *Processor) record(ctx context.Context, ev Event) error {
+func (p *Processor) record(ctx context.Context, ev Event) (err error) {
+	ctx, span := startInternal(ctx, "record notification", attribute.String("notifier.event_type", ev.Type))
+	defer func() {
+		if err != nil {
+			fail(span, err, "record failed")
+		}
+		span.End()
+	}()
 	now := time.Now
 	if p.Now != nil {
 		now = p.Now
