@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/gateway/internal/platform"
 )
@@ -249,5 +252,88 @@ func TestRequestContextCancellationStopsUpstreamCall(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("cancelling the client request should stop the upstream call")
+	}
+}
+
+func TestGatewayCallsAreTracedWithAClientSpanUnderTheServerSpan(t *testing.T) {
+	var got seen
+	orders := upstream(t, http.StatusOK, `{"orders":[]}`, &got)
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp, err := platform.NewTracerProvider(context.Background(), "gateway", "1.2.3", sdktrace.WithSyncer(exporter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	prop := platform.Propagator()
+
+	mux := http.NewServeMux()
+	reg := prometheus.NewRegistry()
+	(&Gateway{
+		OrdersURL: orders.URL, PaymentsURL: orders.URL,
+		Client: &http.Client{Timeout: time.Second, Transport: platform.NewTracedTransport(nil, tp, prop)},
+	}).Register(mux)
+	h := platform.Wrap(mux, platform.Options{
+		Service: "gateway", Logger: platform.NewLogger(&bytes.Buffer{}, "gateway", "info"),
+		Metrics: platform.NewMetrics("gateway", reg), MaxBody: 1024, TracerProvider: tp, Propagators: prop,
+	})
+
+	rec := call(h, "GET", "/api/orders/abc-123", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+
+	var server, client tracetest.SpanStub
+	spans := exporter.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("expected a server span and a client span, got %d spans", len(spans))
+	}
+	for _, s := range spans {
+		switch s.SpanKind {
+		case trace.SpanKindServer:
+			server = s
+		case trace.SpanKindClient:
+			client = s
+		}
+	}
+	if server.Name != "GET /api/orders/{id}" {
+		t.Errorf("server span name %q", server.Name)
+	}
+	if client.Parent.SpanID() != server.SpanContext.SpanID() || client.SpanContext.TraceID() != server.SpanContext.TraceID() {
+		t.Fatalf("the client span is not a child of the server span: parent %s, server %s", client.Parent.SpanID(), server.SpanContext.SpanID())
+	}
+	if strings.Contains(client.Name, "abc-123") {
+		t.Errorf("the client span name must not contain the path: %q", client.Name)
+	}
+
+	// The header that left the gateway names the trace and the client span.
+	want := "00-" + server.SpanContext.TraceID().String() + "-" + client.SpanContext.SpanID().String() + "-01"
+	got.mu.Lock()
+	defer got.mu.Unlock()
+	if tp := got.headers.Get("traceparent"); tp != want {
+		t.Fatalf("traceparent sent to orders = %q, want %q", tp, want)
+	}
+}
+
+func TestGatewayHealthChecksCreateNoSpans(t *testing.T) {
+	var got seen
+	orders := upstream(t, http.StatusOK, `{}`, &got)
+	exporter := tracetest.NewInMemoryExporter()
+	tp, _ := platform.NewTracerProvider(context.Background(), "gateway", "1", sdktrace.WithSyncer(exporter))
+	reg := prometheus.NewRegistry()
+	mux := http.NewServeMux()
+	probe := &http.Client{Timeout: time.Second}
+	platform.RegisterOps(mux, &platform.Drain{}, reg, time.Second, platform.HTTPCheck("orders", orders.URL, probe, true))
+	h := platform.Wrap(mux, platform.Options{
+		Service: "gateway", Logger: platform.NewLogger(&bytes.Buffer{}, "gateway", "info"),
+		Metrics: platform.NewMetrics("gateway", reg), TracerProvider: tp, Propagators: platform.Propagator(),
+	})
+	for _, p := range []string{"/healthz", "/readyz", "/metrics"} {
+		if rec := call(h, "GET", p, "", nil); rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d", p, rec.Code)
+		}
+	}
+	if n := len(exporter.GetSpans()); n != 0 {
+		t.Fatalf("expected no spans, got %d", n)
 	}
 }

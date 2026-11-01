@@ -67,12 +67,43 @@ Images are pinned to specific version tags. CI builds `linux/amd64` images and p
 - **Contract:** [`docs/api`](../docs/api) holds one OpenAPI file per service. Errors always use `{"error": {"code", "message", "request_id"}}`.
 - **Endpoints:** `/healthz` (alive, process only), `/readyz` (ready; the gateway checks orders and payments; orders requires payments and, with PostgreSQL, the database, and reports the notifier, Valkey and RabbitMQ as degraded when they are down; payments requires its database; the notifier requires RabbitMQ when it consumes from it), `/metrics` (Prometheus).
 - **Metrics:** `http_requests_total{service,method,route,status}`, `http_request_duration_seconds{service,method,route}` (buckets 0.005 to 10 seconds) and `http_requests_in_flight{service}`. The `route` label is the route template (for example `/orders/{order_id}`), never the raw path, and unmatched requests share the value `unmatched`.
-- **Logs:** one JSON object per line on stdout with `timestamp`, `level`, `message`, `service`, `request_id`, `trace_id`, `method`, `route`, `status` and `duration_ms`. A request ID is generated when `X-Request-Id` is missing or invalid. `X-Request-Id` and the W3C `traceparent` header (same trace, new span) are sent on every outbound call. OpenTelemetry instrumentation comes later.
+- **Logs:** one JSON object per line on stdout with `timestamp`, `level`, `message`, `service`, `request_id`, `trace_id`, `method`, `route`, `status` and `duration_ms`. A request ID is generated when `X-Request-Id` is missing or invalid. `X-Request-Id` and the W3C `traceparent` header (same trace, new span) are sent on every outbound call. In the gateway and the notifier `trace_id` is the trace ID of the active span when tracing is on (see [Tracing](#tracing-gateway-and-notifier)); in orders and payments it is still the ID from the `traceparent` header.
 - **Resilience:** explicit timeouts on every outbound call, bounded request bodies (default 1 MiB), graceful shutdown on SIGTERM (fail `/readyz`, wait the drain period, then stop accepting and finish in-flight requests).
 - **Configuration:** environment variables only, validated at startup with every problem reported together; a bad configuration exits with status 2. No config files. Secrets are read from `<NAME>` or `<NAME>_FILE` (a mounted secret), never from the repository, and are never logged.
 - **Data layer series** (same names in every service that has the component): `db_pool_connections{state}`, `db_query_duration_seconds{operation}`, `cache_requests_total{result}`, `outbox_unpublished_events`, `outbox_oldest_unpublished_age_seconds`, `messages_published_total{result}`, `messages_consumed_total{result}` and `dead_letter_messages_total`. Label values are small fixed sets; the service READMEs list them. The request ID and `traceparent` appear in database-layer log lines and travel as message headers.
 - **Fault injection** (off by default): `FAULT_INJECTION_ENABLED`, `FAULT_LATENCY_MS`, `FAULT_ERROR_RATE`. It never touches `/healthz`, `/readyz`, `/metrics` or `/version`, and a startup log line says when it is on.
 - **Containers:** multi-stage builds, non-root numeric user, read-only root filesystem compatible (payments needs a writable `/tmp`), no `HEALTHCHECK` (Kubernetes uses the probes).
+
+## Tracing (gateway and notifier)
+
+The two Go services send traces to the OpenTelemetry Collector over OTLP/gRPC. Orders and payments do not yet: they only pass the `traceparent` header on. **Tracing is off unless an endpoint is set**, so local runs, tests and CI need no Collector. The SDK reads the standard `OTEL_*` variables and nothing else is needed:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (off) | Collector address, for example `http://otel-collector.observability.svc.cluster.local:4317`. `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` also turns it on |
+| `OTEL_SERVICE_NAME` | the service name | Value of `service.name` |
+| `OTEL_RESOURCE_ATTRIBUTES` | unset | Extra resource attributes, for example `service.namespace=shop` |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | parent-based, everything | For example `parentbased_traceidratio` with `0.1` to sample one trace in ten; a trace the caller sampled is always kept |
+| `OTEL_SDK_DISABLED`, `OTEL_TRACES_EXPORTER` | unset | `true` or `none` turn tracing off even when an endpoint is set |
+| `OTEL_EXPORTER_OTLP_INSECURE`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_BSP_*` and the other exporter and batch settings | SDK defaults | Read by the SDK |
+
+The connection is plain (no TLS) when the endpoint starts with `http://`, which is meant for a Collector inside the cluster, and uses TLS when it starts with `https://`. `deploy/helm/values/gateway.yaml` and `notifier.yaml` set these variables for the cluster. Resource attributes are `service.name`, `service.version` (from `APP_VERSION`) and, from `OTEL_RESOURCE_ATTRIBUTES`, `service.namespace`.
+
+Spans are batched and exported in the background. A Collector that is missing or slow costs the spans and one warning line a minute in the service log; it never fails a request and it does not delay startup. On shutdown the services wait up to 5 seconds for the queued spans.
+
+| Service | Span name | Kind | Notes |
+| --- | --- | --- | --- |
+| gateway, notifier | `GET /api/orders/{id}` (method and route template) | server | One for every request except `/healthz`, `/readyz` and `/metrics`. Continues the trace of an incoming `traceparent`. Attributes are the standard HTTP ones plus `http.route`; a 5xx response or a recovered panic sets the status to error. A request that matches no route is named `GET unmatched` |
+| gateway | `GET orders:8081` (method and host) | client | One for each call to orders or payments, with the standard HTTP client attributes; its context goes out in `traceparent` |
+| notifier | `notifier.orders process` | consumer | One for each RabbitMQ message. A child of the trace context in the message headers (`traceparent`, `tracestate`), or a new trace when there is none. Attributes: `messaging.system`, `messaging.operation.type`, `messaging.destination.name`, `messaging.rabbitmq.destination.routing_key`, `messaging.message.body.size` |
+| notifier | `record notification` | internal | Child of the consumer span, around storing the notification; attribute `notifier.event_type` |
+| notifier | `notifier.orders.retry publish` or `platform.events.dlx publish` | producer | When a message is sent to the retry queue or the dead-letter queue. The new trace context is written into the message headers |
+
+A failed span has the status error and the error recorded as an event, with a short reason as the description.
+
+**Privacy.** The HTTP server and client spans carry the standard URL and client attributes, so order ids in paths, any query string and the client address end up in span attributes; keep personal data out of URLs. Message bodies and message headers are never recorded as attributes. Tempo keeps traces for 24 hours on an `emptyDir`, so they are also lost when its pod restarts.
+
+Log lines written while the notifier handles a message carry the same `trace_id` field as the request lines: the consumer span's trace ID, or the one in the message's `traceparent` header when tracing is off, and no field when neither exists.
 
 ## Working with the code
 
@@ -93,4 +124,4 @@ See the [local development runbook](../docs/runbooks/local-development.md). CI (
 
 ## Not in this change
 
-Digest-pinned base images; network policies, autoscaling and progressive delivery; backups of the data layer; OpenTelemetry instrumentation; authentication.
+Digest-pinned base images; network policies, autoscaling and progressive delivery; backups of the data layer; OpenTelemetry instrumentation of orders and payments; authentication.

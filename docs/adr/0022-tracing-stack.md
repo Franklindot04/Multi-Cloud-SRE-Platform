@@ -5,9 +5,9 @@
 
 ## Context
 
-[ADR-0020](0020-metrics-stack.md) put an OpenTelemetry Collector on the cluster that accepted traces and dropped them, because no trace backend existed. [ADR-0021](0021-logging-stack.md) put the logs of the services in Loki. The services already carry a trace through their own code: each one reads the W3C `traceparent` header of a request, keeps the trace ID, sends a new `traceparent` on its calls to the other services and writes the trace ID into every request log line as `"trace_id":"<32 hex digits>"` ([`apps/README.md`](../../apps/README.md)). None of them uses an OpenTelemetry SDK, so none of them sends a span anywhere.
+[ADR-0020](0020-metrics-stack.md) put an OpenTelemetry Collector on the cluster that accepted traces and dropped them, because no trace backend existed. [ADR-0021](0021-logging-stack.md) put the logs of the services in Loki. The services already carry a trace through their own code: each one reads the W3C `traceparent` header of a request, keeps the trace ID, sends a new `traceparent` on its calls to the other services and writes the trace ID into every request log line as `"trace_id":"<32 hex digits>"` ([`apps/README.md`](../../apps/README.md)). The gateway and the notifier now also use the OpenTelemetry SDK and send their spans to the collector (see [Services that send traces](#services-that-send-traces)); orders and payments do not yet, so they send no span.
 
-This decision adds the place the spans will go, and the links between that place and the logs, before the services are instrumented, so that instrumenting them is the only step left. The constraints are those of the other two stacks: a couple of small Spot nodes shared with everything else, Argo CD deploying from this repository behind the cluster label `platform.example/observability` (off by default), the `restricted` Pod Security level in the `observability` namespace, nothing exposed outside the cluster, no credential in Git, and what could not be run has to be said.
+This decision adds the place the spans go, and the links between that place and the logs. The two Go services were instrumented afterwards, in a separate change. The constraints are those of the other two stacks: a couple of small Spot nodes shared with everything else, Argo CD deploying from this repository behind the cluster label `platform.example/observability` (off by default), the `restricted` Pod Security level in the `observability` namespace, nothing exposed outside the cluster, no credential in Git, and what could not be run has to be said.
 
 ## Decision
 
@@ -23,7 +23,7 @@ Storage: Tempo
 
 The path
 
-- **service, then Collector, then Tempo.** The services will send OTLP to `otel-collector.observability.svc` (4317 or 4318). The collector's traces pipeline is `otlp` receiver, `memory_limiter`, `batch`, and an `otlp/tempo` exporter to `tempo.observability.svc.cluster.local:4317` over gRPC without TLS, because the traffic does not leave the cluster and nothing in this profile issues certificates for it. The exporter has a small queue (100 batches) and retries for 60 seconds, so a Tempo that is away for a short time loses nothing and one that is away for longer loses the traces of that time, not the collector's memory. The metrics pipeline is unchanged.
+- **service, then Collector, then Tempo.** The services send OTLP to `otel-collector.observability.svc` (4317 or 4318); the gateway and the notifier use gRPC on 4317. The collector's traces pipeline is `otlp` receiver, `memory_limiter`, `batch`, and an `otlp/tempo` exporter to `tempo.observability.svc.cluster.local:4317` over gRPC without TLS, because the traffic does not leave the cluster and nothing in this profile issues certificates for it. The exporter has a small queue (100 batches) and retries for 60 seconds, so a Tempo that is away for a short time loses nothing and one that is away for longer loses the traces of that time, not the collector's memory. The metrics pipeline is unchanged.
 - **The `debug` exporter** that used to be the traces exporter is still defined in the configuration and no pipeline uses it. Add it to the traces pipeline to see in the collector's log that traces arrive.
 
 Correlation with logs
@@ -69,9 +69,19 @@ None of this is meant to be left as it is for a production cluster:
 - **TLS and authentication** between the collector and Tempo, and network policies on the namespace.
 - **The metrics generator**, with a remote-write endpoint, when service graphs or span metrics are wanted; the data source then turns the service map on.
 
+## Services that send traces
+
+The gateway and the notifier create spans with the OpenTelemetry Go SDK and export them to the collector over OTLP/gRPC.
+
+- **Off unless an endpoint is set.** The services read the standard `OTEL_*` variables; without `OTEL_EXPORTER_OTLP_ENDPOINT` no exporter is created, so local runs, tests and CI need no collector. `deploy/helm/values/gateway.yaml` and `notifier.yaml` set the endpoint to `http://otel-collector.observability.svc.cluster.local:4317` (the Service of the collector chart, in the `observability` namespace), a parent-based sampler with ratio 1.0 and `service.namespace=shop`. The `http://` scheme means a plain connection, which is acceptable inside the cluster only.
+- **A missing collector costs spans, not requests.** Export runs in the background with a bounded queue, startup does not wait for a connection, and shutdown waits at most 5 seconds. A cluster without the observability stack gets the endpoint all the same, and the services log one warning a minute.
+- **Spans.** A server span for each request except the probes and `/metrics`, named by method and route template; a client span for each call from the gateway to orders and payments; in the notifier a consumer span for each RabbitMQ message, a child of the `traceparent` in the message headers, and spans for recording the notification and for sending a message to the retry or dead-letter queue. The list is in [`apps/README.md`](../../apps/README.md#tracing-gateway-and-notifier).
+- **Logs.** `trace_id` in the request log line is the trace ID of the server span, in the same format as before, so the derived field and the Tempo links keep working. When tracing is off it is the ID from the `traceparent` header, as it was.
+- **Not recorded:** message bodies, message headers and customer data are not attributes. The standard HTTP attributes include the path and query.
+
 ## What this does not cover
 
-- **No service sends traces.** None of the services uses an OpenTelemetry SDK or reads an `OTEL_*` setting, so no endpoint was added to `deploy/helm`. The collector and Tempo are ready for the day they do; until then Tempo is empty and the Tempo data source has nothing to show.
+- **Orders and payments send no traces.** Only the gateway and the notifier use an OpenTelemetry SDK. A trace that enters at the gateway therefore has spans for the gateway (server span, and a client span for the call to orders) and, once orders injects trace context into its messages, the notifier; it stops at orders and payments, which only pass the `traceparent` header on. Until the Python and Java services are instrumented, a trace has no spans for them.
 - **No traces in Grafana.** Nothing was seen in Grafana: the data source, the derived field and the trace-to-logs link have been checked as configuration and not clicked.
 - **No sampling, no tail-based processing, no span metrics, no service graph.**
 - **No trace-based alerts**, no exemplars from metrics to traces, no ingress and no authentication in front of Tempo.
@@ -87,7 +97,7 @@ Not exercised, because it needs a cluster or a service that sends traces:
 
 - Tempo starting under `restricted` in the namespace, and its target showing as up in Prometheus;
 - Grafana loading the Tempo data source and the changed Loki data source, `Save & test` succeeding, the `Trace` link appearing on a log line and the trace-to-logs link finding the lines;
-- a trace from a service: none sends one;
+- a trace from a service on a cluster: the gateway and the notifier send traces in unit tests with an in-memory exporter, and have not been run against the collector, Tempo or RabbitMQ in this change; the orders service does not yet put trace context in its messages, so a notifier span is a new trace until it does;
 - the sync order of waves 11 and 12, and the collector's behaviour while Tempo is not yet ready;
 - what happens to traces across a restart of Tempo or the collector;
 - the teardown with Tempo deployed;

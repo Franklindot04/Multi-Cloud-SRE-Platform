@@ -52,6 +52,7 @@ The handler is idempotent on the event ID: the notification is stored under the 
 | `MAX_NOTIFICATIONS` | `100000` | Notifications kept in memory |
 | `MAX_BODY_BYTES` | `1048576` | Largest accepted request body |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Turns tracing on; see [Tracing](../README.md#tracing-gateway-and-notifier) for this and the other `OTEL_*` settings |
 | `SHUTDOWN_DRAIN_SECONDS` | `5` | Time `/readyz` fails before the listener stops |
 | `SHUTDOWN_TIMEOUT_SECONDS` | `20` | Time allowed for in-flight requests to finish |
 | `FAULT_INJECTION_ENABLED` | `false` | Turn on fault injection |
@@ -69,7 +70,7 @@ The handler is idempotent on the event ID: the notification is stored under the 
 | `consumer_queue_messages` | `queue` = `main`, `retry`, `dead_letter` | Messages waiting, sampled every 10 s |
 | `amqp_connected` | none | 1 while a broker connection works |
 
-Log lines for an event carry `event_id`, `request_id` and `traceparent` from the message headers.
+Log lines for an event carry `event_id`, `request_id` and `traceparent` from the message headers. The consumer also starts a span for each message as a child of that `traceparent`, when tracing is on.
 
 ## Development
 

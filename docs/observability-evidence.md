@@ -86,7 +86,7 @@ Explore with the Loki data source and the query `{namespace="shop"} | level="inf
 
 **Known limits.**
 
-- The services are not instrumented with an OpenTelemetry SDK, so the OpenTelemetry Collector receives nothing and there are no traces. The services only write a `trace_id` into their log lines.
+- At the time of these sessions the services were not instrumented with an OpenTelemetry SDK, so the OpenTelemetry Collector received nothing and there were no traces. The services only wrote a `trace_id` into their log lines.
 - There is no ingress. Everything on this page was viewed through `kubectl port-forward`.
 - Storage is `emptyDir`, so metrics and logs do not survive a pod restart.
 - There are no alert rules and no Alertmanager.

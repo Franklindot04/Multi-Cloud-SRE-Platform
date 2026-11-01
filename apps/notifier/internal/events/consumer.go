@@ -11,6 +11,8 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier/internal/config"
 	"github.com/Franklindot04/Multi-Cloud-SRE-Platform/apps/notifier/internal/platform"
@@ -32,7 +34,16 @@ type Consumer struct {
 	Proc   *Processor
 	Log    *slog.Logger
 
+	// TracerProvider and Propagators are used for the span of each message. Nil means the global ones, which are
+	// no-ops until platform.InitTracing has run.
+	TracerProvider trace.TracerProvider
+	Propagators    propagation.TextMapPropagator
+
 	connected atomic.Bool
+}
+
+func (c *Consumer) tracing() tracing {
+	return tracing{provider: c.TracerProvider, propagators: c.Propagators}
 }
 
 // Ready reports whether the consumer has a working broker connection.
@@ -177,6 +188,8 @@ func (c *Consumer) session(ctx context.Context) error {
 func (c *Consumer) handle(pub *amqp.Channel, d amqp.Delivery) {
 	ctx, cancel := context.WithTimeout(context.Background(), handleTimeout)
 	defer cancel()
+	ctx, span := c.tracing().startConsume(ctx, d)
+	defer span.End()
 
 	attempts := headerInt(d.Headers, "x-attempts")
 	disp, reason := c.Proc.Handle(ctx, Delivery{
@@ -187,12 +200,16 @@ func (c *Consumer) handle(pub *amqp.Channel, d amqp.Delivery) {
 		Attempts:  attempts,
 	})
 
+	if disp != Ack {
+		fail(span, errors.New(reason), "message not processed")
+	}
+
 	m := c.Proc.Metrics
 	switch disp {
 	case Ack:
 		_ = d.Ack(false)
 	case Retry:
-		if err := republish(ctx, pub, "", RetryQueue, d, attempts+1, reason); err != nil {
+		if err := c.republish(ctx, pub, "", RetryQueue, d, attempts+1, reason); err != nil {
 			// Could not hand the message on: put it back on the queue rather than lose it.
 			c.Log.Error("could not schedule a retry; requeueing", "error", err.Error())
 			m.Consumed.WithLabelValues(ResultError).Inc()
@@ -202,7 +219,7 @@ func (c *Consumer) handle(pub *amqp.Channel, d amqp.Delivery) {
 		m.Consumed.WithLabelValues(ResultRetry).Inc()
 		_ = d.Ack(false)
 	case DeadLetter:
-		if err := republish(ctx, pub, DLX, Queue, d, attempts+1, reason); err != nil {
+		if err := c.republish(ctx, pub, DLX, Queue, d, attempts+1, reason); err != nil {
 			c.Log.Error("could not dead-letter; requeueing", "error", err.Error())
 			m.Consumed.WithLabelValues(ResultError).Inc()
 			_ = d.Nack(false, true)
@@ -216,7 +233,7 @@ func (c *Consumer) handle(pub *amqp.Channel, d amqp.Delivery) {
 
 // republish copies d to another exchange and waits for the broker to confirm it, so the original is only
 // acknowledged once the copy is safe. The failure reason and attempt count travel in headers.
-func republish(ctx context.Context, pub *amqp.Channel, exchange, key string, d amqp.Delivery, attempts int, reason string) error {
+func (c *Consumer) republish(ctx context.Context, pub *amqp.Channel, exchange, key string, d amqp.Delivery, attempts int, reason string) (err error) {
 	headers := amqp.Table{}
 	for k, v := range d.Headers {
 		headers[k] = v
@@ -226,6 +243,13 @@ func republish(ctx context.Context, pub *amqp.Channel, exchange, key string, d a
 	headers["x-original-routing-key"] = d.RoutingKey
 	headers["x-failed-at"] = time.Now().UTC().Format(time.RFC3339)
 
+	ctx, span := c.tracing().startPublish(ctx, exchange, key, headers)
+	defer func() {
+		if err != nil {
+			fail(span, err, "publish failed")
+		}
+		span.End()
+	}()
 	cctx, cancel := context.WithTimeout(ctx, confirmTimeout)
 	defer cancel()
 	conf, err := pub.PublishWithDeferredConfirmWithContext(cctx, exchange, key, true, false, amqp.Publishing{

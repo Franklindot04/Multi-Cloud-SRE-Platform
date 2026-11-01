@@ -27,6 +27,7 @@ Status codes and bodies from the upstream services are relayed unchanged. Only `
 | `MAX_BODY_BYTES` | `1048576` | Largest accepted request body |
 | `APP_VERSION`, `APP_COMMIT` | `dev`, `unknown` | Reported by `/version` (set at image build time) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Turns tracing on; see [Tracing](../README.md#tracing-gateway-and-notifier) for this and the other `OTEL_*` settings |
 | `SHUTDOWN_DRAIN_SECONDS` | `5` | Time `/readyz` fails before the listener stops |
 | `SHUTDOWN_TIMEOUT_SECONDS` | `20` | Time allowed for in-flight requests to finish |
 | `FAULT_INJECTION_ENABLED` | `false` | Turn on fault injection |
