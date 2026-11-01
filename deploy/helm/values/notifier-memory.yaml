@@ -2,3 +2,5 @@
 # Memory profile: only the HTTP endpoint; orders calls it directly.
 env:
   MESSAGING: http
+networkPolicy:
+  ingressFrom: [orders]

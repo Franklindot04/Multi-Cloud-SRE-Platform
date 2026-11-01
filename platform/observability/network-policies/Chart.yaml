@@ -1,0 +1,7 @@
+apiVersion: v2
+name: observability-network-policies
+description: Default-deny network policies for the observability namespace, with the allow rules the stack needs
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws"

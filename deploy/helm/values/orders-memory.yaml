@@ -6,3 +6,6 @@ env:
   STORAGE: memory
   CACHE: none
   MESSAGING: http
+# Without RabbitMQ the orders service tells the notifier over HTTP.
+networkPolicy:
+  egressTo: [payments, notifier]

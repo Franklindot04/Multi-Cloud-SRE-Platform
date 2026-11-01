@@ -111,6 +111,63 @@ metrics:
     # Labels the Prometheus instance selects ServiceMonitors by.
     labels: {}
 
+# Network policies for the pods of this release, enforced by the cluster's network plugin (the VPC CNI on EKS, Dataplane V2
+# on GKE). Each release denies all ingress and egress for its own pods and then allows what the service really does, so
+# a service gets only the paths listed here. The services need nothing from the Kubernetes API (no token is mounted).
+# Each service lists its callers and destinations in values/<service>.yaml and in its profile file.
+networkPolicy:
+  enabled: true
+  # Services in this namespace that may call this one, and that this one calls. Names from "services" below.
+  ingressFrom: []
+  egressTo: []
+  # Destinations in the data namespace this service uses: any of postgres, valkey, rabbitmq (see "dataTargets").
+  egressToData: []
+  # OTLP/gRPC to the OpenTelemetry Collector. Turn off together with OTEL_EXPORTER_OTLP_ENDPOINT.
+  collector: true
+  # Where traffic from a load balancer comes from, normally the VPC CIDR. Needed (and required) when the ingress is
+  # enabled, because the load balancer sends traffic straight to the pod IPs. Never set from Git: Argo CD passes it
+  # from the cluster.
+  ingressCidrs: []
+  # DNS: the pods of the cluster DNS service.
+  dns:
+    namespace: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  # Prometheus scrapes the metrics port (the service port) of every service from here.
+  prometheus:
+    namespace: observability
+    podLabels:
+      app.kubernetes.io/name: prometheus
+      operator.prometheus.io/name: kube-prometheus-stack-prometheus
+  collectorTarget:
+    namespace: observability
+    podLabels:
+      app.kubernetes.io/name: otel-collector
+    port: 4317
+  # The port of each service in this namespace (the service port of its values file).
+  services:
+    gateway: 8080
+    orders: 8081
+    payments: 8082
+    notifier: 8083
+  # Pods and ports of the data layer (platform/data), in the data namespace.
+  dataNamespace: data
+  dataTargets:
+    postgres:
+      podLabels:
+        cnpg.io/cluster: platform-pg
+        cnpg.io/podRole: instance
+      port: 5432
+    valkey:
+      podLabels:
+        app.kubernetes.io/name: valkey
+      port: 6379
+    rabbitmq:
+      podLabels:
+        app.kubernetes.io/name: platform-mq
+        app.kubernetes.io/component: rabbitmq
+      port: 5672
+
 # A one-shot Job that runs before the Deployment is updated (an Argo CD PreSync hook). It gets its own
 # environment: only what the migration needs, not the whole service configuration.
 migration:

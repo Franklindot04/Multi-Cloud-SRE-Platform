@@ -14,7 +14,10 @@
 #      values, no :latest images. A failure names the offending resource.
 #   4. the image values file has a registry and a tag, and (scripts/chart-contract-check.py, run on every render)
 #      no Job that creates Secrets is a Helm hook and the credential copy chart is not hooks only
-#   5. yamllint on the non-template files, and shellcheck through scripts/shellcheck.sh
+#   5. network policies (scripts/chart-contract-check.py network-policies): every pod of every service render is covered by a
+#      default deny for ingress and egress, the allows are applied before the deny, nothing is open to a whole range, and
+#      an enabled ingress needs the load balancer's source range
+#   6. yamllint on the non-template files, and shellcheck through scripts/shellcheck.sh
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
 #
@@ -120,6 +123,7 @@ else
         label="$svc/$profile/$cloud"
         if helm template "$svc" "$chart" --namespace shop "${args[@]}" > "$work/render.yaml" 2> "$work/render.err"; then
           validate "$label" "$cloud" "$work/render.yaml"
+          [ -z "$py" ] || "$py" scripts/chart-contract-check.py network-policies "$label" < "$work/render.yaml" || status=1
         else
           echo "    FAIL [$label] helm template"
           cat "$work/render.err"
@@ -136,8 +140,14 @@ else
         -f "$values/images.yaml" -f "$values/gateway.yaml" -f "$values/gateway-data.yaml" -f "$values/cloud-$cloud.yaml" \
         --set ingress.enabled=true --set ingress.scheme="$scheme" --set ingress.host=shop.example.test \
         --set certificate.enabled=true --set metrics.serviceMonitor.enabled=true --set metrics.scrapeAnnotations=true \
+        --set 'networkPolicy.ingressCidrs[0]=192.0.2.0/24' \
         > "$work/render.yaml" 2> "$work/render.err"; then
         validate "$label" "$cloud" "$work/render.yaml"
+        [ -z "$py" ] || "$py" scripts/chart-contract-check.py network-policies "$label" < "$work/render.yaml" || status=1
+        if ! grep -q 'name: gateway-allow-load-balancer' "$work/render.yaml"; then
+          echo "    FAIL [$label] the enabled ingress has no network policy for the load balancer"
+          status=1
+        fi
         # The ingress must not make the Service itself reachable from outside.
         if grep -Eq 'type: (LoadBalancer|NodePort)' "$work/render.yaml"; then
           echo "    FAIL [$label] a Service is exposed"
@@ -169,6 +179,12 @@ else
   # The ingress must refuse to render without a cloud, and the chart must not render a Secret.
   if helm template gateway "$chart" -f "$values/gateway.yaml" --set ingress.enabled=true > /dev/null 2>&1; then
     echo "    FAIL the ingress rendered without ingress.cloud"
+    status=1
+  fi
+
+  # With the ingress on, the load balancer's source range is required: without it the default deny would drop the traffic.
+  if helm template gateway "$chart" -f "$values/gateway.yaml" -f "$values/cloud-aws.yaml" --set ingress.enabled=true --set ingress.host=shop.example.test > /dev/null 2>&1; then
+    echo "    FAIL the ingress rendered without networkPolicy.ingressCidrs"
     status=1
   fi
 

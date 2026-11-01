@@ -1,0 +1,125 @@
+---
+# Network policies for the observability namespace: Prometheus Operator, Prometheus, Alertmanager, Grafana,
+# kube-state-metrics, the OpenTelemetry Collector, Loki, Alloy and Tempo.
+
+# Turn the policies off (nothing is rendered, and Argo CD prunes what it created). The way back if a policy blocks something that
+# must work; see docs/runbooks/network-policies.md.
+enabled: true
+
+namespace: observability
+
+# The address range of the VPC, for the two things that cannot be named by a pod selector: the Kubernetes API server (a set
+# of network interfaces owned by the cluster, in the VPC subnets) and the kubelets (node addresses). Argo CD passes it from
+# the cluster annotation platform.example/vpc-cidr, which scripts/bootstrap-argocd.sh writes from the Terraform output
+# vpc_cidr_block. It is never committed, and the chart refuses to render without it.
+vpcCidr: ""
+
+dns:
+  namespace: kube-system
+  podLabels:
+    k8s-app: kube-dns
+
+# The pods, by the labels the charts really put on them (see the Services in the rendered charts).
+pods:
+  prometheus:
+    app.kubernetes.io/name: prometheus
+    operator.prometheus.io/name: kube-prometheus-stack-prometheus
+  alertmanager:
+    app.kubernetes.io/name: alertmanager
+    alertmanager: kube-prometheus-stack-alertmanager
+  operator:
+    app: kube-prometheus-stack-operator
+  grafana:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/instance: kube-prometheus-stack
+  kube-state-metrics:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/instance: kube-prometheus-stack
+  collector:
+    app.kubernetes.io/name: otel-collector
+  loki:
+    app.kubernetes.io/name: loki
+  alloy:
+    app.kubernetes.io/name: alloy
+  tempo:
+    app.kubernetes.io/name: tempo
+
+# Pods that call the Kubernetes API and so get TCP 443 to the VPC range, each on its own and not the whole namespace:
+# the Prometheus Operator, Prometheus (service discovery, and the API server itself is scraped), kube-state-metrics, the
+# Grafana sidecars (they watch ConfigMaps), Alloy (it reads pod logs through the API) and the Job that makes the Grafana
+# admin Secret.
+apiAccess:
+  - name: prometheus-operator
+    matchLabels:
+      app: kube-prometheus-stack-operator
+  - name: prometheus
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+      operator.prometheus.io/name: kube-prometheus-stack-prometheus
+  - name: kube-state-metrics
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+      app.kubernetes.io/instance: kube-prometheus-stack
+  - name: grafana
+    matchLabels:
+      app.kubernetes.io/name: grafana
+      app.kubernetes.io/instance: kube-prometheus-stack
+  - name: alloy
+    matchLabels:
+      app.kubernetes.io/name: alloy
+  - name: secrets-job
+    matchLabels:
+      batch.kubernetes.io/job-name: observability-secrets-generator
+
+# Traffic inside the namespace. Each entry allows the pod "from" to open connections to the pod "to" on the ports, and
+# renders both halves: an egress policy on "from" and an ingress policy on "to".
+flows:
+  # Prometheus scrapes the stack (Alertmanager's 9093 is also where it sends alerts) ...
+  - {from: prometheus, to: grafana, ports: [3000]}
+  - {from: prometheus, to: kube-state-metrics, ports: [8080]}
+  - {from: prometheus, to: alertmanager, ports: [9093, 8080]}
+  - {from: prometheus, to: operator, ports: [8080]}
+  - {from: prometheus, to: loki, ports: [3100]}
+  - {from: prometheus, to: alloy, ports: [12345]}
+  - {from: prometheus, to: tempo, ports: [3200]}
+  - {from: prometheus, to: collector, ports: [8888, 8889]}
+  # ... the operator checks the Prometheus and Alertmanager it runs ...
+  - {from: operator, to: prometheus, ports: [9090, 8080]}
+  - {from: operator, to: alertmanager, ports: [9093, 8080]}
+  # ... Grafana reads its data sources ...
+  - {from: grafana, to: prometheus, ports: [9090]}
+  - {from: grafana, to: loki, ports: [3100]}
+  - {from: grafana, to: tempo, ports: [3200]}
+  - {from: grafana, to: alertmanager, ports: [9093]}
+  # ... and the telemetry pipelines push: logs to Loki, traces to Tempo.
+  - {from: alloy, to: loki, ports: [3100]}
+  - {from: collector, to: tempo, ports: [4317]}
+
+# Where the sample services run: they send traces to the Collector, and Prometheus scrapes their metrics ports.
+services:
+  namespace: shop
+  # The metrics ports of the four services (gateway, orders, payments, notifier), contiguous.
+  metricsPortFirst: 8080
+  metricsPortLast: 8083
+  collectorPort: 4317
+
+# The data layer, scraped by Prometheus.
+data:
+  namespace: data
+  postgres:
+    podLabels:
+      cnpg.io/cluster: platform-pg
+      cnpg.io/podRole: instance
+    metricsPort: 9187
+  rabbitmq:
+    podLabels:
+      app.kubernetes.io/name: platform-mq
+      app.kubernetes.io/component: rabbitmq
+    metricsPort: 15692
+
+# CoreDNS exposes metrics on this port; Prometheus scrapes it through the Service the stack creates in kube-system.
+coredns:
+  port: 9153
+
+# The kubelet port, scraped on every node for the kubelet and cAdvisor metrics.
+kubeletPort: 10250

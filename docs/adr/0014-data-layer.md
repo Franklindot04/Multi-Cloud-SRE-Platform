@@ -51,7 +51,7 @@ Backups and what is protected today
 
 Deferred
 
-- Backups and restore tests; wiring the services to the data layer; per-service RabbitMQ users and permissions through the Messaging Topology Operator; connection pooling (PgBouncer); metrics and alerts for the data components (with the observability work); network policies between namespaces; TLS for in-cluster connections; External Secrets.
+- Backups and restore tests; wiring the services to the data layer; per-service RabbitMQ users and permissions through the Messaging Topology Operator; connection pooling (PgBouncer); metrics and alerts for the data components (with the observability work); TLS for in-cluster connections; External Secrets.
 
 ## Consequences
 

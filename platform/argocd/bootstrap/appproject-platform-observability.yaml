@@ -54,6 +54,9 @@ spec:
       kind: StatefulSet
     - group: batch
       kind: Job
+    # The default deny and the allow rules of the namespace (platform/observability/network-policies).
+    - group: networking.k8s.io
+      kind: NetworkPolicy
     - group: rbac.authorization.k8s.io
       kind: Role
     - group: rbac.authorization.k8s.io

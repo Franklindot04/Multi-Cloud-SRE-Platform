@@ -1,0 +1,222 @@
+{{- /*
+Network policies for the pods of this release (including the migration Job, which has the same name and instance
+labels). The allow rules come first (sync wave -2) and the default deny after them (wave -1), both before the
+Deployment (wave 0), so a deny never lands without the allows that go with it.
+
+Nothing here lets traffic in from outside the cluster. kubectl port-forward does not use the pod network (the stream
+goes through the API server and the kubelet into the pod), and neither do the kubelet's probes, so neither needs a rule.
+Pods in this chart never call the Kubernetes API.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy -}}
+{{- $name := include "service.name" . -}}
+{{- $port := int .Values.port -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-default-deny
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  # Selects the pods of this release and lists no rule: everything not allowed below is dropped, both ways.
+  podSelector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-dns
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.dns.podLabels | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-prometheus-scrape
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.prometheus.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.prometheus.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+{{- if $np.collector }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-collector
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.collectorTarget.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $np.collectorTarget.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $np.collectorTarget.port }}
+{{- end }}
+{{- range $caller := $np.ingressFrom }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-from-{{ $caller }}
+  labels:
+    {{- include "service.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "service.selectorLabels" $ | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $caller }}
+              app.kubernetes.io/part-of: sre-sample
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+{{- end }}
+{{- range $target := $np.egressTo }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-to-{{ $target }}
+  labels:
+    {{- include "service.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "service.selectorLabels" $ | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ $target }}
+              app.kubernetes.io/part-of: sre-sample
+      ports:
+        - protocol: TCP
+          port: {{ required (printf "networkPolicy.services has no port for %s" $target) (get $np.services $target) }}
+{{- end }}
+{{- range $target := $np.egressToData }}
+{{- $dest := required (printf "networkPolicy.dataTargets has no entry for %s" $target) (get $np.dataTargets $target) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-to-{{ $target }}
+  labels:
+    {{- include "service.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "service.selectorLabels" $ | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.dataNamespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $dest.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $dest.port }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+{{- if not $np.ingressCidrs }}{{ fail "networkPolicy.ingressCidrs must list the load balancer source range when the ingress is enabled" }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-load-balancer
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The load balancer targets the pod IPs directly and its traffic comes from addresses in the VPC, so a pod selector
+  # cannot name it. The CIDR is supplied by the cluster, not committed.
+  podSelector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- range $cidr := $np.ingressCidrs }}
+        - ipBlock:
+            cidr: {{ $cidr }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+{{- end }}
+{{- end }}

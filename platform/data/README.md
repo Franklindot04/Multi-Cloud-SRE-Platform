@@ -33,6 +33,7 @@ Checked on **2026-10-27** against each project's chart repository, release page 
 | [`valkey`](valkey) | wrapper chart | The cache, from the official chart |
 | [`rabbitmq-operator`](rabbitmq-operator) | vendored manifest | The RabbitMQ Cluster Operator release manifest |
 | [`rabbitmq`](rabbitmq) | local chart | The `RabbitmqCluster` resource |
+| [`network-policies`](network-policies) | local chart | Default deny for `data` and the allow rules of PostgreSQL, Valkey and RabbitMQ (EKS only) |
 | [`rabbitmq-credentials`](rabbitmq-credentials) | local chart | Ordinary RBAC objects and a Sync hook Job that copies the broker credentials into `shop` (least privilege) |
 
 **Operators and their custom resources are separate charts.** The custom resources need the operator's CRDs and webhooks, so they sync afterwards (Argo CD sync waves, `SkipDryRunOnMissingResource` and retries with backoff) and can be upgraded and rolled back independently. Wrapper charts with committed `Chart.lock` files are used for upstream charts, as for the add-ons.

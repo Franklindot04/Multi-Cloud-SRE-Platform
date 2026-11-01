@@ -13,6 +13,7 @@ An Amazon EKS cluster with a managed node group, managed add-ons and IAM roles f
 - One managed node group (Spot by default) with a launch template that requires IMDSv2, an encrypted gp3 root volume, and a node role with the standard managed policies plus SSM access
 - IAM OIDC provider for IRSA (no thumbprint is managed)
 - Managed add-ons at the newest version compatible with the cluster: `vpc-cni`, `kube-proxy`, `eks-pod-identity-agent`, `coredns` and `aws-ebs-csi-driver` (the last with its own IRSA role)
+- Network policy enforcement in the `vpc-cni` add-on (`enable_network_policy`, on by default), set through the add-on's configuration values
 - Clusters are pinned to standard support, which avoids the extended-support surcharge
 
 ## Usage
@@ -101,6 +102,7 @@ Annotate the Kubernetes service account with `eks.amazonaws.com/role-arn: <role 
 | `ami_type` | `string` | `"AL2023_x86_64_STANDARD"` | Node AMI type (x86 or Arm Amazon Linux 2023). |
 | `min_size` / `desired_size` / `max_size` | `number` | `1` / `2` / `4` | Node group size; `min <= desired <= max`. |
 | `disk_size_gb` | `number` | `30` | Root volume size in GiB (20-500). |
+| `enable_network_policy` | `bool` | `true` | Sets `enableNetworkPolicy` in the `vpc-cni` add-on configuration. Needs add-on 1.14.0-eksbuild.3 or later (the newest compatible version is always used), Kubernetes 1.25 or later and nodes with kernel 5.10 or later (Amazon Linux 2023 qualifies). Without it, NetworkPolicy objects are accepted and not enforced. |
 | `node_labels` | `map(string)` | `{}` | Kubernetes labels for the nodes. |
 | `tags` | `map(string)` | `{}` | Additional tags. |
 
@@ -140,7 +142,7 @@ terraform init -backend=false
 terraform test
 ```
 
-They cover the defaults, the secrets encryption toggle, admin access entries, and the validation of the endpoint CIDRs, capacity type, node group sizes and other inputs.
+They cover the defaults, the network policy setting, the secrets encryption toggle, admin access entries, and the validation of the endpoint CIDRs, capacity type, node group sizes and other inputs.
 
 ## Requirements
 

@@ -1,0 +1,70 @@
+{{- if .Values.enabled }}
+{{- /*
+The allow rules are applied first (sync wave -2) and the default deny after them (wave -1), so the deny never lands
+without them. Kubelet probes and kubectl port-forward do not use the pod network and need no rule.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  # Every pod in the namespace, both directions, no rule: everything not allowed by another policy is dropped.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- include "np.peer" (dict "namespace" .Values.dns.namespace "labels" .Values.dns.podLabels) | nindent 8 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- range $target := .Values.apiAccess }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kube-api-{{ $target.name }}
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The API server of EKS is a set of network interfaces in the VPC subnets that a pod selector cannot name. The narrowest
+  # rule that works is TCP 443 to the VPC range, given only to the pods that call the API, not to the namespace.
+  podSelector:
+    {{- if $target.matchLabels }}
+    matchLabels:
+      {{- toYaml $target.matchLabels | nindent 6 }}
+    {{- end }}
+    {{- if $target.matchExpressions }}
+    matchExpressions:
+      {{- toYaml $target.matchExpressions | nindent 6 }}
+    {{- end }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ include "np.vpcCidr" $ }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+{{- end }}

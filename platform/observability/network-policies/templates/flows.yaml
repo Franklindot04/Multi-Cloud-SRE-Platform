@@ -1,0 +1,54 @@
+{{- if .Values.enabled }}
+{{- range $flow := .Values.flows }}
+{{- $from := required (printf "pods has no entry for %s" $flow.from) (get $.Values.pods $flow.from) }}
+{{- $to := required (printf "pods has no entry for %s" $flow.to) (get $.Values.pods $flow.to) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $flow.from }}-allow-to-{{ $flow.to }}
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $from | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $to | nindent 14 }}
+      ports:
+        {{- range $port := $flow.ports }}
+        - protocol: TCP
+          port: {{ $port }}
+        {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $flow.to }}-allow-from-{{ $flow.from }}
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $to | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml $from | nindent 14 }}
+      ports:
+        {{- range $port := $flow.ports }}
+        - protocol: TCP
+          port: {{ $port }}
+        {{- end }}
+{{- end }}
+{{- end }}

@@ -216,6 +216,7 @@ else
   render observability-secrets "$root/secrets" > "$work/secrets.yaml" || status=1
   render otel-collector "$root/otel-collector" > "$work/collector.yaml" || status=1
   render observability-monitors "$root/monitors" > "$work/monitors.yaml" || status=1
+  render observability-network-policies "$root/network-policies" -f "$root/network-policies/ci/aws-params.yaml" > "$work/network-policies.yaml" || status=1
 
   for check in restricted ephemeral grafana-admin alertmanager; do contract "$check" "kube-prometheus-stack" "$work/stack.yaml"; done
   contract project-fit "kube-prometheus-stack" "$work/stack.yaml" "$project" "$namespace"
@@ -240,6 +241,9 @@ else
   contract project-fit "otel-collector" "$work/collector.yaml" "$project" "$namespace"
 
   contract project-fit "observability-monitors" "$work/monitors.yaml" "$project" "$namespace"
+  contract project-fit "observability-network-policies" "$work/network-policies.yaml" "$project" "$namespace"
+  contract network-policies "observability-network-policies" "$work/network-policies.yaml"
+  contract hooks "observability-network-policies" "$work/network-policies.yaml"
   contract slo-rules "observability-monitors" "$work/monitors.yaml" apps/gateway apps/notifier apps/orders
 
   render loki "$root/loki" -f "$root/loki/values.yaml" > "$work/loki.yaml" || status=1

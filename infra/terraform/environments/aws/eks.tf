@@ -23,4 +23,6 @@ module "eks" {
   min_size       = var.node_min_size
   max_size       = var.node_max_size
   disk_size_gb   = var.node_disk_size_gb
+
+  enable_network_policy = var.enable_network_policy
 }

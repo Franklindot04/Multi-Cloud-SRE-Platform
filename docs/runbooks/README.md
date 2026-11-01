@@ -2,6 +2,6 @@
 
 Step-by-step procedures for responding to alerts and performing routine operations. Every paging alert should link to a runbook.
 
-The [alert runbook](alerts.md) has one section for each alert of the platform; the alerts link to its anchors.
+The [alert runbook](alerts.md) has one section for each alert of the platform; the alerts link to its anchors. The [network policy runbook](network-policies.md) covers applying the network policies, checking each path, seeing what is dropped and rolling back.
 
 Each runbook covers: symptoms, impact, diagnosis, mitigation, escalation and follow-up. Use a file name of the form `<service>-<condition>.md`.

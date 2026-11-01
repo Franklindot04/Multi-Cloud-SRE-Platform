@@ -1,0 +1,59 @@
+---
+# Default-deny network policies for the data namespace and the allow rules of PostgreSQL, Valkey and RabbitMQ. Wave 9: after
+# the data layer (waves 5 to 8). Only EKS clusters get it: the chart opens TCP 443 to the VPC range for the pods that call
+# the API server, and the range comes from the cluster annotation platform.example/vpc-cidr (written by
+# scripts/bootstrap-argocd.sh), never from Git. Inside the Application the allow rules are applied (sync wave -2) before the
+# deny (wave -1), so a deny never lands without them.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: data-network-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "9"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/data: "true"
+            platform.example/cloud: aws
+  template:
+    metadata:
+      name: 'data-network-policies-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: data-network-policies
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-data
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/data/network-policies
+        helm:
+          releaseName: data-network-policies
+          valueFiles:
+            - values.yaml
+          parameters:
+            - name: vpcCidr
+              value: '{{ index .metadata.annotations "platform.example/vpc-cidr" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: data
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

@@ -1,0 +1,107 @@
+{{- if .Values.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-allow-from-services
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.rabbitmq | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.services" (dict "root" . "names" .Values.services.rabbitmq) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5672
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-allow-from-operator
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The RabbitMQ Cluster Operator reaches the broker's management API (15672) and AMQP (5672).
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.rabbitmq | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.peer" (dict "namespace" .Values.operators.rabbitmq.namespace "labels" .Values.operators.rabbitmq.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 15672
+        - protocol: TCP
+          port: 5672
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-allow-clustering
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # Erlang clustering between the broker pods of the HA profile: the port mapper (4369), inter-node traffic (25672) and
+  # the range the CLI tools use (35672 to 35682). With one pod there is no such traffic.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.rabbitmq | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.pods.rabbitmq | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 4369
+        - protocol: TCP
+          port: 25672
+        - protocol: TCP
+          port: 35672
+          endPort: 35682
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.pods.rabbitmq | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 4369
+        - protocol: TCP
+          port: 25672
+        - protocol: TCP
+          port: 35672
+          endPort: 35682
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-allow-prometheus-scrape
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.rabbitmq | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.peer" (dict "namespace" .Values.prometheus.namespace "labels" .Values.prometheus.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 15692
+{{- end }}

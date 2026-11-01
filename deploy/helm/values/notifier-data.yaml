@@ -8,3 +8,6 @@ secretEnv:
   AMQP_USER: {secret: rabbitmq-auth, key: username}
 secretFiles:
   AMQP_PASSWORD_FILE: {secret: rabbitmq-auth, key: password}
+# Besides RabbitMQ the notifier calls only the Collector (the code makes no other outgoing connection).
+networkPolicy:
+  egressToData: [rabbitmq]

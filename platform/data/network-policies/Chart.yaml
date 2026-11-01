@@ -1,0 +1,7 @@
+apiVersion: v2
+name: data-network-policies
+description: Default-deny network policies for the data namespace, with the allow rules the data layer needs
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws"

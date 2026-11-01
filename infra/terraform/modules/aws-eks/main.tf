@@ -251,12 +251,26 @@ resource "aws_launch_template" "node" {
 
 # --- Add-ons that must exist before nodes ---
 
+# Configuration of the add-ons that take any. Network policy enforcement is a setting of the VPC CNI itself (it starts the
+# network policy agent in the aws-node pods); it needs add-on version 1.14.0-eksbuild.3 or later, Kubernetes 1.25 or later
+# and nodes with Linux kernel 5.10 or later. The newest compatible add-on version is used, and the Amazon Linux 2023
+# AMIs of the node group meet the kernel requirement. The default mode lets a new pod's traffic through for the moment
+# before its policies are programmed; strict mode is not set here.
+locals {
+  addon_configuration = {
+    "vpc-cni" = jsonencode({
+      enableNetworkPolicy = tostring(var.enable_network_policy)
+    })
+  }
+}
+
 resource "aws_eks_addon" "before_compute" {
   for_each = local.addons_before_compute
 
   cluster_name                = aws_eks_cluster.this.name
   addon_name                  = each.key
   addon_version               = data.aws_eks_addon_version.this[each.key].version
+  configuration_values        = lookup(local.addon_configuration, each.key, null)
   resolve_conflicts_on_create = "OVERWRITE"
   resolve_conflicts_on_update = "PRESERVE"
 

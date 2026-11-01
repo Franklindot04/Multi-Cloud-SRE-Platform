@@ -68,7 +68,7 @@ Image tag and digest handling
 
 Deferred
 
-- Network policies (default deny between namespaces and allow rules for gateway to orders to payments, orders to the data layer); horizontal pod autoscaling; progressive delivery (canary, automatic rollback on SLO burn); mTLS between services; External Secrets for all credentials; image signature verification at admission; a migration Job that runs as a separate database role with schema rights while the service runs with data rights only; resource tuning from real load.
+- Horizontal pod autoscaling; progressive delivery (canary, automatic rollback on SLO burn); mTLS between services; External Secrets for all credentials; image signature verification at admission; a migration Job that runs as a separate database role with schema rights while the service runs with data rights only; resource tuning from real load.
 
 ## Consequences
 

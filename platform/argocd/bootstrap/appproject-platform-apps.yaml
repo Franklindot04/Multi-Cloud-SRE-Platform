@@ -33,6 +33,9 @@ spec:
       kind: PodDisruptionBudget
     - group: networking.k8s.io
       kind: Ingress
+    # The default deny and the allow rules of each service (deploy/helm/service/templates/networkpolicy.yaml), all in shop.
+    - group: networking.k8s.io
+      kind: NetworkPolicy
     - group: cert-manager.io
       kind: Certificate
     - group: monitoring.coreos.com

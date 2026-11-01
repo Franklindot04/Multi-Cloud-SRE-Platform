@@ -1,0 +1,252 @@
+---
+# The flows the network policies must allow and must deny, evaluated by scripts/network-policy-flows.py against the
+# policies the charts render. Described in README.md of this directory.
+
+# A neutral example range (the documentation range 192.0.2.0/24), the stand-in for the VPC range that Argo CD passes to
+# the policy charts. The same value is in the ci/aws-params.yaml of both policy charts. Pods get addresses inside it, as
+# they do with the VPC CNI.
+vpcCidr: 192.0.2.0/24
+
+# Namespaces, with labels beyond kubernetes.io/metadata.name (which every namespace has).
+namespaces:
+  shop: {}
+  data: {}
+  observability: {}
+  kube-system: {}
+  cnpg-system: {}
+  rabbitmq-system: {}
+
+# Namespaces whose pods must all be isolated for ingress and egress (they have policies).
+enforced: [shop, data, observability]
+
+# Addresses that are not pods. All are examples.
+endpoints:
+  api-server:
+    ip: 192.0.2.10
+    source: the EKS API server is a set of network interfaces in the VPC subnets, so it is an address inside the VPC range
+  kubelet:
+    ip: 192.0.2.20
+    source: a node, which is an address inside the VPC range
+  vpc-client:
+    ip: 192.0.2.50
+    source: any other address inside the VPC range, for example a load balancer
+  internet:
+    ip: 198.51.100.7
+    source: an address outside the VPC range (documentation range)
+
+# Pods that charts do not render (the operators create them), pods of namespaces that are not ours, and a few that exist to
+# be denied. A pod that a chart also renders is cross-checked: the labels declared here must be on the rendered pod.
+# Where each label set comes from is in "source". Pods of the four services come from the service chart only.
+pods:
+  - name: kube-system/coredns
+    labels: {k8s-app: kube-dns}
+    source: EKS CoreDNS add-on; the selector of the Service kube-prometheus-stack-coredns (k8s-app kube-dns)
+  - name: data/platform-pg-1
+    labels: {cnpg.io/cluster: platform-pg, cnpg.io/podRole: instance, cnpg.io/instanceName: platform-pg-1}
+    source: CloudNativePG labels every instance pod with cnpg.io/cluster, cnpg.io/podRole=instance and cnpg.io/instanceName; the PodMonitor in platform/observability/monitors selects on the first two
+  - name: data/platform-pg-2
+    labels: {cnpg.io/cluster: platform-pg, cnpg.io/podRole: instance, cnpg.io/instanceName: platform-pg-2}
+    source: a second instance of the HA profile (platform/data/postgres/values-ha.yaml), same labels as the first
+  - name: data/platform-valkey
+    labels: {app.kubernetes.io/name: valkey, app.kubernetes.io/instance: data-valkey}
+    source: the Deployment of the Valkey chart (rendered by the check; declared here so the unit tests do not need the chart)
+  - name: data/platform-valkey-2
+    labels: {app.kubernetes.io/name: valkey, app.kubernetes.io/instance: data-valkey}
+    source: a replica of the HA profile, same labels
+  - name: data/platform-mq-server-0
+    labels: {app.kubernetes.io/name: platform-mq, app.kubernetes.io/component: rabbitmq, app.kubernetes.io/part-of: rabbitmq}
+    source: the RabbitMQ Cluster Operator labels the pods of a RabbitmqCluster with its name, the component rabbitmq and part-of rabbitmq; the ServiceMonitor in platform/observability/monitors and the topology spread in platform/data/rabbitmq select on the first two
+  - name: data/platform-mq-server-1
+    labels: {app.kubernetes.io/name: platform-mq, app.kubernetes.io/component: rabbitmq, app.kubernetes.io/part-of: rabbitmq}
+    source: a second broker of the HA profile, same labels
+  - name: data/data-secrets-generator
+    labels: {batch.kubernetes.io/job-name: data-secrets-generator}
+    source: the Job controller adds batch.kubernetes.io/job-name to the pods of a Job (the Job is in platform/data/secrets)
+  - name: data/platform-pg-secrets-gate
+    labels: {batch.kubernetes.io/job-name: platform-pg-secrets-gate}
+    source: the PreSync gate Job of platform/data/postgres
+  - name: data/stray
+    labels: {app: stray}
+    source: a workload added to the namespace later, with no policy of its own; only the default deny holds it
+  - name: cnpg-system/data-cnpg-operator-cloudnative-pg
+    labels: {app.kubernetes.io/name: cloudnative-pg, app.kubernetes.io/instance: data-cnpg-operator}
+    source: the Deployment of the cloudnative-pg chart (rendered by the check)
+  - name: rabbitmq-system/rabbitmq-cluster-operator
+    labels: {app.kubernetes.io/name: rabbitmq-cluster-operator, app.kubernetes.io/component: rabbitmq-operator, app.kubernetes.io/part-of: rabbitmq}
+    source: platform/data/rabbitmq-operator/cluster-operator.yml (rendered by the check)
+  - name: observability/prometheus-kube-prometheus-stack-prometheus-0
+    labels: {app.kubernetes.io/name: prometheus, operator.prometheus.io/name: kube-prometheus-stack-prometheus, app.kubernetes.io/managed-by: prometheus-operator}
+    source: the Prometheus Operator labels the pods of a Prometheus resource like this; the selector of the Service kube-prometheus-stack-prometheus uses the first two
+  - name: observability/alertmanager-kube-prometheus-stack-alertmanager-0
+    labels: {app.kubernetes.io/name: alertmanager, alertmanager: kube-prometheus-stack-alertmanager, app.kubernetes.io/managed-by: prometheus-operator}
+    source: the Prometheus Operator labels the pods of an Alertmanager resource like this; the selector of the Service kube-prometheus-stack-alertmanager uses the first two
+  - name: observability/kube-prometheus-stack-operator
+    labels: {app: kube-prometheus-stack-operator}
+    source: the Deployment in the stack chart (rendered by the check)
+  - name: observability/kube-prometheus-stack-grafana
+    labels: {app.kubernetes.io/name: grafana, app.kubernetes.io/instance: kube-prometheus-stack}
+    source: the Deployment in the stack chart (rendered by the check)
+  - name: observability/kube-prometheus-stack-kube-state-metrics
+    labels: {app.kubernetes.io/name: kube-state-metrics, app.kubernetes.io/instance: kube-prometheus-stack}
+    source: the Deployment in the stack chart (rendered by the check)
+  - name: observability/otel-collector
+    labels: {app.kubernetes.io/name: otel-collector}
+    source: the Deployment of platform/observability/otel-collector (rendered by the check)
+  - name: observability/loki
+    labels: {app.kubernetes.io/name: loki}
+    source: the StatefulSet of the loki chart (rendered by the check)
+  - name: observability/alloy
+    labels: {app.kubernetes.io/name: alloy}
+    source: the Deployment of the alloy chart (rendered by the check)
+  - name: observability/tempo
+    labels: {app.kubernetes.io/name: tempo}
+    source: the StatefulSet of the tempo chart (rendered by the check)
+  - name: observability/observability-secrets-generator
+    labels: {batch.kubernetes.io/job-name: observability-secrets-generator}
+    source: the Job of platform/observability/secrets
+  - name: observability/stray
+    labels: {app: stray}
+    source: a workload added to the namespace later, with no policy of its own; only the default deny holds it
+
+# Short names for the flows below.
+names:
+  gateway: shop/gateway
+  orders: shop/orders
+  payments: shop/payments
+  notifier: shop/notifier
+  orders-migrate: shop/orders-migrate
+  payments-migrate: shop/payments-migrate
+  coredns: kube-system/coredns
+  postgres: data/platform-pg-1
+  postgres-2: data/platform-pg-2
+  valkey: data/platform-valkey
+  valkey-2: data/platform-valkey-2
+  rabbitmq: data/platform-mq-server-0
+  rabbitmq-2: data/platform-mq-server-1
+  data-secrets-job: data/data-secrets-generator
+  pg-gate-job: data/platform-pg-secrets-gate
+  data-stray: data/stray
+  cnpg-operator: cnpg-system/data-cnpg-operator-cloudnative-pg
+  rabbitmq-operator: rabbitmq-system/rabbitmq-cluster-operator
+  prometheus: observability/prometheus-kube-prometheus-stack-prometheus-0
+  alertmanager: observability/alertmanager-kube-prometheus-stack-alertmanager-0
+  prometheus-operator: observability/kube-prometheus-stack-operator
+  grafana: observability/kube-prometheus-stack-grafana
+  ksm: observability/kube-prometheus-stack-kube-state-metrics
+  collector: observability/otel-collector
+  loki: observability/loki
+  alloy: observability/alloy
+  tempo: observability/tempo
+  obs-secrets-job: observability/observability-secrets-generator
+  obs-stray: observability/stray
+
+# Flows. A row says that "from" (one name or a list) opens a connection to "to" (one name or a list) on each of "ports"
+# (protocol TCP unless it says otherwise), and that it is expected to be allowed or denied. "profiles" is the values profile
+# of the services the row applies to (data by default; memory is the profile without the data layer).
+flows:
+  # --- DNS: every pod of the three namespaces may ask the cluster DNS, over UDP and TCP ---
+  - {from: [gateway, orders, payments, notifier, postgres, valkey, rabbitmq, data-secrets-job, pg-gate-job, prometheus, alertmanager, prometheus-operator, grafana, ksm, collector, loki, alloy, tempo, obs-secrets-job], to: coredns, ports: [53], protocol: UDP, profiles: [data, memory], expect: allow, note: DNS}
+  - {from: [orders-migrate, payments-migrate], to: coredns, ports: [53], protocol: UDP, expect: allow, note: DNS for the migration Jobs}
+  - {from: [gateway, orders, payments, notifier, postgres, rabbitmq, prometheus, grafana, alloy], to: coredns, ports: [53], protocol: TCP, expect: allow, note: DNS over TCP}
+
+  # --- shop: the request path ---
+  - {from: gateway, to: orders, port: 8081, profiles: [data, memory], expect: allow, note: the gateway proxies orders}
+  - {from: gateway, to: payments, port: 8082, profiles: [data, memory], expect: allow, note: the gateway proxies payments and checks its readiness}
+  - {from: orders, to: payments, port: 8082, profiles: [data, memory], expect: allow, note: orders authorizes a payment}
+  - {from: orders, to: notifier, port: 8083, expect: allow, profiles: [memory], note: without the broker orders tells the notifier over HTTP}
+  - {from: orders, to: notifier, port: 8083, expect: deny, profiles: [data], note: with the broker orders publishes an event instead}
+  - {from: [orders, orders-migrate], to: postgres, port: 5432, expect: allow, note: orders and its migration Job use PostgreSQL}
+  - {from: [payments, payments-migrate], to: postgres, port: 5432, expect: allow, note: payments and its migration Job use PostgreSQL}
+  - {from: orders, to: valkey, port: 6379, expect: allow, note: the cache}
+  - {from: [orders, notifier], to: rabbitmq, port: 5672, expect: allow, note: orders publishes and the notifier consumes}
+  - {from: [gateway, orders, payments, notifier], to: collector, port: 4317, profiles: [data, memory], expect: allow, note: traces over OTLP/gRPC}
+
+  # --- shop: what Prometheus scrapes ---
+  - {from: prometheus, to: gateway, port: 8080, profiles: [data, memory], expect: allow, note: metrics}
+  - {from: prometheus, to: orders, port: 8081, profiles: [data, memory], expect: allow, note: metrics}
+  - {from: prometheus, to: payments, port: 8082, profiles: [data, memory], expect: allow, note: metrics}
+  - {from: prometheus, to: notifier, port: 8083, profiles: [data, memory], expect: allow, note: metrics}
+
+  # --- data ---
+  - {from: cnpg-operator, to: postgres, ports: [8000, 5432], expect: allow, note: instance status and SQL for managed roles}
+  - {from: [postgres, postgres-2], to: [postgres, postgres-2], ports: [5432, 8000], expect: allow, note: streaming replication and instance status between instances}
+  - {from: valkey, to: valkey-2, port: 6379, expect: allow, note: replication}
+  - {from: valkey-2, to: valkey, port: 6379, expect: allow, note: replication}
+  - {from: rabbitmq-operator, to: rabbitmq, ports: [15672, 5672], expect: allow, note: the operator reaches the broker}
+  - {from: rabbitmq, to: rabbitmq-2, ports: [4369, 25672, 35672, 35680, 35682], expect: allow, note: Erlang clustering}
+  - {from: rabbitmq-2, to: rabbitmq, ports: [4369, 25672, 35672, 35682], expect: allow, note: Erlang clustering}
+  - {from: prometheus, to: postgres, port: 9187, expect: allow, note: PostgreSQL metrics}
+  - {from: prometheus, to: rabbitmq, port: 15692, expect: allow, note: RabbitMQ metrics}
+
+  # --- the Kubernetes API server and the nodes (addresses inside the VPC range) ---
+  - {from: [postgres, rabbitmq, data-secrets-job, pg-gate-job, prometheus, prometheus-operator, ksm, grafana, alloy, obs-secrets-job], to: api-server, port: 443, expect: allow, note: pods that call the API}
+  - {from: prometheus, to: kubelet, port: 10250, expect: allow, note: kubelet and cAdvisor metrics}
+
+  # --- observability ---
+  - {from: prometheus, to: grafana, port: 3000, expect: allow, note: Grafana metrics}
+  - {from: prometheus, to: ksm, port: 8080, expect: allow, note: kube-state-metrics}
+  - {from: prometheus, to: alertmanager, ports: [9093, 8080], expect: allow, note: Alertmanager and its reloader}
+  - {from: prometheus, to: prometheus-operator, port: 8080, expect: allow, note: operator metrics}
+  - {from: prometheus, to: loki, port: 3100, expect: allow, note: Loki metrics}
+  - {from: prometheus, to: alloy, port: 12345, expect: allow, note: Alloy metrics}
+  - {from: prometheus, to: tempo, port: 3200, expect: allow, note: Tempo metrics}
+  - {from: prometheus, to: collector, ports: [8888, 8889], expect: allow, note: Collector metrics}
+  - {from: prometheus, to: coredns, port: 9153, expect: allow, note: CoreDNS metrics}
+  - {from: prometheus-operator, to: prometheus, ports: [9090, 8080], expect: allow, note: the operator checks the Prometheus it runs}
+  - {from: prometheus-operator, to: alertmanager, ports: [9093, 8080], expect: allow, note: the operator checks the Alertmanager it runs}
+  - {from: grafana, to: prometheus, port: 9090, expect: allow, note: the Prometheus data source}
+  - {from: grafana, to: loki, port: 3100, expect: allow, note: the Loki data source}
+  - {from: grafana, to: tempo, port: 3200, expect: allow, note: the Tempo data source}
+  - {from: grafana, to: alertmanager, port: 9093, expect: allow, note: the Alertmanager data source}
+  - {from: alloy, to: loki, port: 3100, expect: allow, note: logs are pushed to Loki}
+  - {from: collector, to: tempo, port: 4317, expect: allow, note: traces are exported to Tempo}
+
+  # --- denied: the services reach only what they use ---
+  - {from: gateway, to: [postgres, valkey, rabbitmq], ports: [5432, 6379, 5672], profiles: [data, memory], expect: deny, note: the gateway has no data layer}
+  - {from: payments, to: [rabbitmq, valkey], ports: [5672, 6379], expect: deny, note: payments uses PostgreSQL only}
+  - {from: notifier, to: [orders, payments], ports: [8081, 8082], profiles: [data, memory], expect: deny, note: the notifier calls nothing in the shop}
+  - {from: notifier, to: [postgres, valkey], ports: [5432, 6379], expect: deny, note: the notifier has no database or cache}
+  - {from: payments, to: orders, port: 8081, profiles: [data, memory], expect: deny, note: payments never calls orders}
+  - {from: gateway, to: notifier, port: 8083, profiles: [data, memory], expect: deny, note: the gateway does not call the notifier}
+  - {from: orders, to: [postgres, valkey, rabbitmq], ports: [5432, 6379, 5672], profiles: [memory], expect: deny, note: the memory profile has no data layer to reach}
+  - {from: payments, to: postgres, port: 5432, profiles: [memory], expect: deny, note: the memory profile has no data layer to reach}
+  - {from: orders, to: [postgres], port: 8000, expect: deny, note: orders may use SQL, not the instance status port}
+  - {from: orders, to: rabbitmq, ports: [15672, 25672], expect: deny, note: orders may publish, not manage or cluster}
+  - {from: [gateway, orders, payments, notifier, orders-migrate, payments-migrate], to: internet, ports: [80, 443], expect: deny, note: nothing in the shop reaches the internet}
+  - {from: [gateway, orders, payments, notifier, orders-migrate, payments-migrate], to: api-server, port: 443, expect: deny, note: the services never call the API}
+  - {from: [gateway, orders, payments, notifier], to: kubelet, port: 10250, expect: deny, note: the services never call a kubelet}
+  - {from: [gateway, orders, payments, notifier], to: [loki, tempo], ports: [3100, 3200, 4317], expect: deny, note: telemetry goes through the Collector and Alloy only}
+  - {from: [gateway, orders, payments, notifier], to: [grafana, alertmanager, prometheus], ports: [3000, 9093, 9090], expect: deny, note: no service reaches the stack}
+  - {from: [internet, vpc-client], to: [gateway, orders, payments, notifier], ports: [8080, 8081, 8082, 8083], expect: deny, note: nothing from outside the cluster is allowed in (the load balancer rule exists only with the ingress)}
+  - {from: [orders, payments], to: collector, ports: [4318, 8888], expect: deny, note: only OTLP/gRPC is open on the Collector}
+
+  # --- denied: the data layer ---
+  - {from: grafana, to: [postgres, valkey, rabbitmq], ports: [5432, 6379, 5672], expect: deny, note: Grafana does not read the data layer}
+  - {from: prometheus, to: postgres, ports: [5432, 8000], expect: deny, note: Prometheus may scrape metrics only}
+  - {from: prometheus, to: rabbitmq, ports: [5672, 15672], expect: deny, note: Prometheus may scrape metrics only}
+  - {from: prometheus, to: valkey, port: 6379, expect: deny, note: Valkey has no metrics endpoint and Prometheus has no access}
+  - {from: [postgres, valkey, rabbitmq, data-stray], to: [gateway, orders, payments, notifier], ports: [8080, 8081, 8082, 8083], expect: deny, note: the data layer calls nothing in the shop}
+  - {from: [postgres, valkey, rabbitmq], to: internet, ports: [80, 443], expect: deny, note: the data layer reaches nothing outside the cluster (backups are not configured)}
+  - {from: [valkey, valkey-2], to: [postgres, rabbitmq], ports: [5432, 5672], expect: deny, note: Valkey calls nothing}
+  - {from: postgres, to: rabbitmq, port: 5672, expect: deny, note: PostgreSQL does not use the broker}
+  - {from: valkey, to: api-server, port: 443, expect: deny, note: Valkey does not call the API}
+  - {from: [cnpg-operator, rabbitmq-operator], to: valkey, port: 6379, expect: deny, note: the operators do not reach the cache}
+  - {from: rabbitmq-operator, to: postgres, ports: [5432, 8000], expect: deny, note: the RabbitMQ operator does not reach PostgreSQL}
+  - {from: cnpg-operator, to: rabbitmq, ports: [5672, 15672], expect: deny, note: the CloudNativePG operator does not reach the broker}
+  - {from: [internet, vpc-client], to: [postgres, valkey, rabbitmq], ports: [5432, 6379, 5672], expect: deny, note: nothing from outside the cluster reaches the data layer}
+
+  # --- denied: observability ---
+  - {from: alertmanager, to: [prometheus, grafana, loki, tempo, collector, ksm, postgres, orders], ports: [9090, 3000, 3100, 3200, 4317, 8080, 5432, 8081], expect: deny, note: Alertmanager has no receiver and no egress}
+  - {from: alertmanager, to: [internet, api-server], ports: [443], expect: deny, note: Alertmanager sends nothing anywhere}
+  - {from: [loki, tempo, ksm], to: [grafana, prometheus, alertmanager], ports: [3000, 9090, 9093], expect: deny, note: storage and exporters call nothing}
+  - {from: [loki, tempo, collector, alertmanager], to: api-server, port: 443, expect: deny, note: these pods never call the API}
+  - {from: collector, to: [loki, grafana], ports: [3100, 3000], expect: deny, note: the Collector exports to Tempo only}
+  - {from: alloy, to: [tempo, grafana, collector], ports: [3200, 3000, 4317], expect: deny, note: Alloy pushes to Loki only}
+  - {from: grafana, to: [kubelet], port: 10250, expect: deny, note: only Prometheus reads the kubelets}
+  - {from: grafana, to: internet, port: 443, expect: deny, note: no plugin or update downloads}
+  - {from: [obs-stray, data-stray], to: [internet, api-server], ports: [443], expect: deny, note: a pod with no policy of its own is held by the default deny}
+  - {from: [obs-stray, data-stray], to: coredns, port: 53, protocol: UDP, expect: allow, note: the DNS rule covers every pod of the namespace, so a new pod can resolve names}
+  - {from: [grafana, loki, prometheus, orders, postgres], to: [obs-stray, data-stray], ports: [8080, 3000, 5432], expect: deny, note: nothing may reach a pod with no policy of its own}
+  - {from: [internet, vpc-client], to: [grafana, prometheus, alertmanager, collector, loki, tempo], ports: [3000, 9090, 9093, 4317, 3100, 3200], expect: deny, note: nothing from outside the cluster reaches the stack}
+  - {from: [internet, vpc-client], to: [grafana], port: 443, expect: deny, note: no ingress to Grafana}
+  - {from: [internet, vpc-client], to: [data-stray, obs-stray], ports: [8080, 3000], expect: deny, note: a new pod with no policy of its own takes nothing from outside either}
