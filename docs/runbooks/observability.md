@@ -2,7 +2,7 @@
 
 Turns on Prometheus, Grafana, an OpenTelemetry Collector, Loki, Alloy and Tempo on the hub cluster, checks that they work, and removes them. What it is and why it looks like this is in [ADR-0020](../adr/0020-metrics-stack.md) (metrics) and [ADR-0021](../adr/0021-logging-stack.md) (logs) and [ADR-0022](../adr/0022-tracing-stack.md) (traces); the definitions are in [`platform/observability`](../../platform/observability/README.md).
 
-**This has run on a real EKS cluster**, in two sessions, with screenshots in [the evidence page](../observability-evidence.md): every Application Synced and Healthy, every Prometheus target up, the dashboards showing data, and Loki and Alloy running under `restricted` with their logs in the Logs dashboard. The cluster was temporary. Not yet seen: Alloy's behaviour across restarts, and anything about Tempo and traces, which were added after those sessions. The gateway and the notifier send traces to the collector (orders and payments do not yet), which has not been seen on a cluster. The teardown (`scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`) was run on that cluster and left nothing behind. Where this runbook says something is expected, that comes from those sessions or from the definitions; if reality differs, that is a finding: write it down. The [logging section](#logs) ends with a checklist for an apply, with the Tempo steps in it.
+**This has run on a real EKS cluster**, in two sessions, with screenshots in [the evidence page](../observability-evidence.md): every Application Synced and Healthy, every Prometheus target up, the dashboards showing data, and Loki and Alloy running under `restricted` with their logs in the Logs dashboard. The cluster was temporary. Not yet seen: Alloy's behaviour across restarts, and anything about Tempo and traces, which were added after those sessions. The gateway, orders and the notifier send traces to the collector (payments does not yet), which has not been seen on a cluster. The teardown (`scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`) was run on that cluster and left nothing behind. Where this runbook says something is expected, that comes from those sessions or from the definitions; if reality differs, that is a finding: write it down. The [logging section](#logs) ends with a checklist for an apply, with the Tempo steps in it.
 
 Everything is off unless the cluster Secret carries the label `platform.example/observability=true`. Nothing is exposed outside the cluster; you reach Grafana and Prometheus with a port-forward.
 
@@ -108,7 +108,7 @@ kubectl --context <EKS_CONTEXT> -n observability get deployment otel-collector
 kubectl --context <EKS_CONTEXT> -n observability logs deployment/otel-collector --tail=20
 ```
 
-It listens on `otel-collector.observability.svc` (OTLP gRPC 4317, HTTP 4318). The gateway and the notifier send OTLP/gRPC to port 4317 (orders and payments do not yet); the collector's own metrics (`otelcol_*`) are in Prometheus. The traces pipeline sends what it receives to Tempo (see [Traces](#traces)); a failed export is logged by the collector (`Exporting failed`) and retried for a minute.
+It listens on `otel-collector.observability.svc` (OTLP gRPC 4317, HTTP 4318). The gateway, orders and the notifier send OTLP/gRPC to port 4317 (payments does not yet); the collector's own metrics (`otelcol_*`) are in Prometheus. The traces pipeline sends what it receives to Tempo (see [Traces](#traces)); a failed export is logged by the collector (`Exporting failed`) and retried for a minute.
 
 ## Logs
 
@@ -173,13 +173,13 @@ Run these once on the first cluster apply, and write down what differs from the 
 - [ ] In Prometheus, Status, Targets: the job `tempo` is up (`up{job="tempo"} == 1`).
 - [ ] In Grafana, Connections, Data sources: `Tempo` is present and `Save & test` succeeds, and `Loki` still does, with a derived field `trace_id` that links to `Tempo`.
 - [ ] A test trace sent to the Collector (see [Send a test trace](#send-a-test-trace)) is found in Grafana, in Explore with the data source `Tempo`, by its ID; the collector's log has no `Exporting failed` line.
-- [ ] From the test trace, `Logs for this span` finds nothing (the test span has no log lines) and does not return an error; for a trace from the gateway or the notifier it finds the lines that carry the trace ID.
+- [ ] From the test trace, `Logs for this span` finds nothing (the test span has no log lines) and does not return an error; for a trace from the gateway, orders or the notifier it finds the lines that carry the trace ID.
 - [ ] After a Tempo restart (`kubectl -n observability delete pod tempo-0`) the pod comes back, the test trace is gone, and a new test trace is found again within a minute without restarting the collector.
 - [ ] Teardown still ends clean: run `scripts/teardown-prep.sh` as described in the [data layer teardown](data-layer.md#teardown); it waits for the `observability-loki-*`, `observability-alloy-*` and `observability-tempo-*` Applications and for the pods, finds no claim, and `scripts/teardown-argocd.sh` then finishes.
 
 ## Traces
 
-The Collector sends the traces it receives to Tempo, a single binary with storage on an `emptyDir` and **24 hours of retention**; Grafana reads them from the data source `Tempo`. The path is service, then Collector (`otel-collector.observability.svc`, OTLP on 4317 or 4318), then Tempo (`tempo.observability.svc`, OTLP on 4317, plain gRPC inside the cluster). Traces are lost when the Tempo pod restarts or is rescheduled. The reasons are in [ADR-0022](../adr/0022-tracing-stack.md). **Only the gateway and the notifier send traces** (orders and payments do not yet), so a trace has spans for those two; you can also send a test trace yourself. The Tempo chart is deprecated upstream; the ADR says why it is used anyway and how to leave it.
+The Collector sends the traces it receives to Tempo, a single binary with storage on an `emptyDir` and **24 hours of retention**; Grafana reads them from the data source `Tempo`. The path is service, then Collector (`otel-collector.observability.svc`, OTLP on 4317 or 4318), then Tempo (`tempo.observability.svc`, OTLP on 4317, plain gRPC inside the cluster). Traces are lost when the Tempo pod restarts or is rescheduled. The reasons are in [ADR-0022](../adr/0022-tracing-stack.md). **The gateway, orders and the notifier send traces** (payments does not yet), so a trace has spans for those three; you can also send a test trace yourself. The Tempo chart is deprecated upstream; the ADR says why it is used anyway and how to leave it.
 
 ### Open Explore with Tempo
 
@@ -187,7 +187,7 @@ With the Grafana port-forward from above running, open <http://localhost:3000>, 
 
 ```text
 { resource.service.name = "gateway" }
-{ resource.service.name = "notifier" && status = error }
+{ resource.service.name = "orders" && status = error }
 { resource.service.name = "gateway" && duration > 500ms }
 ```
 

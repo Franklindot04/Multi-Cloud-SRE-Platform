@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
@@ -12,6 +13,7 @@ import uvicorn
 from orders.api import SERVICE, create_app
 from orders.config import Config, ConfigError
 from orders.observability import Drain, JsonLogger, configure_stdlib_logging
+from orders.tracing import setup_tracing
 
 
 class DrainingServer(uvicorn.Server):
@@ -44,7 +46,9 @@ def main() -> int:
     configure_stdlib_logging(config.log_level)
     logger = JsonLogger(SERVICE, config.log_level)
     drain = Drain()
-    app = create_app(config, drain=drain, logger=logger)
+    # Off unless OTEL_EXPORTER_OTLP_ENDPOINT is set; a problem here never stops the service.
+    tracing = setup_tracing(os.environ, SERVICE, os.environ.get("APP_VERSION", "").strip() or "1.0.0", logger)
+    app = create_app(config, drain=drain, logger=logger, tracing=tracing)
 
     server = DrainingServer(
         uvicorn.Config(
@@ -62,6 +66,7 @@ def main() -> int:
     )
     logger.info("listening", port=config.port)
     server.run()
+    tracing.shutdown()  # waits at most a few seconds for the queued spans
     logger.info("stopped")
     return 0
 
