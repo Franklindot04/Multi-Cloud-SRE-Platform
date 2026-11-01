@@ -4,6 +4,14 @@ import dev.mcsre.payments.domain.Payment;
 import dev.mcsre.payments.domain.PaymentRepository;
 import dev.mcsre.payments.obs.JsonLog;
 import dev.mcsre.payments.obs.RequestScope;
+import dev.mcsre.payments.obs.Tracing;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -33,11 +41,17 @@ public final class PostgresPaymentRepository implements PaymentRepository {
     private final DataSource dataSource;
     private final DbMetrics metrics;
     private final JsonLog log;
+    private final Tracer tracer;
 
     public PostgresPaymentRepository(DataSource dataSource, DbMetrics metrics, JsonLog log) {
+        this(dataSource, metrics, log, Tracing.off());
+    }
+
+    public PostgresPaymentRepository(DataSource dataSource, DbMetrics metrics, JsonLog log, Tracing tracing) {
         this.dataSource = dataSource;
         this.metrics = metrics;
         this.log = log;
+        this.tracer = tracing.tracer();
     }
 
     @Override
@@ -141,18 +155,30 @@ public final class PostgresPaymentRepository implements PaymentRepository {
         return new Row(payment, rows.getString("request_hash"));
     }
 
-    /** Runs a database call, records its latency and turns a database failure into a retryable error. */
+    /**
+     * Runs a database call, records its latency and turns a database failure into a retryable error. The call runs in a
+     * client span named after the operation ("db save_payment"), a fixed set of names. The span has no SQL text and no
+     * parameters, and a failure records the type of the exception, not its message, which can contain row values.
+     */
     private <T> T timed(String operation, SqlCall<T> call) {
         long start = System.nanoTime();
-        try {
+        Span span = tracer.spanBuilder("db " + operation)
+                .setSpanKind(SpanKind.CLIENT)
+                .setAttribute(AttributeKey.stringKey("db.system.name"), "postgresql")
+                .setAttribute(AttributeKey.stringKey("db.operation.name"), operation)
+                .startSpan();
+        try (Scope ignored = span.makeCurrent()) {
             return call.run();
         } catch (SQLException e) {
+            span.addEvent("exception", Attributes.of(AttributeKey.stringKey("exception.type"), e.getClass().getSimpleName()));
+            span.setStatus(StatusCode.ERROR, "database operation failed");
             Map<String, Object> fields = fields(operation);
             fields.put("error", e.getClass().getSimpleName());
             fields.put("sqlstate", String.valueOf(e.getSQLState()));
             log.warn("database call failed", fields);
             throw new StorageUnavailableException("database unavailable", e);
         } finally {
+            span.end();
             long elapsed = System.nanoTime() - start;
             metrics.observe(operation, elapsed);
             if (elapsed > SLOW_QUERY_NANOS) {
