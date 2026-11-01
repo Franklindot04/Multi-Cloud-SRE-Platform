@@ -29,6 +29,17 @@ data:
         endpoint: ${env:MY_POD_IP}:{{ .Values.ports.exporter }}
       debug:
         verbosity: {{ .Values.debug.verbosity }}
+      # Traces go to Tempo inside the cluster, over plain gRPC without TLS: the traffic does not leave the cluster.
+      # The queue is small on purpose, so that a Tempo that is down holds a few seconds of traces and not the memory.
+      otlp/tempo:
+        endpoint: {{ .Values.tempo.endpoint }}
+        tls:
+          insecure: true
+        timeout: {{ .Values.tempo.timeout }}
+        retry_on_failure:
+          max_elapsed_time: {{ .Values.tempo.retryMaxElapsedTime }}
+        sending_queue:
+          queue_size: {{ .Values.tempo.queueSize }}
 
     extensions:
       health_check:
@@ -44,7 +55,7 @@ data:
         traces:
           receivers: [otlp]
           processors: [memory_limiter, batch]
-          exporters: [debug]
+          exporters: [otlp/tempo]
       telemetry:
         logs:
           level: info

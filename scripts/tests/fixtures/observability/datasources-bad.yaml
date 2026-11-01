@@ -1,0 +1,40 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource
+  labels:
+    grafana_datasource: "1"
+data:
+  datasource.yaml: |-
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      uid: prometheus
+      url: http://prometheus:9090/
+    - name: Loki
+      type: loki
+      uid: loki
+      url: http://loki:3100
+      jsonData:
+        derivedFields:
+        - datasourceUid: tempo-typo
+          matcherRegex: '"trace_id": "([0-9a-f]{32})"'
+          matcherType: regex
+          name: trace_id
+          url: ${__value.text}
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      url: http://tempo:3200
+      jsonData:
+        nodeGraph:
+          enabled: true
+        serviceMap:
+          datasourceUid: prometheus
+        tracesToLogsV2:
+          customQuery: true
+          datasourceUid: prometheus
+          query: '{namespace=~".+"}'
+          spanEndTimeShift: 5m

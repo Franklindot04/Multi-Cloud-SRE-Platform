@@ -1,0 +1,30 @@
+---
+# Optional, off by default: keeps Tempo's traces on a persistent volume. Add this file after values.yaml in the
+# Application's value files (platform/argocd/apps/97-observability-tempo.yaml) to turn it on.
+#
+# The volume is a PersistentVolumeClaim on the cluster's default StorageClass, created by the StatefulSet. Like the
+# data layer's volumes it is created outside Terraform and is not removed by terraform destroy: it keeps billing until
+# the claim is deleted. Deleting the Application does not delete it.
+#
+# This is a development setting. Production would not keep traces on one local disk: it would use object storage (an S3
+# or GCS bucket with its own lifecycle rule), which also lifts the single-replica limit. That needs a bucket, a
+# role the pod can assume and a different storage block, none of which exist here.
+#
+# A ReadWriteOnce volume ties the pod to one zone, which matters on a cluster with Spot nodes in several zones: a
+# replacement node in another zone cannot attach the volume until a node in the original zone is available.
+tempo:
+  tempo:
+    # The chart mounts the claim at /var/tempo itself, so the emptyDir mount of values.yaml goes.
+    extraVolumeMounts: []
+
+  # The claim replaces the emptyDir.
+  extraVolumes: []
+
+  persistence:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+    annotations: {}
+    # Deleting the StatefulSet leaves the claim, so a sync that recreates it does not lose the traces.
+    enableStatefulSetAutoDeletePVC: false

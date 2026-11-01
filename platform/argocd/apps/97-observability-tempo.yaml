@@ -1,0 +1,62 @@
+---
+# Tempo (vendored, version-pinned Grafana chart) in single-binary mode, local storage on an emptyDir. Wave 11: with the
+# stack, and before the collector (wave 12) so that Tempo is there when the collector starts to export traces. Tempo
+# needs nothing from the stack, so it does not have to wait for it. To keep the traces on a volume, add
+# values-persistent.yaml after values.yaml below (see that file for the cost).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: observability-tempo
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "11"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/observability: "true"
+  template:
+    metadata:
+      name: 'observability-tempo-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: observability-tempo
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-observability
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/observability/tempo
+        helm:
+          releaseName: tempo
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: observability
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/enforce-version: latest
+            pod-security.kubernetes.io/warn: restricted
+            pod-security.kubernetes.io/warn-version: latest
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/audit-version: latest
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

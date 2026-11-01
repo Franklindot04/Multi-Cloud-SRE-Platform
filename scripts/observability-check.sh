@@ -13,11 +13,17 @@
 #        - no persistent volume, Alertmanager, Ingress, LoadBalancer or NodePort in the default profile, and the
 #          persistent values really switch the volumes on
 #        - Grafana reads its admin account from the Secret grafana-admin and no password is rendered anywhere
+#        - the Prometheus, Loki and Tempo data sources have fixed uids; the Loki derived field links to Tempo and its
+#          regular expression finds the trace id in a log line in the format of each service (and in no other line);
+#          the Tempo trace-to-logs link points at Loki; no service graph or node graph is on
 #        - the collector image is pinned by digest
 #        - Loki is single tenant with the TSDB index (schema v13), filesystem storage and retention on; Alloy reads
 #          logs only through the Kubernetes API from the shop and data namespaces, turns no log field into a label and
 #          cannot read Secrets; both meet the restricted level, render no claim, hostPath volume or Ingress by default,
 #          and values-persistent.yaml of Loki really switches its volume on
+#        - Tempo is single tenant with local storage, at most 72h of retention and only the OTLP receivers, with no
+#          metrics generator; it meets the restricted level, renders no claim by default, and its values-persistent.yaml
+#          really switches its volume on
 #        - the secrets chart renders an ordinary resource and its Job is not a Helm hook
 #        - everything every chart renders is allowed by the platform-observability AppProject
 #        - every Grafana dashboard is valid JSON with a unique uid and title, uses the data source variable and no
@@ -30,7 +36,8 @@
 #      the dashboards is run against a Loki container with sample lines (JSON with a lower-case level, JSON with an
 #      upper-case level, plain text) and must parse and return what is expected (needs a running Docker; the
 #      collector image is pulled by digest, the other two by the tag the chart sets; the Loki container is removed
-#      afterwards)
+#      afterwards); Tempo has no verify option, so its configuration is checked by starting it, and a trace sent to a collector with the chart's
+#      configuration is found in a Tempo that runs with a read-only root filesystem (scripts/trace-check.py)
 #   6. shellcheck on the scripts, through scripts/shellcheck.sh (same flags and version as CI)
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
@@ -68,7 +75,17 @@ fi
 
 work="$(mktemp -d)"
 logql_container=""
-trap 'rm -rf "$work"; [ -z "$logql_container" ] || docker rm -f "$logql_container" > /dev/null 2>&1 || true' EXIT
+trace_containers=""
+trace_network=""
+# shellcheck disable=SC2329 # called by the trap below
+cleanup() {
+  rm -rf "$work"
+  [ -z "$logql_container" ] || docker rm -f "$logql_container" > /dev/null 2>&1 || true
+  # shellcheck disable=SC2086 # a list of container names, none of which has a space
+  [ -z "$trace_containers" ] || docker rm -f $trace_containers > /dev/null 2>&1 || true
+  [ -z "$trace_network" ] || docker network rm "$trace_network" > /dev/null 2>&1 || true
+}
+trap cleanup EXIT
 export HELM_CONFIG_HOME="$work/config" HELM_CACHE_HOME="$work/cache" HELM_DATA_HOME="$work/data"
 
 # The tarballs under charts/ are downloaded, not committed; fetch them from the pinned lock files.
@@ -83,6 +100,7 @@ build_dependencies() {
 build_dependencies "$stack" || status=1
 build_dependencies "$root/loki" || status=1
 build_dependencies "$root/alloy" || status=1
+build_dependencies "$root/tempo" || status=1
 # The dashboards are checked against the metric names in the vendored CloudNativePG chart, so that one is fetched too.
 build_dependencies "platform/data/cloudnative-pg" || status=1
 
@@ -134,7 +152,7 @@ else
   status=1
 fi
 
-for chart in loki alloy; do
+for chart in loki alloy tempo; do
   dir="$root/$chart"
   want_chart="$(sed -n 's/^    version: *//p' "$dir/Chart.yaml")"
   have_chart="$(sed -n 's/^  version: *//p' "$dir/Chart.lock" 2> /dev/null || true)"
@@ -188,6 +206,7 @@ else
   contract restricted "kube-prometheus-stack + values-persistent.yaml" "$work/stack-persistent.yaml"
   contract grafana-admin "kube-prometheus-stack + values-persistent.yaml" "$work/stack-persistent.yaml"
   contract project-fit "kube-prometheus-stack + values-persistent.yaml" "$work/stack-persistent.yaml" "$project" "$namespace"
+  contract grafana-datasources "kube-prometheus-stack" "$work/stack.yaml"
   # The persistent values must switch the volumes on, or the documented option does nothing.
   if "$contract_py" scripts/chart-contract-check.py ephemeral persistent < "$work/stack-persistent.yaml" > /dev/null; then
     echo "    FAIL values-persistent.yaml does not render any persistent storage"
@@ -208,6 +227,8 @@ else
   render loki "$root/loki" -f "$root/loki/values.yaml" > "$work/loki.yaml" || status=1
   render loki "$root/loki" -f "$root/loki/values.yaml" -f "$root/loki/values-persistent.yaml" > "$work/loki-persistent.yaml" || status=1
   render alloy "$root/alloy" -f "$root/alloy/values.yaml" > "$work/alloy.yaml" || status=1
+  render tempo "$root/tempo" -f "$root/tempo/values.yaml" > "$work/tempo.yaml" || status=1
+  render tempo "$root/tempo" -f "$root/tempo/values.yaml" -f "$root/tempo/values-persistent.yaml" > "$work/tempo-persistent.yaml" || status=1
   for check in restricted ephemeral loki; do contract "$check" "loki" "$work/loki.yaml"; done
   contract project-fit "loki" "$work/loki.yaml" "$project" "$namespace"
   for check in restricted loki; do contract "$check" "loki + values-persistent.yaml" "$work/loki-persistent.yaml"; done
@@ -215,6 +236,16 @@ else
   # The persistent values must switch the volume on, or the documented option does nothing.
   if "$contract_py" scripts/chart-contract-check.py ephemeral persistent < "$work/loki-persistent.yaml" > /dev/null; then
     echo "    FAIL the Loki values-persistent.yaml does not render any persistent storage"
+    status=1
+  fi
+  contracts=$((contracts + 1))
+  for check in restricted ephemeral tempo; do contract "$check" "tempo" "$work/tempo.yaml"; done
+  contract project-fit "tempo" "$work/tempo.yaml" "$project" "$namespace"
+  for check in restricted tempo; do contract "$check" "tempo + values-persistent.yaml" "$work/tempo-persistent.yaml"; done
+  contract project-fit "tempo + values-persistent.yaml" "$work/tempo-persistent.yaml" "$project" "$namespace"
+  # The persistent values must switch the volume on, or the documented option does nothing.
+  if "$contract_py" scripts/chart-contract-check.py ephemeral persistent < "$work/tempo-persistent.yaml" > /dev/null; then
+    echo "    FAIL the Tempo values-persistent.yaml does not render any persistent storage"
     status=1
   fi
   contracts=$((contracts + 1))
@@ -287,6 +318,47 @@ if have docker && docker info > /dev/null 2>&1 && [ -n "$contract_py" ]; then
     logql_container=""
     status=1
   fi
+  # Tempo: the configuration the chart renders, which the image the chart deploys must accept when it starts, and the trace path of this
+  # profile: a trace sent to a collector configured as the chart configures it (with the Tempo address swapped for the
+  # test container) is found in a Tempo that runs with a read-only root filesystem and the same configuration.
+  tempo_image="$(helm template tempo "$root/tempo" --namespace "$namespace" | sed -n 's/^ *image: *//p' | head -1)"
+  mkdir -p "$work/tempo-config" "$work/collector-trace-config"
+  helm template tempo "$root/tempo" --namespace "$namespace" -s charts/tempo/templates/configmap-tempo.yaml \
+    | "$contract_py" -c 'import sys, yaml; print(next(yaml.safe_load_all(sys.stdin))["data"]["tempo.yaml"], end="")' > "$work/tempo-config/tempo.yaml"
+  helm template tempo "$root/tempo" --namespace "$namespace" -s charts/tempo/templates/configmap-tempo.yaml \
+    | "$contract_py" -c 'import sys, yaml; print(next(yaml.safe_load_all(sys.stdin))["data"]["overrides.yaml"], end="")' > "$work/tempo-config/overrides.yaml"
+  helm template otel-collector "$collector" --namespace "$namespace" --set tempo.endpoint=tempo-check:4317 -s templates/configmap.yaml \
+    | "$contract_py" -c 'import sys, yaml; print(next(yaml.safe_load_all(sys.stdin))["data"]["config.yaml"], end="")' > "$work/collector-trace-config/config.yaml"
+  trace_network="observability-check-net-$$"
+  trace_containers="tempo-check collector-check-$$"
+  if docker network create "$trace_network" > /dev/null 2> "$work/trace.err" \
+    && docker run -d --rm --name tempo-check --network "$trace_network" --network-alias tempo-check --read-only --tmpfs /var/tempo:uid=10001 \
+      --cap-drop ALL --security-opt no-new-privileges --user 10001:10001 -p 127.0.0.1::3200 \
+      -v "$work/tempo-config:/conf:ro" "$tempo_image" -config.file=/conf/tempo.yaml -mem-ballast-size-mbs=0 > /dev/null 2>> "$work/trace.err" \
+    && docker run -d --rm --name "collector-check-$$" --network "$trace_network" --read-only --cap-drop ALL \
+      --security-opt no-new-privileges -e MY_POD_IP=0.0.0.0 -p 127.0.0.1::4318 \
+      -v "$work/collector-trace-config:/etc/otelcol:ro" "$image" --config=/etc/otelcol/config.yaml > /dev/null 2>> "$work/trace.err"; then
+    tempo_port="$(docker port tempo-check 3200/tcp | head -1 | sed 's/.*://')"
+    collector_port="$(docker port "collector-check-$$" 4318/tcp | head -1 | sed 's/.*://')"
+    if "$contract_py" scripts/trace-check.py "http://127.0.0.1:$tempo_port" "http://127.0.0.1:$collector_port" > "$work/trace.out" 2>&1; then
+      echo "    the Tempo configuration is accepted by $tempo_image, and a trace sent to the collector is found in it"
+    else
+      echo "    FAIL the trace path from the collector to Tempo"
+      cat "$work/trace.out"
+      docker logs tempo-check 2>&1 | tail -15
+      docker logs "collector-check-$$" 2>&1 | tail -15
+      status=1
+    fi
+  else
+    echo "    FAIL could not start Tempo and the collector to run the trace check"
+    cat "$work/trace.err"
+    status=1
+  fi
+  # shellcheck disable=SC2086 # a list of container names, none of which has a space
+  docker rm -f $trace_containers > /dev/null 2>&1 || true
+  trace_containers=""
+  docker network rm "$trace_network" > /dev/null 2>&1 || true
+  trace_network=""
   alloy_image="$(helm template alloy "$root/alloy" --namespace "$namespace" | sed -n 's/^ *image: *\(.*grafana\/alloy:.*\)$/\1/p' | head -1)"
   mkdir -p "$work/alloy-config"
   helm template alloy "$root/alloy" --namespace "$namespace" -s charts/alloy/templates/configmap.yaml \

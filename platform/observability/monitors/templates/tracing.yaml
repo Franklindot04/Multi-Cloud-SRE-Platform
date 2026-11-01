@@ -1,0 +1,27 @@
+{{- if .Values.tracing.tempo.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tempo
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: tempo-monitor
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  jobLabel: app.kubernetes.io/name
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.namespace }}
+  # The chart makes one Service for the pod, with these labels and the port name below. Its own ServiceMonitor is off:
+  # it also lists a port that exists only with the query front end.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+  endpoints:
+    - port: tempo-prom-metrics
+      path: /metrics
+      interval: {{ .Values.tracing.interval }}
+{{- end }}

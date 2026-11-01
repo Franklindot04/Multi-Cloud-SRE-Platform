@@ -37,7 +37,7 @@ Labels
 
 Grafana and monitors
 
-- **A Loki data source**, provisioned from the stack's values the way the Prometheus one is (the chart's `additionalDataSources`, loaded by the same sidecar), with `maxLines: 1000` and no derived fields: trace links wait for traces.
+- **A Loki data source**, provisioned from the stack's values the way the Prometheus one is (the chart's `additionalDataSources`, loaded by the same sidecar), with `maxLines: 1000` and no derived fields: trace links waited for traces ([ADR-0022](0022-tracing-stack.md) adds the Tempo data source and the derived field).
 - **A fourth dashboard, Logs** (`sre-logs`): lines per second, error lines per second, the services and pods that logged, log volume and error lines by service, and the lines themselves, with namespace and service variables and a free-text search (a case-insensitive regular expression). The Sample services and Data layer dashboards link to it, keeping the time range and the variables of the same name.
 - **ServiceMonitors for Loki and Alloy** in `platform/observability/monitors`, like the other monitors, so both appear as targets.
 - **Two more ApplicationSets** under the same label: `observability-loki` (wave 15) before `observability-alloy` (wave 16), so Loki exists when Alloy starts to push. The AppProject `platform-observability` gained one namespaced kind, `StatefulSet`, because Loki is one; Alloy's ClusterRole and binding fit the kinds it already allowed.

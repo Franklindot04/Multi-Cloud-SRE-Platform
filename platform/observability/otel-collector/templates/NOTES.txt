@@ -1,1 +1,1 @@
-OpenTelemetry Collector. OTLP gRPC on 4317 and HTTP on 4318; metrics on 8888 (own) and 8889 (received).
+OpenTelemetry Collector. OTLP gRPC on 4317 and HTTP on 4318; metrics on 8888 (own) and 8889 (received); traces are exported to Tempo.

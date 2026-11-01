@@ -39,7 +39,7 @@ Grafana
 
 Collection
 
-- **The OpenTelemetry Collector** runs as a Deployment of the plain distribution, with the image pinned by digest. It accepts OTLP over gRPC and HTTP, applies `memory_limiter` and `batch`, exposes the metrics it receives and its own metrics for Prometheus (scraped through a `ServiceMonitor`), and accepts traces only to drop them: the `debug` exporter at `basic` verbosity until a trace backend exists. Listeners bind to the pod's address, not to every interface.
+- **The OpenTelemetry Collector** runs as a Deployment of the plain distribution, with the image pinned by digest. It accepts OTLP over gRPC and HTTP, applies `memory_limiter` and `batch`, exposes the metrics it receives and its own metrics for Prometheus (scraped through a `ServiceMonitor`), and accepted traces only to drop them when this was written: the `debug` exporter at `basic` verbosity until a trace backend existed (its traces pipeline now exports to Tempo, see [ADR-0022](0022-tracing-stack.md)). Listeners bind to the pod's address, not to every interface.
 - **The services do not send OTLP.** None of them uses an OpenTelemetry SDK or reads an `OTEL_*` setting, so no endpoint setting was added to `deploy/helm` and no application code was changed. The collector is ready for the day they are instrumented.
 - **Monitors live in the `observability` namespace** and select their targets in `shop` and `data`: a `ServiceMonitor` per sample service, a `ServiceMonitor` for RabbitMQ (the operator adds the port `prometheus` to the cluster's Service), and a **`PodMonitor`** for PostgreSQL, because CloudNativePG serves metrics on the instance pods and none of its Services exposes that port. Prometheus selects every monitor in every namespace, so they need no release label.
 
@@ -63,7 +63,7 @@ Teardown
 
 - **Only part of it is recorded on a cluster.** See below, and [the screenshots](../observability-evidence.md).
 - **No alerting.** No Alertmanager, no alert or recording rules, no SLOs, no burn-rate alerts, no notification route.
-- **No traces, and logs only through [ADR-0021](0021-logging-stack.md).** Traces are accepted and dropped. Logs are collected by the logging stack of that decision.
+- **No traces, and logs only through [ADR-0021](0021-logging-stack.md).** Traces were accepted and dropped when this was written; [ADR-0022](0022-tracing-stack.md) adds a trace backend. Logs are collected by the logging stack of [ADR-0021](0021-logging-stack.md).
 - **No long-term or cross-cluster storage.** One Prometheus per cluster, two days, and only the EKS cluster exists.
 - **No RabbitMQ broker metrics in a dashboard**, no Valkey metrics (the chart has no exporter enabled), and the CloudNativePG and RabbitMQ operators are not scraped.
 - **No node-level metrics** (node-exporter), and no control-plane metrics (EKS and GKE do not expose them).

@@ -844,8 +844,8 @@ run_bootstrap --enable-observability
 check "the flag exits 0 on its own" test "$rc" -eq 0
 check "the flag sets the label to true" grep -q '"platform.example/observability": "true"' "$work/bout"
 check "the label is written once" test "$(grep -c 'platform.example/observability' "$work/bout")" = 1
-check "the output says what the flag does and costs" grep -q 'observability enabled: Prometheus, Grafana and Loki keep their data in emptyDir' "$work/bout"
-check "the output gives the current size of the stack" grep -q 'about 0.45 vCPU and 1.4 GiB of memory' "$work/bout"
+check "the output says what the flag does and costs" grep -q 'observability enabled: Prometheus, Grafana, Loki and Tempo keep their data in emptyDir' "$work/bout"
+check "the output gives the current size of the stack" grep -q 'about 0.5 vCPU and 1.5 GiB of memory' "$work/bout"
 check "and that there is no ingress" grep -q 'there is no ingress' "$work/bout"
 check "the other feature labels stay false" test "$(grep -c -e '"platform.example/data": "false"' -e '"platform.example/apps": "false"' -e '"platform.example/external-dns": "false"' -e '"platform.example/dns01": "false"' "$work/bout")" = 4
 check "the cluster is still registered as managed on AWS" grep -q '"platform.example/cloud": "aws"' "$work/bout"
@@ -865,7 +865,7 @@ check "and says it is off by default" test "$(sed -n '/--enable-observability/,/
 check "and says how to reach Grafana" test "$(sed -n '/--enable-observability/,/--enable-apps/p' "$work/bout" | grep -c 'port-forward')" -ge 1
 
 # The label the script writes must be the one the ApplicationSets select on, or the flag deploys nothing.
-check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 7
+check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 8
 check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/observability' platform/argocd/apps/*.yaml | grep -vc '/9[0-9]-observability-')" = 0
 
 echo "chart-contract-check.py (observability checks)"
@@ -908,6 +908,28 @@ else
   check "the compactor is named" grep -q 'compactor.retention_enabled must be true' "$work/cout"
   check "a retention longer than a week is named" grep -q "retention_period must be set in hours and be at most 168h (it is '720h')" "$work/cout"
   check "a missing limit is named" grep -q 'limits_config.max_line_size must be set' "$work/cout"
+  contract "$obs/tempo-ok.yaml" tempo t
+  check "a single-tenant Tempo with local storage, a day of retention and only the OTLP receiver passes" test "$rc" -eq 0
+  contract "$obs/tempo-bad.yaml" tempo t
+  check "a Tempo with tenants, object storage, a month of retention, a Jaeger receiver and a metrics generator fails" test "$rc" -eq 1
+  check "the tenant setting is named" grep -q 'multitenancy_enabled must be false' "$work/cout"
+  check "the storage is named" grep -q 'storage.trace.backend must be local' "$work/cout"
+  check "the retention is named" grep -q "block_retention must be set in hours and be at most 72h (it is '720h')" "$work/cout"
+  check "the receivers are named" grep -q 'must receive only otlp (it has jaeger, otlp)' "$work/cout"
+  check "the metrics generator is named" grep -q 'the metrics generator needs a remote-write endpoint' "$work/cout"
+  check "the usage report is named" grep -q 'usage_report.reporting_enabled must be false' "$work/cout"
+  contract "$obs/datasources-ok.yaml" grafana-datasources t
+  check "data sources with unique uids, a Loki derived field that finds the trace id and the links both ways pass" test "$rc" -eq 0
+  contract "$obs/datasources-bad.yaml" grafana-datasources t
+  check "a derived field with a loose expression and a wrong uid, and a Tempo link to the wrong data source fail" test "$rc" -eq 1
+  check "the wrong derived field uid is named" grep -q 'must link to the Tempo data source by its uid (it links to tempo-typo)' "$work/cout"
+  check "the loose expression is rejected on a log line it should find" grep -q 'does not find the trace id in a gateway log line' "$work/cout"
+  check "and on a line it should not match" grep -q 'matches a line that has no trace id in the format of the services' "$work/cout"
+  check "the derived field url is named" grep -q 'the derived field url must be' "$work/cout"
+  check "the trace to logs target is named" grep -q 'must point at the Loki data source by its uid (it points at prometheus)' "$work/cout"
+  check "the missing time shift is named" grep -q 'needs a time shift before (negative) and after (positive) the span' "$work/cout"
+  check "the service map is named" grep -q 'serviceMap needs metrics from Tempo' "$work/cout"
+  check "the node graph is named" grep -q 'the node graph needs the metrics generator of Tempo' "$work/cout"
   contract "$obs/alloy-ok.yaml" alloy t
   check "an Alloy that reads the API for two namespaces and stores the level as metadata passes" test "$rc" -eq 0
   contract "$obs/alloy-bad.yaml" alloy t

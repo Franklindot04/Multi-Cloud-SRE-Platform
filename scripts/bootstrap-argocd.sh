@@ -36,11 +36,11 @@ Options:
                            off by default. Volumes it creates are not managed by Terraform and are not
                            removed by terraform destroy: see docs/runbooks/data-layer.md
   --data-profile PROFILE   standard (one instance of each, default) or ha (three); needs --enable-data
-  --enable-observability   label the cluster so the metrics and logging stack (Prometheus Operator, Prometheus,
-                           Grafana, OpenTelemetry Collector, monitors, Loki and Alloy) is deployed to the
-                           observability namespace; off by default. Requests about 0.45 vCPU and 1.4 GiB of
-                           memory on the nodes, and uses no volumes and no load balancer. Reach Grafana by
-                           port-forward: see platform/observability/README.md
+  --enable-observability   label the cluster so the metrics, logging and tracing stack (Prometheus Operator,
+                           Prometheus, Grafana, OpenTelemetry Collector, monitors, Loki, Alloy and Tempo) is
+                           deployed to the observability namespace; off by default. Requests about 0.5 vCPU
+                           and 1.5 GiB of memory on the nodes, and uses no volumes and no load balancer. Reach
+                           Grafana by port-forward: see platform/observability/README.md
   --enable-apps            label the cluster so the sample services (gateway, orders, payments, notifier) are
                            deployed from deploy/helm; off by default. Images must be published first: see
                            docs/runbooks/service-deployment.md
@@ -394,7 +394,7 @@ if [ "$ENABLE_DATA" -eq 1 ]; then
   info "data layer enabled (profile: $DATA_PROFILE): its volumes are not managed by Terraform; see docs/runbooks/data-layer.md for teardown"
 fi
 if [ "$ENABLE_OBSERVABILITY" -eq 1 ]; then
-  info "observability enabled: Prometheus, Grafana and Loki keep their data in emptyDir (lost when a pod is rescheduled), there is no ingress, and the stack requests about 0.45 vCPU and 1.4 GiB of memory; see platform/observability/README.md"
+  info "observability enabled: Prometheus, Grafana, Loki and Tempo keep their data in emptyDir (lost when a pod is rescheduled), there is no ingress, and the stack requests about 0.5 vCPU and 1.5 GiB of memory; see platform/observability/README.md"
 fi
 if [ "$ENABLE_APPS" -eq 1 ]; then
   info "services enabled (profile: $APPS_PROFILE): the images in deploy/helm/values/images.yaml must exist in the registry; an enabled ingress creates a billed load balancer"
