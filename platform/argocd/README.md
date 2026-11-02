@@ -39,7 +39,9 @@ platform/argocd/
                     10-... 61-...                     ApplicationSets for the add-ons
                     70-... 78-...                     the data layer (and the RabbitMQ credential copy)
                     80-... 83-...                     the sample services, one ApplicationSet each
-                    90-... 97-...                     the metrics, logging and tracing stack (platform/observability)
+                    84-... 86-...                     the Kyverno policy engine, its network policies and the admission policies
+                    87-... 89-...                     the External Secrets Operator, its store and its network policies (platform/security)
+                    90-... 98-...                     the metrics, logging and tracing stack (platform/observability)
 ```
 
 ## How clusters are described
@@ -56,6 +58,7 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `platform.example/data-profile` | `standard`, `ha` | Data layer profile (default `standard`; `ha` needs three nodes) |
 | `platform.example/observability` | `true`, `false` | Deploy the metrics and logging stack from `platform/observability` (default `false`; no volumes, no ingress) |
 | `platform.example/policy` | `true`, `false` | Deploy the Kyverno policy engine from `platform/security` (default `false`; no policies, no volumes, no ingress) |
+| `platform.example/external-secrets` | `true`, `false` | Deploy the External Secrets Operator and the ClusterSecretStore `aws-parameter-store` from `platform/security` (default `false`; EKS only; no ExternalSecret, no credential, no volumes, no ingress) |
 | `platform.example/apps` | `true`, `false` | Deploy the sample services from `deploy/helm` (default `false`; needs published images) |
 | `platform.example/apps-profile` | `memory`, `data` | Service profile (default `memory`; `data` needs the data layer) |
 
@@ -67,7 +70,8 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `vpc-id` | load balancer controller VPC |
 | `vpc-cidr` | address range of the VPC, for the network policies of the `observability` namespace (the kubelets and the API server endpoints Prometheus scrapes) |
 | `service-cidr` | address range of the cluster's Services, for the network policies of all three namespaces (the VPC CNI matches egress against Service addresses) |
-| `lbc-role-arn`, `external-dns-role-arn`, `cert-manager-role-arn` | IRSA role annotations on the service accounts (AWS) |
+| `lbc-role-arn`, `external-dns-role-arn`, `cert-manager-role-arn`, `external-secrets-role-arn` | IRSA role annotations on the service accounts (AWS) |
+| `secrets-prefix` | Parameter Store path of the secrets, `/<prefix>/<environment>` (Terraform output `secrets_parameter_prefix`), recorded on the ClusterSecretStore |
 | `external-dns-sa-email`, `cert-manager-sa-email` | Workload Identity annotations (GCP) |
 | `project-id` | external-dns and Cloud DNS issuer project (GCP) |
 | `hosted-zone-id` | Route 53 DNS-01 issuer |
@@ -86,8 +90,8 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 0 | `priority-classes` |
 | 1 | `cert-manager` |
 | 2 | `cert-manager-issuers` |
-| 3 | `metrics-server`, `aws-load-balancer-controller` |
-| 4 | `external-dns` (only on labelled clusters) |
+| 3 | `metrics-server`, `aws-load-balancer-controller`, `eso-operator` (the External Secrets Operator, no store yet; only on EKS clusters labelled `platform.example/external-secrets=true`) |
+| 4 | `external-dns` (only on labelled clusters), `eso-store` (the ClusterSecretStore `aws-parameter-store`), `eso-network-policies` (default deny and the allow rules for the `external-secrets` namespace; EKS clusters only) |
 | 5 | `data-namespaces`, `data-storage` (only on clusters labelled `platform.example/data=true`) |
 | 6 | `data-secrets`, `data-cnpg-operator`, `data-rabbitmq-operator` |
 | 7 | `data-postgres`, `data-valkey`, `data-rabbitmq` |

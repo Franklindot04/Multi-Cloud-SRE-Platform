@@ -1,0 +1,2 @@
+The ClusterSecretStore {{ .Values.name }} reads AWS Systems Manager Parameter Store parameters with the IAM role of the service account
+{{ .Values.serviceAccount.namespace }}/{{ .Values.serviceAccount.name }}. It holds no credential.

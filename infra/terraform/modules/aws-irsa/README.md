@@ -46,6 +46,7 @@ The role can be assumed with `sts:AssumeRoleWithWebIdentity` only when the token
 | `role_name` | Role name |
 | `service_account_subject` | Trusted subject (`system:serviceaccount:<ns>:<name>`) |
 | `service_account_annotations` | Annotation map for the service account |
+| `assume_role_policy` | Trust policy of the role (JSON) |
 
 ## Tests
 

@@ -1,0 +1,84 @@
+---
+# The External Secrets Operator (vendored, version-pinned official chart): the controller, the webhook and the certificate controller,
+# with no store and no ExternalSecret. Wave 3: early, before the data layer (wave 5) and the observability stack (wave 10) and before
+# the services, which will read their secrets through it. Waves only order the creation of the ApplicationSets; the consumers wait for
+# what they need. Only clusters labelled platform.example/external-secrets=true get it (off by default;
+# scripts/bootstrap-argocd.sh --enable-external-secrets). The controller's IAM role (Terraform output external_secrets_role_arn) comes
+# from the cluster annotation platform.example/external-secrets-role-arn and is never committed; the chart refuses to render without
+# it, so the operator never starts without its role. The chart's CRDs are larger than the 256 KiB that client-side apply can store in
+# an annotation (the SecretStore and ClusterSecretStore CRDs are about 740 KB each), so the Application syncs with ServerSideApply=true.
+# The certificate controller writes the CA bundle of the webhooks and the certificate Secret, so Argo CD ignores those two fields.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: eso-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/external-secrets: "true"
+            platform.example/cloud: aws
+  template:
+    metadata:
+      name: 'eso-operator-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: eso-operator
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/security/external-secrets
+        helm:
+          releaseName: external-secrets
+          valueFiles:
+            - values.yaml
+          parameters:
+            - name: roleArn
+              value: '{{ index .metadata.annotations "platform.example/external-secrets-role-arn" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: external-secrets
+      ignoreDifferences:
+        - group: admissionregistration.k8s.io
+          kind: ValidatingWebhookConfiguration
+          jqPathExpressions:
+            - '.webhooks[]?.clientConfig.caBundle'
+        - group: ""
+          kind: Secret
+          name: external-secrets-webhook
+          jsonPointers:
+            - /data
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/enforce-version: latest
+            pod-security.kubernetes.io/warn: restricted
+            pod-security.kubernetes.io/warn-version: latest
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/audit-version: latest
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

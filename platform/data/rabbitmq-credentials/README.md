@@ -16,3 +16,13 @@ Kubernetes RBAC cannot limit `create` to a name, so the Job could create other S
 Later this is replaced by External Secrets producing the same `rabbitmq-auth` from the cloud's secret manager ([ADR-0016](../../../docs/adr/0016-service-deployment-model.md)).
 
 Run again with an unchanged source, the Job leaves `rabbitmq-auth` as it is; if the operator changes its Secret, the copy follows it, because the operator owns that credential. `make deploy-check` fails if this chart renders only hooks or if the Job becomes a Helm hook.
+
+## Two modes
+
+**Copied (the default)** is what is described above: a Job copies the operator's default user into `shop`.
+
+**External** renders one ExternalSecret that makes `rabbitmq-auth` in `shop` (`username`, `password`, `host`, `port`, as before) from the parameters `rabbitmq/default-username` and `rabbitmq/default-password`. The Job, its ServiceAccount, Roles and RoleBindings are **not** rendered, so the public `curl` image and the exempt label of the admission policies are not used. The broker starts with the same two parameters (see [`rabbitmq`](../rabbitmq)).
+
+The mode is chosen per cluster. The ApplicationSet passes `externalSecrets.enabled` from the cluster Secret label `platform.example/external-secrets` (off when the label is absent) and `externalSecrets.prefix` from the annotation `platform.example/secrets-prefix` (for example `/multi-cloud-sre/dev`); `scripts/bootstrap-argocd.sh --enable-external-secrets` sets both. The default is off, so a cluster without AWS behaves as it always did. With the mode on the chart refuses to render without the prefix.
+
+The values are in AWS Systems Manager Parameter Store as SecureString parameters, written by `scripts/seed-secrets.sh` from [`scripts/secrets/manifest.yaml`](../../../scripts/secrets/manifest.yaml); they never pass through Git, Argo CD parameters or Terraform. The ClusterSecretStore `aws-parameter-store` and the operator are in [`platform/security`](../../security). Run the seed script before the first sync: until a parameter exists its ExternalSecret is Degraded and the Application retries. Nothing here has run on a cluster or against AWS; `make external-secrets-check` compares both modes with [`scripts/secrets/contract.yaml`](../../../scripts/secrets/contract.yaml).

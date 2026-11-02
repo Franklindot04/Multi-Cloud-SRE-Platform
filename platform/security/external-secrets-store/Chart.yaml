@@ -1,0 +1,7 @@
+apiVersion: v2
+name: external-secrets-store
+description: The ClusterSecretStore aws-parameter-store, which reads SecureString parameters from AWS Systems Manager Parameter Store
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws"

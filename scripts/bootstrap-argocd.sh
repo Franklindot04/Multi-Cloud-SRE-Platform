@@ -7,7 +7,8 @@
 #
 # Identifiers come from the Terraform outputs of infra/terraform/environments/aws:
 #   cluster_name, region, account_id, vpc_id, vpc_cidr_block, service_cidr_block, aws_load_balancer_controller_role_arn
-# and, when present, external_dns_role_arn, cert_manager_role_arn and dns_zone_id.
+# and, when present, external_dns_role_arn, cert_manager_role_arn, dns_zone_id, external_secrets_role_arn and
+# secrets_parameter_prefix (the last two are required by --enable-external-secrets).
 #
 # Nothing is written to disk except a temporary Helm cache that is removed on exit, and no secret
 # value is printed. With --dry-run nothing is read from or changed in any cluster or cloud account.
@@ -48,6 +49,15 @@ Options:
                            Requests 225m CPU and 320Mi of memory. Kyverno's webhooks fail open (a dead Kyverno does
                            not block the cluster) and skip kube-system, kube-node-lease, argocd and kyverno: see
                            platform/security/kyverno/README.md
+  --enable-external-secrets
+                           label the cluster so the External Secrets Operator is deployed to the external-secrets
+                           namespace, with the ClusterSecretStore aws-parameter-store (AWS Systems Manager Parameter
+                           Store, signing in with the operator's IAM role) and default-deny network policies; no
+                           ExternalSecret is deployed by it. Off by default. Needs the Terraform outputs
+                           external_secrets_role_arn and secrets_parameter_prefix, which become the cluster annotations
+                           platform.example/external-secrets-role-arn and platform.example/secrets-prefix. The
+                           secret values are written separately by scripts/seed-secrets.sh. Requests 100m CPU and
+                           228Mi of memory: see platform/security/external-secrets/README.md
   --enable-apps            label the cluster so the sample services (gateway, orders, payments, notifier) are
                            deployed from deploy/helm; off by default. Images must be published first: see
                            docs/runbooks/service-deployment.md
@@ -72,6 +82,7 @@ ENABLE_DNS01=0
 ENABLE_DATA=0
 ENABLE_OBSERVABILITY=0
 ENABLE_POLICY=0
+ENABLE_EXTERNAL_SECRETS=0
 ENABLE_APPS=0
 APPS_PROFILE="memory"
 DATA_PROFILE="standard"
@@ -124,6 +135,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --enable-observability)
       ENABLE_OBSERVABILITY=1
+      shift
+      ;;
+    --enable-external-secrets)
+      ENABLE_EXTERNAL_SECRETS=1
       shift
       ;;
     --enable-policy)
@@ -235,6 +250,8 @@ SERVICE_CIDR=""
 LBC_ROLE_ARN=""
 EXTERNAL_DNS_ROLE_ARN=""
 CERT_MANAGER_ROLE_ARN=""
+EXTERNAL_SECRETS_ROLE_ARN=""
+SECRETS_PREFIX=""
 
 tf_value() {
   # tf_value NAME prints the output value, or nothing when it is missing or null.
@@ -257,6 +274,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   LBC_ROLE_ARN="<aws_load_balancer_controller_role_arn>"
   EXTERNAL_DNS_ROLE_ARN="<external_dns_role_arn>"
   CERT_MANAGER_ROLE_ARN="<cert_manager_role_arn>"
+  EXTERNAL_SECRETS_ROLE_ARN="<external_secrets_role_arn>"
+  SECRETS_PREFIX="<secrets_parameter_prefix>"
   [ -n "$HOSTED_ZONE_ID" ] || HOSTED_ZONE_ID="<dns_zone_id>"
 else
   info "reading Terraform outputs from $TF_DIR"
@@ -271,6 +290,8 @@ else
   LBC_ROLE_ARN="$(tf_value aws_load_balancer_controller_role_arn)"
   EXTERNAL_DNS_ROLE_ARN="$(tf_value external_dns_role_arn)"
   CERT_MANAGER_ROLE_ARN="$(tf_value cert_manager_role_arn)"
+  EXTERNAL_SECRETS_ROLE_ARN="$(tf_value external_secrets_role_arn)"
+  SECRETS_PREFIX="$(tf_value secrets_parameter_prefix)"
   [ -n "$HOSTED_ZONE_ID" ] || HOSTED_ZONE_ID="$(tf_value dns_zone_id)"
 
   [ -n "$CLUSTER_NAME" ] || die "Terraform output cluster_name is empty"
@@ -291,9 +312,17 @@ else
   require_match aws_load_balancer_controller_role_arn "$LBC_ROLE_ARN" "$role_re"
   [ -z "$EXTERNAL_DNS_ROLE_ARN" ] || require_match external_dns_role_arn "$EXTERNAL_DNS_ROLE_ARN" "$role_re"
   [ -z "$CERT_MANAGER_ROLE_ARN" ] || require_match cert_manager_role_arn "$CERT_MANAGER_ROLE_ARN" "$role_re"
+  [ -z "$EXTERNAL_SECRETS_ROLE_ARN" ] || require_match external_secrets_role_arn "$EXTERNAL_SECRETS_ROLE_ARN" "$role_re"
+  [ -z "$SECRETS_PREFIX" ] || require_match secrets_parameter_prefix "$SECRETS_PREFIX" '^/[a-z0-9]([a-z0-9-]*[a-z0-9])?/(dev|staging|prod)$'
   [ -z "$HOSTED_ZONE_ID" ] || require_match dns_zone_id "$HOSTED_ZONE_ID" '^Z[A-Z0-9]+$'
 fi
 
+if [ "$ENABLE_EXTERNAL_SECRETS" -eq 1 ] && [ -z "$EXTERNAL_SECRETS_ROLE_ARN" ]; then
+  die "--enable-external-secrets needs the external_secrets_role_arn Terraform output (set enable_external_secrets = true and apply)"
+fi
+if [ "$ENABLE_EXTERNAL_SECRETS" -eq 1 ] && [ -z "$SECRETS_PREFIX" ]; then
+  die "--enable-external-secrets needs the secrets_parameter_prefix Terraform output (set enable_external_secrets = true and apply)"
+fi
 if [ "$ENABLE_EXTERNAL_DNS" -eq 1 ] && [ -z "$EXTERNAL_DNS_ROLE_ARN" ]; then
   die "--enable-external-dns needs the external_dns_role_arn Terraform output (set enable_external_dns_iam = true and apply)"
 fi
@@ -361,6 +390,9 @@ build_cluster_secret() {
     --arg data_profile "$DATA_PROFILE" \
     --arg observability "$(bool_word "$ENABLE_OBSERVABILITY")" \
     --arg policy "$(bool_word "$ENABLE_POLICY")" \
+    --arg external_secrets "$(bool_word "$ENABLE_EXTERNAL_SECRETS")" \
+    --arg eso_role "$EXTERNAL_SECRETS_ROLE_ARN" \
+    --arg secrets_prefix "$SECRETS_PREFIX" \
     --arg apps "$(bool_word "$ENABLE_APPS")" \
     --arg apps_profile "$APPS_PROFILE" \
     --arg cluster_name "$CLUSTER_NAME" \
@@ -391,6 +423,7 @@ build_cluster_secret() {
           "platform.example/data-profile": $data_profile,
           "platform.example/observability": $observability,
           "platform.example/policy": $policy,
+          "platform.example/external-secrets": $external_secrets,
           "platform.example/apps": $apps,
           "platform.example/apps-profile": $apps_profile
         },
@@ -404,6 +437,8 @@ build_cluster_secret() {
           "platform.example/lbc-role-arn": $lbc_role,
           "platform.example/external-dns-role-arn": $extdns_role,
           "platform.example/cert-manager-role-arn": $certmgr_role,
+          "platform.example/external-secrets-role-arn": $eso_role,
+          "platform.example/secrets-prefix": $secrets_prefix,
           "platform.example/hosted-zone-id": $zone,
           "platform.example/dns-domain": $domain,
           "platform.example/acme-email": $email
@@ -423,6 +458,9 @@ if [ "$ENABLE_DATA" -eq 1 ]; then
 fi
 if [ "$ENABLE_POLICY" -eq 1 ]; then
   info "policy engine enabled: Kyverno (admission, background, cleanup and reports controllers, no policies) in the kyverno namespace, requests 225m CPU and 320Mi of memory; its webhooks fail open and skip kube-system, kube-node-lease, argocd and kyverno; the network policies need the VPC and Service ranges from the cluster Secret; see platform/security/kyverno/README.md"
+fi
+if [ "$ENABLE_EXTERNAL_SECRETS" -eq 1 ]; then
+  info "external secrets enabled: the External Secrets Operator (controller, webhook and certificate controller, requests 100m CPU and 228Mi of memory) in the external-secrets namespace, and the ClusterSecretStore aws-parameter-store for the parameters under $SECRETS_PREFIX in $REGION; it signs in with its IAM role and holds no credential; its validating webhooks fail open; no ExternalSecret is deployed by it, and the values are written by scripts/seed-secrets.sh; see platform/security/external-secrets/README.md"
 fi
 if [ "$ENABLE_OBSERVABILITY" -eq 1 ]; then
   info "observability enabled: Prometheus, Alertmanager, Grafana, Loki and Tempo keep their data in emptyDir (lost when a pod is rescheduled), there is no ingress, alerts are recorded in Alertmanager and sent nowhere, and the stack requests about 0.5 vCPU and 1.5 GiB of memory (515m and 1560Mi); see platform/observability/README.md"

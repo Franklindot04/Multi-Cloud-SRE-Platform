@@ -24,6 +24,15 @@ With the defaults, expect a few dollars per day. Destroy as soon as you are done
 
 ## Apply
 
+**Seed the secrets first (once for each environment).** If the cluster will use external secrets (`--enable-external-secrets`), the passwords have to be in Parameter Store before the first sync. They are free and survive a rebuild, so this is done once; a second run changes nothing:
+
+```bash
+./scripts/seed-secrets.sh --region eu-north-1 --profile <PROFILE>
+./scripts/seed-secrets.sh --region eu-north-1 --profile <PROFILE> --check
+```
+
+The details, and what to check afterwards, are in the [secrets runbook](secrets.md). A cluster that does not opt in needs none of this.
+
 The network and cluster live in one stack. Terraform creates the network first and the cluster after it, because the cluster depends on the network outputs.
 
 ```bash
@@ -155,6 +164,7 @@ Confirm in the console or CLI that each item is gone, since these are what keep 
 - [ ] KMS key in `PendingDeletion` (it bills until the window ends; the default is 7 days; `aws kms list-aliases`)
 - [ ] CloudWatch log groups for the control plane and flow logs (`aws logs describe-log-groups --log-group-name-prefix /aws/eks`; also `/aws/vpc`)
 - [ ] IAM roles for the cluster, nodes and EBS CSI driver, and the OIDC provider
+- [ ] Informational, not a cost: the secrets in Parameter Store (`aws ssm describe-parameters --region eu-north-1 --parameter-filters 'Key=Path,Option=Recursive,Values=/multi-cloud-sre/dev' --query 'Parameters[].Name'`). The six parameters are expected and are free; they are left on purpose for the next cluster. After `./scripts/seed-secrets.sh --purge` there should be none ([secrets runbook](secrets.md#the-parameters-between-sessions))
 
 If the destroy fails on subnets or the VPC, look for leftover network interfaces and load balancers:
 

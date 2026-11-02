@@ -107,3 +107,13 @@ output "account_id" {
   description = "ID of the AWS account this stack runs in. Used by the Argo CD bootstrap to confirm it is talking to the right account."
   value       = data.aws_caller_identity.current.account_id
 }
+
+output "external_secrets_role_arn" {
+  description = "IAM role ARN for the External Secrets Operator service account annotation (null when disabled)."
+  value       = one(module.external_secrets_irsa[*].role_arn)
+}
+
+output "secrets_parameter_prefix" {
+  description = "Full Parameter Store path of the secrets, /<prefix>/<environment> (null when the role is disabled). scripts/seed-secrets.sh writes below it."
+  value       = one(module.external_secrets_irsa[*].parameter_prefix)
+}

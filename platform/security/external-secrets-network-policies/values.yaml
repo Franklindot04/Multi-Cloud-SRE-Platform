@@ -1,0 +1,72 @@
+---
+# Network policies for the external-secrets namespace: the controller, the webhook and the certificate controller of the External Secrets
+# Operator (platform/security/external-secrets, chart 2.14.0).
+
+# Turn the policies off (nothing is rendered, and Argo CD prunes what it created). The way back if a policy blocks something that
+# must work; see docs/runbooks/network-policies.md.
+enabled: true
+
+namespace: external-secrets
+
+# The address range of the cluster's Services. The VPC CNI network policy agent matches an egress rule against the address the
+# pod connects to, which for a Service (the Kubernetes API, the cluster DNS) is its ClusterIP, translated to a pod only
+# afterwards. So the API server is reached by port 443 to this range (the Service "kubernetes"), and DNS gets it next to the
+# DNS pods. Argo CD passes it from the cluster annotation platform.example/service-cidr, which scripts/bootstrap-argocd.sh
+# writes from the Terraform output service_cidr_block. It is never committed, and the chart refuses to render without it.
+serviceCidr: ""
+
+# The address range of the VPC, for the one thing that reaches the pods from outside the cluster network: the API server calls
+# the validating webhook from its own network interfaces, which are in the VPC subnets, and connects to the pod, so the source
+# is an address in the VPC. Argo CD passes it from the cluster annotation platform.example/vpc-cidr (Terraform output
+# vpc_cidr_block). It is never committed, and the chart refuses to render without it.
+vpcCidr: ""
+
+dns:
+  namespace: kube-system
+  podLabels:
+    k8s-app: kube-dns
+
+# Where Prometheus runs. It scrapes the metrics port of every pod, by pod address.
+prometheus:
+  namespace: observability
+  podLabels:
+    app.kubernetes.io/name: prometheus
+    operator.prometheus.io/name: kube-prometheus-stack-prometheus
+
+# The pods, by the labels the chart puts on them.
+pods:
+  controller:
+    app.kubernetes.io/name: external-secrets
+  webhook:
+    app.kubernetes.io/name: external-secrets-webhook
+  cert-controller:
+    app.kubernetes.io/name: external-secrets-cert-controller
+
+# The validating webhook: the API server calls it on its container port (the Service in front of it listens on 443).
+webhook:
+  port: 10250
+  pods: [webhook]
+
+# Every pod serves its metrics on this port.
+metricsPort: 8080
+
+# The three pods call the Kubernetes API (watching and writing resources, leader election, the certificate Secret and the webhook
+# configurations) and so get TCP 443 to the Service range, each on its own.
+apiAccess:
+  - name: controller
+    matchLabels:
+      app.kubernetes.io/name: external-secrets
+  - name: webhook
+    matchLabels:
+      app.kubernetes.io/name: external-secrets-webhook
+  - name: cert-controller
+    matchLabels:
+      app.kubernetes.io/name: external-secrets-cert-controller
+
+# The controller signs in to AWS (the Security Token Service, with the web identity token) and reads the parameters (Systems Manager).
+# Both are public endpoints that no pod selector can name, reached through the NAT gateway, so the controller, and only it, gets TCP 443
+# to any address except the VPC and the Service ranges (which have their own rules). No other pod of the namespace has any egress to
+# the internet.
+internetEgress:
+  pods: [controller]
+  port: 443

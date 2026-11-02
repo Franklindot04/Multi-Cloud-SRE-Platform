@@ -18,6 +18,10 @@ targetSecret: rabbitmq-auth
 host: platform-mq.data.svc
 port: "5672"
 
+# The paths of the user name and the password in scripts/secrets/manifest.yaml (external mode).
+usernameParameter: rabbitmq/default-username
+passwordParameter: rabbitmq/default-password
+
 # The Job runs during a sync (an Argo CD Sync hook) and is removed when it succeeds. It waits up to waitSeconds
 # for the operator to create the source Secret; the deadline leaves room for that plus the copy.
 waitSeconds: 1500
@@ -32,3 +36,15 @@ resources:
   limits:
     cpu: 100m
     memory: 64Mi
+
+# Where the credentials come from. Off (the default): the Job in this chart copies the broker's credentials from the data
+# namespace into shop, as before. On: the Job, its ServiceAccount and its Roles are not rendered, and an ExternalSecret makes
+# rabbitmq-auth (same name, namespace and keys) from the same two parameters that the broker starts with (platform/data/rabbitmq,
+# external mode), in Parameter Store, which scripts/seed-secrets.sh writes, through the ClusterSecretStore below. Argo CD sets
+# enabled from the cluster label platform.example/external-secrets and prefix from the annotation platform.example/secrets-prefix
+# (/<prefix>/<environment>, for example /multi-cloud-sre/dev); the chart refuses to render without the prefix when enabled.
+externalSecrets:
+  enabled: false
+  prefix: ""
+  storeName: aws-parameter-store
+  refreshInterval: 1h

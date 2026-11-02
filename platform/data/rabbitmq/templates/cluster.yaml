@@ -7,6 +7,13 @@ metadata:
     # The CRD comes from the operator Application, which may not have synced yet.
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true,Prune=false,Delete=false
 spec:
+  {{- if include "secrets.external" . }}
+  # The default user comes from a Secret that External Secrets makes from Parameter Store (templates/externalsecret.yaml); the operator
+  # generates none, and the StatefulSet waits until the Secret exists.
+  secretBackend:
+    externalSecret:
+      name: {{ .Values.externalSecrets.secretName }}
+  {{- end }}
   replicas: {{ .Values.cluster.replicas }}
   image: {{ .Values.cluster.image }}
   persistence:

@@ -1,0 +1,68 @@
+---
+# The External Secrets Operator from the official chart (vendored by version, see Chart.yaml): the controller, the webhook that validates
+# SecretStores and ExternalSecrets, and the certificate controller that keeps the webhook's certificate. This installs the operator only:
+# the store is in ../external-secrets-store, and no ExternalSecret is deployed by it. Sized for a cluster of a few small Spot nodes.
+roleArn: ""
+
+external-secrets:
+  # The chart installs its CRDs (the generators, the stores, ExternalSecret and the push kinds). The biggest are larger than the 256 KiB
+  # that client-side apply can store in an annotation (the SecretStore and ClusterSecretStore CRDs are about 740 KB each), so the Argo CD
+  # Application syncs with ServerSideApply=true (platform/argocd/apps/87-eso-operator.yaml).
+  installCRDs: true
+
+  # Rank with the add-ons and the data layer, above the services and the observability stack (platform/addons/priority-classes). The
+  # data layer's secrets depend on the operator. The chart has a setting for each of the three pods.
+  priorityClassName: platform-addons-critical
+
+  # The service account of the controller is made by this chart (templates/serviceaccount.yaml), not by the subchart, because it carries
+  # the IAM role (the annotation eks.amazonaws.com/role-arn) and the chart refuses to render without the role. Its name is the one the
+  # IAM role trusts (infra/terraform, module aws-external-secrets-iam: namespace external-secrets, service account external-secrets)
+  # and the one the store names.
+  serviceAccount:
+    create: false
+    name: external-secrets
+
+  # One replica of each, no leader election. The three requests add up to 100m CPU and 228Mi of memory, the limits to 400m and 456Mi.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 100Mi
+    limits:
+      cpu: 200m
+      memory: 200Mi
+
+  # The Services of the metrics (port "metrics", 8080) that the ServiceMonitor of platform/observability/monitors selects.
+  metrics:
+    service:
+      enabled: true
+
+  webhook:
+    # A dead operator must not be able to block the cluster. The chart renders two ValidatingWebhookConfigurations (secretstore-validate
+    # and externalsecret-validate); with Ignore an admission request that the webhook cannot answer is allowed instead of refused.
+    # They only validate SecretStores and ExternalSecrets, so the cost of failing open is that an invalid object is accepted and
+    # reported by the controller instead.
+    failurePolicy: Ignore
+    priorityClassName: platform-addons-critical
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    metrics:
+      service:
+        enabled: true
+
+  certController:
+    priorityClassName: platform-addons-critical
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    metrics:
+      service:
+        enabled: true

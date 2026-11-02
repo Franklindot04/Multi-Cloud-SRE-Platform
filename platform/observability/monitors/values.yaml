@@ -56,6 +56,16 @@ policy:
     namespace: kyverno
     interval: 30s
 
+# The External Secrets Operator (platform/security/external-secrets) serves its metrics on the port "metrics" (8080) of a Service for
+# each of its three pods: the controller, the webhook and the certificate controller. The monitor lives here and selects them in the
+# external-secrets namespace, like the ones for Kyverno, so the operator's chart needs no Prometheus Operator CRD. A cluster without the
+# operator has nothing to select, and the monitor does nothing. No alert uses these metrics yet.
+secrets:
+  externalSecrets:
+    enabled: true
+    namespace: external-secrets
+    interval: 30s
+
 # Service level objectives for the order flow: recording rules for the error ratio over several windows, and
 # multi-window burn-rate alerts (docs/adr/0023-slos-and-alerting.md). Prometheus evaluates them. There is no
 # Alertmanager in this profile yet, so an alert is visible in the Prometheus UI and delivered nowhere. The default

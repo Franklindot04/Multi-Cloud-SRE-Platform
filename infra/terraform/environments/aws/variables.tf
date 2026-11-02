@@ -208,3 +208,32 @@ variable "addons_hosted_zone_id" {
     error_message = "addons_hosted_zone_id must be a Route 53 hosted zone ID such as Z0123456789ABCDEFGHIJ."
   }
 }
+
+variable "enable_external_secrets" {
+  description = "Create the IAM role for the External Secrets Operator, which reads the secrets from SSM Parameter Store."
+  type        = bool
+  default     = true
+}
+
+variable "secrets_parameter_prefix" {
+  description = "First segment of the Parameter Store path /<prefix>/<environment>/<component>/<name> that holds the secrets (written by scripts/seed-secrets.sh)."
+  type        = string
+  default     = "multi-cloud-sre"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$", var.secrets_parameter_prefix))
+    error_message = "secrets_parameter_prefix must be one lower-case path segment of letters, digits and hyphens, such as multi-cloud-sre."
+  }
+}
+
+variable "external_secrets_namespace" {
+  description = "Namespace of the External Secrets Operator's service account, which the role trusts."
+  type        = string
+  default     = "external-secrets"
+}
+
+variable "external_secrets_service_account" {
+  description = "Name of the External Secrets Operator's service account, which the role trusts."
+  type        = string
+  default     = "external-secrets"
+}

@@ -20,3 +20,19 @@ cluster:
   serviceType: ClusterIP
   additionalConfig: |
     disk_free_limit.absolute = 500MB
+
+# Where the passwords come from. Off (the default): the RabbitMQ Cluster Operator generates the default user, as before. On: an
+# ExternalSecret makes the Secret the operator reads the default user from (spec.secretBackend.externalSecret), and the operator
+# generates none from the SecureString parameters of AWS Systems Manager Parameter Store, which scripts/seed-secrets.sh writes,
+# through the ClusterSecretStore below. Argo CD sets enabled from the cluster label platform.example/external-secrets and prefix
+# from the annotation platform.example/secrets-prefix (/<prefix>/<environment>, for example /multi-cloud-sre/dev); the chart
+# refuses to render without the prefix when enabled. The parameter names are the paths of scripts/secrets/manifest.yaml.
+externalSecrets:
+  enabled: false
+  prefix: ""
+  storeName: aws-parameter-store
+  refreshInterval: 1h
+  # The Secret the broker's default user comes from, and the parameters of its user name and password (scripts/secrets/manifest.yaml).
+  secretName: platform-mq-default-user
+  usernameParameter: rabbitmq/default-username
+  passwordParameter: rabbitmq/default-password

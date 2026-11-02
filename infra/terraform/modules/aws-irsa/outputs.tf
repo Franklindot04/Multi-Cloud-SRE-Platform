@@ -17,3 +17,8 @@ output "service_account_annotations" {
   description = "Annotations to set on the Kubernetes service account."
   value       = { "eks.amazonaws.com/role-arn" = aws_iam_role.this.arn }
 }
+
+output "assume_role_policy" {
+  description = "Trust policy of the role (JSON), so that callers and their tests can check who may assume it."
+  value       = aws_iam_role.this.assume_role_policy
+}

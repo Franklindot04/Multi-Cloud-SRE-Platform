@@ -1,0 +1,3 @@
+The External Secrets Operator is installed without any store or ExternalSecret. Its validating webhooks fail open
+(webhook.failurePolicy Ignore). The controller assumes the IAM role of the annotation on its service account.
+Check the operator with: kubectl -n {{ .Release.Namespace }} get pods

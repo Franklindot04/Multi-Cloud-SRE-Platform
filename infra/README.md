@@ -5,7 +5,7 @@ Infrastructure as code for both clouds. Everything under [`terraform/`](terrafor
 | Path | Purpose |
 | --- | --- |
 | `bootstrap/aws`, `bootstrap/gcp` | One-time stacks that create the remote state buckets |
-| `modules/` | Reusable Terraform modules (`aws-network`, `aws-eks`, `aws-irsa`, `gcp-network`, `gcp-gke`, `aws-dns`, `gcp-dns`), with a `_template` for new ones |
+| `modules/` | Reusable Terraform modules (`aws-network`, `aws-eks`, `aws-irsa`, `aws-external-secrets-iam`, `gcp-network`, `gcp-gke`, `aws-dns`, `gcp-dns`), with a `_template` for new ones |
 | `environments/aws` | AWS root stack: S3 backend, provider, variables, the VPC network, the EKS cluster and optional DNS |
 | `environments/gcp` | GCP root stack: GCS backend, provider, variables, the VPC network, the GKE cluster and an optional DNS zone |
 

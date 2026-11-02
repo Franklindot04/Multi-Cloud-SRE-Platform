@@ -22,9 +22,10 @@ namespaces:
   cnpg-system: {}
   rabbitmq-system: {}
   kyverno: {}
+  external-secrets: {}
 
 # Namespaces whose pods must all be isolated for ingress and egress (they have policies).
-enforced: [shop, data, observability, kyverno]
+enforced: [shop, data, observability, kyverno, external-secrets]
 
 # Addresses that are not pods. All are examples.
 endpoints:
@@ -161,6 +162,21 @@ pods:
     labels: {app: stray}
     source: a workload added to the namespace later, with no policy of its own; only the default deny holds it
 
+  - name: external-secrets/external-secrets
+    labels: {app.kubernetes.io/name: external-secrets, app.kubernetes.io/instance: external-secrets}
+    source: >-
+      the controller Deployment of the External Secrets chart 2.14.0 (rendered by the check; declared here so the unit tests need no
+      wrapper chart)
+  - name: external-secrets/external-secrets-webhook
+    labels: {app.kubernetes.io/name: external-secrets-webhook, app.kubernetes.io/instance: external-secrets}
+    source: the webhook Deployment of the External Secrets chart (rendered by the check)
+  - name: external-secrets/external-secrets-cert-controller
+    labels: {app.kubernetes.io/name: external-secrets-cert-controller, app.kubernetes.io/instance: external-secrets}
+    source: the certificate controller Deployment of the External Secrets chart (rendered by the check)
+  - name: external-secrets/stray
+    labels: {app: stray}
+    source: a workload added to the namespace later, with no policy of its own; only the default deny holds it
+
 # Short names for the flows below.
 names:
   gateway: shop/gateway
@@ -198,6 +214,10 @@ names:
   kyverno-reports: kyverno/kyverno-reports-controller
   kyverno-migrate-job: kyverno/kyverno-migrate-resources
   kyverno-stray: kyverno/stray
+  eso-controller: external-secrets/external-secrets
+  eso-webhook: external-secrets/external-secrets-webhook
+  eso-cert-controller: external-secrets/external-secrets-cert-controller
+  eso-stray: external-secrets/stray
 
 # Flows. A row says that "from" (one name or a list) opens a connection to "to" (one name or a list) on each of "ports"
 # (protocol TCP unless it says otherwise), and that it is expected to be allowed or denied. "profiles" is the values profile
@@ -681,6 +701,137 @@ flows:
     expect: deny
     note: a pod with no policy of its own is held by the default deny
   - from: kyverno-stray
+    to: coredns
+    port: 53
+    protocol: UDP
+    expect: allow
+    via: [service, pod]
+    note: the DNS rule covers every pod of the namespace, so a new pod can resolve names
+
+  # --- external-secrets: the External Secrets Operator ---
+  - from: [eso-controller, eso-webhook, eso-cert-controller]
+    to: coredns
+    ports: [53]
+    protocol: UDP
+    expect: allow
+    via: [service, pod]
+    note: DNS
+  - from: [eso-controller, eso-webhook, eso-cert-controller]
+    to: coredns
+    ports: [53]
+    protocol: TCP
+    expect: allow
+    via: [service, pod]
+    note: DNS over TCP
+  - from: [eso-controller, eso-webhook, eso-cert-controller]
+    to: api-server
+    port: 443
+    expect: allow
+    note: the three pods call the API through the Service kubernetes
+  - from: api-server-eni
+    to: eso-webhook
+    port: 10250
+    expect: allow
+    via: pod
+    note: the API server calls the validating webhook from its interfaces in the VPC, straight to the pod
+  - from: prometheus
+    to: [eso-controller, eso-webhook, eso-cert-controller]
+    port: 8080
+    expect: allow
+    via: pod
+    note: metrics
+  - from: eso-controller
+    to: internet
+    port: 443
+    expect: allow
+    note: the controller signs in to AWS (STS) and reads Systems Manager parameters through the NAT gateway
+  - from: eso-controller
+    to: internet
+    ports: [80, 8443, 22]
+    expect: deny
+    note: only TCP 443 is open to the internet
+  - from: [eso-webhook, eso-cert-controller, eso-stray]
+    to: internet
+    ports: [80, 443]
+    expect: deny
+    note: only the controller reaches the internet
+  - from: eso-controller
+    to: [vpc-client, api-server-eni, kubelet]
+    ports: [443, 10250]
+    expect: deny
+    note: the internet rule leaves out the VPC range, which has its own rules
+  - from: [gateway, orders, payments, notifier, postgres, valkey, rabbitmq, grafana, loki, tempo, kyverno-admission]
+    to: [eso-controller, eso-webhook, eso-cert-controller]
+    ports: [8080, 10250, 8081]
+    expect: deny
+    note: shop, data, observability and Kyverno pods do not reach the External Secrets ports; only Prometheus and the API server do
+  - from: [vpc-client, internet]
+    to: [eso-controller, eso-webhook, eso-cert-controller]
+    ports: [8080, 8081]
+    expect: deny
+    note: nothing but Prometheus reads the metrics
+  - from: internet
+    to: eso-webhook
+    port: 10250
+    expect: deny
+    note: the webhook port accepts the VPC range only
+  - from: [vpc-client, api-server-eni]
+    to: [eso-controller, eso-cert-controller, eso-stray]
+    port: 10250
+    expect: deny
+    note: only the webhook pod serves the webhook
+  - from: [vpc-client, api-server-eni]
+    to: eso-webhook
+    ports: [443, 8080, 8081]
+    expect: deny
+    note: the webhook port is the container port 10250 and nothing else
+  - from: prometheus
+    to: eso-webhook
+    port: 10250
+    expect: allow
+    via: pod
+    note: >-
+      a known overlap, kept in the matrix so that it is not forgotten: the webhook port (10250) is also the kubelet port, Prometheus
+      may reach any address of the VPC range on it (the kubelets), and the webhook accepts the VPC range on it (the API server), so
+      Prometheus could send the webhook an admission review. The webhook only answers reviews of stores and ExternalSecrets, and a
+      pod address in the VPC range cannot be told from the API server's
+  - from: [eso-controller, eso-webhook, eso-cert-controller]
+    to: [postgres, valkey, rabbitmq]
+    ports: [5432, 6379, 5672]
+    expect: deny
+    note: the operator does not reach the data layer
+  - from: [eso-controller, eso-webhook, eso-cert-controller]
+    to: [gateway, orders, payments, notifier, loki, tempo, grafana, prometheus, kyverno-admission]
+    ports: [443, 8080, 3100, 9443, 8000]
+    expect: deny
+    note: the operator calls nothing outside its namespace but the API, DNS and, for the controller, the internet
+  - from: [eso-webhook, eso-cert-controller]
+    to: kubelet
+    port: 10250
+    expect: deny
+    note: the operator does not call a kubelet
+  - from: [eso-webhook, eso-cert-controller]
+    to: [eso-controller, eso-stray]
+    ports: [443, 8080]
+    expect: deny
+    via: service
+    note: the pods may open 443 to Services (for the API), but the pods behind them refuse it
+  - from: [prometheus, grafana, orders, eso-controller]
+    to: eso-stray
+    ports: [8080, 10250, 443]
+    expect: deny
+    note: nothing may reach a pod with no policy of its own
+  - from: [internet, vpc-client]
+    to: eso-stray
+    ports: [8080, 10250]
+    expect: deny
+    note: a new pod with no policy of its own takes nothing from outside either
+  - from: eso-stray
+    to: [internet, api-server, api-server-eni]
+    port: 443
+    expect: deny
+    note: a pod with no policy of its own is held by the default deny
+  - from: eso-stray
     to: coredns
     port: 53
     protocol: UDP

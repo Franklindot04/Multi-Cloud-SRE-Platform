@@ -27,7 +27,7 @@ Checked on **2026-10-27** against each project's chart repository, release page 
 | --- | --- | --- |
 | [`namespaces`](namespaces) | local chart | Namespaces `data` and `shop` with Pod Security labels |
 | [`storage`](storage) | local chart | StorageClass `platform-data` (EBS gp3 on EKS, Persistent Disk balanced on GKE) |
-| [`secrets`](secrets) | local chart | In-cluster generation of credentials (ordinary RBAC objects and a Sync hook Job) |
+| [`secrets`](secrets) | local chart | The credentials: generated in the cluster by default (ordinary RBAC objects and a Sync hook Job), or made by ExternalSecrets from Parameter Store on a cluster that opts in |
 | [`cloudnative-pg`](cloudnative-pg) | wrapper chart | The PostgreSQL operator |
 | [`postgres`](postgres) | local chart | The PostgreSQL `Cluster` and `Database` resources |
 | [`valkey`](valkey) | wrapper chart | The cache, from the official chart |
@@ -67,7 +67,7 @@ The HA profiles need at least three schedulable nodes. The standard profile fits
 
 One PostgreSQL cluster (`platform-pg`, read-write service `platform-pg-rw.data.svc:5432`) with **a database and a login role per service**, created declaratively: `orders` and `payments`. The operator creates them from `spec.managed.roles` and `Database` resources.
 
-**No credential is ever committed.** Passwords are generated inside the cluster by the [`secrets`](secrets) chart's Job, once, and never modified afterwards. The conventions the services consume:
+**No credential is ever committed.** By default (generated mode) passwords are generated inside the cluster by the [`secrets`](secrets) chart's Job, once, and never modified afterwards. On a cluster labelled `platform.example/external-secrets=true` (external mode) ExternalSecrets make the same Secrets from AWS Parameter Store instead ([ADR-0027](../../docs/adr/0027-external-secrets.md), [runbook](../../docs/runbooks/secrets.md); not yet run on a cluster). The conventions the services consume:
 
 | Secret | Namespace | Keys | Used by |
 | --- | --- | --- | --- |
@@ -76,10 +76,10 @@ One PostgreSQL cluster (`platform-pg`, read-write service `platform-pg-rw.data.s
 | `cache-auth` | `shop` | `password`, `host`, `port` | services using the cache |
 | `pg-orders`, `pg-payments` | `data` | `username`, `password` (type `basic-auth`) | the operator (role passwords) |
 | `valkey-auth` | `data` | `default` | the Valkey chart |
-| `platform-mq-default-user` | `data` | `username`, `password` (created by the RabbitMQ operator) | RabbitMQ; copied to `shop` as `rabbitmq-auth` by the `rabbitmq-credentials` chart |
+| `platform-mq-default-user` | `data` | `username`, `password` (created by the RabbitMQ operator; in external mode an ExternalSecret makes it with `default_user.conf`, `username` and `password`) | RabbitMQ; copied to `shop` as `rabbitmq-auth` by the `rabbitmq-credentials` chart (in external mode an ExternalSecret makes `rabbitmq-auth`) |
 | `rabbitmq-auth` | `shop` | `username`, `password`, `host`, `port` | orders and notifier (data profile) |
 
-This in-cluster generation is the interim mechanism. It is replaced by external secrets management later (ADR-0014): External Secrets would produce the same Secret names and keys from the cloud's secret manager, so consumers do not change.
+In-cluster generation is the default. External secrets management is available as the second mode ([ADR-0027](../../docs/adr/0027-external-secrets.md)): External Secrets produces the same Secret names, types and keys from Parameter Store, so consumers do not change. Both modes are checked against [`scripts/secrets/contract.yaml`](../../scripts/secrets/contract.yaml).
 
 ## Storage and volume lifecycle
 

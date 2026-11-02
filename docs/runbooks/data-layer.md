@@ -55,7 +55,7 @@ kubectl -n data get cluster.postgresql.cnpg.io,rabbitmqcluster,pods,pvc
 kubectl get ns data shop --show-labels                 # Pod Security labels
 kubectl -n data get cluster.postgresql.cnpg.io platform-pg    # STATUS "Cluster in healthy state"
 kubectl -n data get rabbitmqcluster platform-mq               # ALLREPLICASREADY True
-kubectl -n shop get secrets orders-db payments-db cache-auth  # generated credentials exist
+kubectl -n shop get secrets orders-db payments-db cache-auth  # credentials exist (generated, or made by ExternalSecrets in external mode)
 ```
 
 PVCs should be `Bound` with storage class `platform-data`. Pod Security `warn` messages at deploy time, if any, list pods that would fail the `restricted` level.
@@ -117,7 +117,7 @@ The services are connected to this data layer ([ADR-0015](../adr/0015-service-da
 
 The schema is created by a separate, forward-only step that runs before the service starts. Locally these are the Compose services `orders-migrate` (`python -m orders.migrate`) and `payments-migrate` (`java -jar payments.jar migrate`). Both take a PostgreSQL advisory lock, so running two at once is safe, and both are idempotent: a second run applies nothing. To see what ran: `docker compose ... logs orders-migrate payments-migrate`, or `SELECT * FROM schema_migrations` (orders) and `SELECT * FROM flyway_schema_history` (payments).
 
-**On Kubernetes** the migrations are PreSync hook Jobs in the service chart (`orders-migrate`, `payments-migrate`) and the RabbitMQ credentials are copied into `shop` by the `rabbitmq-credentials` chart; see the [service deployment runbook](service-deployment.md) and [ADR-0016](../adr/0016-service-deployment-model.md). The migration role is the database owner today; later it can be split from a runtime role with DML rights only.
+**On Kubernetes** the migrations are PreSync hook Jobs in the service chart (`orders-migrate`, `payments-migrate`) and the RabbitMQ credentials are copied into `shop` by the `rabbitmq-credentials` chart (in external mode an ExternalSecret makes `rabbitmq-auth` instead, and no copy Job runs; see the [secrets runbook](secrets.md)); see the [service deployment runbook](service-deployment.md) and [ADR-0016](../adr/0016-service-deployment-model.md). The migration role is the database owner today; later it can be split from a runtime role with DML rights only.
 
 ### Dead-letter queue: inspect and replay
 
@@ -205,8 +205,8 @@ Nothing else is ever changed. An object stuck on any other finalizer is left alo
 1. **Remove the cluster Secret labels.** Delete the label keys; this is what stops the ApplicationSets from recreating Applications. Deleting an Application by hand does not work for as long as the labels select the cluster, and the Applications' finalizers delete what they own:
 
    ```bash
-   kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-
-   kubectl --context <EKS_CONTEXT> -n argocd get applications | grep -E 'apps-|data-|observability-|policy-'     # wait until none remain
+   kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets-
+   kubectl --context <EKS_CONTEXT> -n argocd get applications | grep -E 'apps-|data-|observability-|policy-|eso-'     # wait until none remain
    ```
 
    If the policy engine was deployed, delete its policies and its webhook configurations once the Applications are gone, so that a webhook with no controller behind it cannot block the deletions that follow (only the configurations whose names start with `kyverno`):
@@ -216,6 +216,14 @@ Nothing else is ever changed. An object stuck on any other finalizer is left alo
    kubectl --context <EKS_CONTEXT> delete policies.kyverno.io --all -A
    kubectl --context <EKS_CONTEXT> delete validatingpolicies.policies.kyverno.io,imagevalidatingpolicies.policies.kyverno.io --all
    kubectl --context <EKS_CONTEXT> get validatingwebhookconfigurations,mutatingwebhookconfigurations -o name | grep -E '^[^/]+/kyverno'     # delete each of them
+   ```
+
+   If the External Secrets Operator was deployed, delete its objects and its two webhook configurations in the same way (only `secretstore-validate` and `externalsecret-validate`):
+
+   ```bash
+   kubectl --context <EKS_CONTEXT> delete externalsecrets.external-secrets.io,secretstores.external-secrets.io --all -A
+   kubectl --context <EKS_CONTEXT> delete clusterexternalsecrets.external-secrets.io,clustersecretstores.external-secrets.io --all
+   kubectl --context <EKS_CONTEXT> delete validatingwebhookconfiguration secretstore-validate externalsecret-validate
    ```
 
    Setting the labels to `false` also works (the selectors match the value `"true"`; verified against the ApplicationSet controller on a throwaway cluster, see the ADR), and the bootstrap script writes `false`. Deleting the keys is preferred because nothing then depends on the value. Delete the services' Ingress first if one was ever enabled ([service deployment runbook](service-deployment.md#teardown)).
@@ -329,7 +337,7 @@ Nothing else is ever changed. An object stuck on any other finalizer is left alo
 - **PVC stuck `Pending`:** the `platform-data` class is missing (check `data-storage`) or no node can take the volume's zone; see `kubectl describe pvc`.
 - **Pods rejected by Pod Security:** `kubectl -n data describe` shows the violated rule. `data` enforces `baseline`; a violation means a chart changed its security context.
 - **RabbitMQ pods `Pending` on HA:** the HA profile needs three nodes.
-- **Secret changes ignored:** the generator never overwrites existing Secrets. To rotate a credential, delete the Secret, let the next sync recreate it, and update the database role (rotation is an operator task until external secrets arrive).
+- **Secret changes ignored:** in generated mode the generator never overwrites existing Secrets (in external mode rotation is a change of the parameter; see the [secrets runbook](secrets.md#rotation)). To rotate a credential, delete the Secret, let the next sync recreate it, and update the database role (rotation is an operator task until external secrets arrive).
 - **Secrets missing (`valkey-auth`, `pg-orders`, `orders-db`, `rabbitmq-auth`...):** the generator Jobs run during a sync. Check `kubectl -n argocd get application data-secrets-<cluster> -o jsonpath='{.status.operationState.phase}'`; an empty phase means no sync ever ran, so start one: `kubectl -n argocd patch application data-secrets-<cluster> --type merge -p '{"operation":{"sync":{}}}'`. A failed Job is kept for an hour: `kubectl -n data logs job/data-secrets-generator`; it needs the API reachable and its Role (get, create on Secrets in `data` and `shop`; patch on the two `pg-` Secrets).
 - **`data-postgres` stuck in PreSync:** the gate Job is waiting for the role Secrets: `kubectl -n data logs job/platform-pg-secrets-gate`. It names the Secret it is waiting for; fix `data-secrets` as above. It gives up after 15 minutes and Argo CD retries.
 - **PostgreSQL roles `pending-reconciliation`** (`kubectl -n data get cluster platform-pg -o jsonpath='{.status.managedRolesStatus}'` shows `cannotReconcile` with a missing Secret): normally the PreSync gate prevents it. If the Secret was created late, CloudNativePG retries on its own within about two minutes. To make it look now, nudge the Cluster with an annotation; it is safe, and Argo CD ignores it:
