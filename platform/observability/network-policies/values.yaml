@@ -137,6 +137,14 @@ kyverno:
     app.kubernetes.io/part-of: kyverno
   metricsPort: 8000
 
+# The External Secrets Operator (platform/security/external-secrets): Prometheus scrapes the metrics port of its three pods, by pod address.
+# Its pods carry the label app.kubernetes.io/instance=external-secrets, the release name.
+externalSecrets:
+  namespace: external-secrets
+  podLabels:
+    app.kubernetes.io/instance: external-secrets
+  metricsPort: 8080
+
 # CoreDNS exposes metrics on this port; Prometheus scrapes it through the Service the stack creates in kube-system.
 coredns:
   port: 9153

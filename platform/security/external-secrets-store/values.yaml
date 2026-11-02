@@ -1,0 +1,21 @@
+---
+# The ClusterSecretStore the ExternalSecrets of the platform point at (a later change). It holds no credential of any kind: the External
+# Secrets Operator signs in to AWS with the IAM role on its service account (IAM roles for service accounts), through the web identity
+# token Kubernetes gives that service account. The role can only read /<prefix>/<environment>/* (infra/terraform, module
+# aws-external-secrets-iam).
+name: aws-parameter-store
+
+# The AWS region of the parameters. Argo CD passes it from the cluster annotation platform.example/region (the same one the load
+# balancer controller uses). It is never committed, and the chart refuses to render without it.
+region: ""
+
+# The path the parameters are under, /<prefix>/<environment>, for example /multi-cloud-sre/dev. Argo CD passes it from the cluster
+# annotation platform.example/secrets-prefix (Terraform output secrets_parameter_prefix). The store does not use it to read anything: the
+# keys of the ExternalSecrets are the full parameter names, listed in scripts/secrets/manifest.yaml. It is recorded on the store as an
+# annotation so that the path can be seen on the object, and the chart refuses to render without it.
+parameterPrefix: ""
+
+# The service account of the External Secrets Operator, whose token the store signs in with (the namespace and name the IAM role trusts).
+serviceAccount:
+  name: external-secrets
+  namespace: external-secrets

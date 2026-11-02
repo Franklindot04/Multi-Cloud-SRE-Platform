@@ -76,6 +76,28 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: prometheus-allow-to-external-secrets
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The metrics port of the three External Secrets Operator pods. A cluster without the operator has no such pod, and the rule matches
+  # nothing.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- include "np.peer" (dict "namespace" .Values.externalSecrets.namespace "labels" .Values.externalSecrets.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.externalSecrets.metricsPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: prometheus-allow-to-coredns
   namespace: {{ .Values.namespace }}
   annotations:

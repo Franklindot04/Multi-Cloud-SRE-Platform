@@ -92,3 +92,20 @@ module "cert_manager_irsa" {
   service_account_name = "cert-manager"
   policy_json          = local.cert_manager_policy
 }
+
+# --- External Secrets Operator (SSM Parameter Store, one path) ---
+# The role only reads /<prefix>/<environment>/*. The values are written by scripts/seed-secrets.sh and never pass through
+# Terraform; Terraform creates no parameter. The operator itself is installed separately.
+
+module "external_secrets_irsa" {
+  count  = var.enable_external_secrets ? 1 : 0
+  source = "../../modules/aws-external-secrets-iam"
+
+  role_name            = "${local.cluster_name}-external-secrets"
+  environment          = var.environment
+  parameter_prefix     = var.secrets_parameter_prefix
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_issuer_host     = module.eks.oidc_issuer_host
+  namespace            = var.external_secrets_namespace
+  service_account_name = var.external_secrets_service_account
+}

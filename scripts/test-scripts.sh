@@ -2,7 +2,8 @@
 # Tests for the helper scripts: scripts/update-image-values.sh and scripts/changed-services.sh (used by CI),
 # scripts/check-trivyignore.sh, scripts/teardown-prep.sh and scripts/teardown-argocd.sh (against a fake kubectl,
 # a fake aws and a fake helm) and
-# scripts/verify-image.sh (against a fake cosign); the fakes are in scripts/tests/fakes. It also tests the
+# scripts/verify-image.sh (against a fake cosign) and scripts/seed-secrets.sh (against a fake aws that keeps a small Parameter Store);
+# the fakes are in scripts/tests/fakes. It also tests the
 # --enable-observability flag of scripts/bootstrap-argocd.sh (dry run only) and the observability checks of
 # scripts/chart-contract-check.py.
 # Plain bash (3.2 compatible), no framework, no network. Fixtures are in scripts/tests/fixtures.
@@ -174,7 +175,7 @@ new_cluster
 touch "$state/mq-survives"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "the happy path exits 0" test "$rc" -eq 0
-check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-$' "$state/kubectl.log"
+check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets-$' "$state/kubectl.log"
 check "labels come before the Cluster deletion" test "$(line_of 'label secret')" -lt "$(line_of 'delete cluster.postgresql')"
 check "the Cluster is deleted before the RabbitmqCluster" test "$(line_of 'delete cluster.postgresql')" -lt "$(line_of 'delete rabbitmqcluster')"
 check "the surviving StatefulSet is deleted after the RabbitmqCluster" test "$(line_of 'delete rabbitmqcluster')" -lt "$(line_of 'delete statefulset')"
@@ -413,19 +414,47 @@ printf '%s\n' clusterpolicies.kyverno.io policies.kyverno.io validatingpolicies.
 touch "$state/kyverno-policies" "$state/kyverno-webhooks"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "with Kyverno policies and webhooks the run exits 0" test "$rc" -eq 0
-check "the steps are numbered 1 to 15" grep -q -e '^\[1/15\]' -e '^\[15/15\]' "$work/tdout"
-check "the step for Kyverno is the third" grep -q '^\[3/15\] Delete the Kyverno policies and webhook configurations' "$work/tdout"
-check "the cluster Secret label of the policy engine is removed with the others" grep -q 'platform.example/observability- platform.example/policy-$' "$state/kubectl.log"
+check "the steps are numbered 1 to 16" grep -q -e '^\[1/16\]' -e '^\[16/16\]' "$work/tdout"
+check "the step for Kyverno is the third" grep -q '^\[3/16\] Delete the Kyverno policies and webhook configurations' "$work/tdout"
+check "the cluster Secret label of the policy engine is removed with the others" grep -q 'platform.example/observability- platform.example/policy- platform.example/external-secrets-$' "$state/kubectl.log"
 check "every kind of Kyverno policy is deleted: ClusterPolicy, Policy, ValidatingPolicy and ImageValidatingPolicy" test "$(grep -c -e 'delete clusterpolicies.kyverno.io --all --wait=true' -e 'delete policies.kyverno.io --all -A --wait=true' -e 'delete validatingpolicies.policies.kyverno.io --all --wait=true' -e 'delete imagevalidatingpolicies.policies.kyverno.io --all --wait=true' "$state/kubectl.log")" = 4
 check "the two Kyverno webhook configurations are deleted by name" test "$(grep -c -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-resource-validating-webhook-cfg ' -e 'delete mutatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-policy-mutating-webhook-cfg ' "$state/kubectl.log")" = 2
 check "no other webhook configuration is deleted" test "$(grep ' delete ' "$state/kubectl.log" | grep -c -e 'cert-manager-webhook' -e 'aws-load-balancer-webhook')" = 0
 check "the policies go before the webhook configurations" test "$(line_of 'delete policies.kyverno.io')" -lt "$(line_of 'delete validatingwebhookconfiguration')"
 check "Kyverno is dealt with after the labels and before the shop, data and observability namespaces are read" test "$(line_of 'label secret')" -lt "$(line_of 'delete clusterpolicies.kyverno.io')" -a "$(line_of 'delete mutatingwebhookconfiguration')" -lt "$(line_of '-n shop get')"
 check "the output waits for the webhook configurations to be gone" grep -q 'ok: no webhook configuration whose name starts with kyverno remains' "$work/tdout"
-check "the Applications of the policy engine are waited for" grep -q 'no apps-\*, data-\*, observability-\* or policy-\* Application remains' "$work/tdout"
+check "the Applications of the policy engine and of the External Secrets Operator are waited for" grep -q 'no apps-\*, data-\*, observability-\*, policy-\* or eso-\* Application remains' "$work/tdout"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "a repeat run finds no Kyverno policy and no webhook configuration" grep -q 'no object of clusterpolicies.kyverno.io' "$work/tdout" -a "$rc" -eq 0
 check "and says so for the webhook configurations" grep -q 'no webhook configuration whose name starts with kyverno' "$work/tdout"
+
+# External Secrets: its objects and its two webhook configurations go after Kyverno's, and only those.
+new_cluster
+printf '%s\n' externalsecrets.external-secrets.io clusterexternalsecrets.external-secrets.io secretstores.external-secrets.io clustersecretstores.external-secrets.io >> "$state/crds"
+touch "$state/eso-objects" "$state/eso-webhooks"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "with External Secrets objects and webhooks the run exits 0" test "$rc" -eq 0
+check "the step for External Secrets is the fourth, after Kyverno's" grep -q '^\[4/16\] Delete the External Secrets objects and webhook configurations' "$work/tdout"
+check "the label of the operator is removed with the others, in the first step" grep -q 'label secret cluster-in-cluster .* platform.example/external-secrets-$' "$state/kubectl.log"
+check "every kind is deleted: ExternalSecret and SecretStore in every namespace, ClusterExternalSecret and ClusterSecretStore" test "$(grep -c -e 'delete externalsecrets.external-secrets.io --all -A --wait=true' -e 'delete secretstores.external-secrets.io --all -A --wait=true' -e 'delete clusterexternalsecrets.external-secrets.io --all --wait=true' -e 'delete clustersecretstores.external-secrets.io --all --wait=true' "$state/kubectl.log")" = 4
+check "the ExternalSecrets go before the stores" test "$(line_of 'delete externalsecrets.external-secrets.io')" -lt "$(line_of 'delete clustersecretstores.external-secrets.io')" -a "$(line_of 'delete externalsecrets.external-secrets.io')" -lt "$(line_of 'delete secretstores.external-secrets.io')"
+check "the two webhook configurations are deleted by name" test "$(grep -c -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/secretstore-validate ' -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/externalsecret-validate ' "$state/kubectl.log")" = 2
+check "no other webhook configuration is deleted by that step" test "$(grep ' delete ' "$state/kubectl.log" | grep -c 'cert-manager-webhook')" = 0
+check "the objects go before the webhook configurations" test "$(line_of 'delete clustersecretstores.external-secrets.io')" -lt "$(line_of 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/secretstore-validate')"
+check "and everything goes before the shop namespace is waited for" test "$(line_of 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/externalsecret-validate')" -lt "$(line_of '-n shop get')"
+new_cluster
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "without the CRDs the step finds nothing to delete and the run exits 0" test "$rc" -eq 0 && grep -q 'the externalsecrets.external-secrets.io CRD is not installed: nothing to delete' "$work/tdout"
+new_cluster
+printf '%s\n' externalsecrets.external-secrets.io clusterexternalsecrets.external-secrets.io secretstores.external-secrets.io clustersecretstores.external-secrets.io >> "$state/crds"
+touch "$state/eso-webhooks" "$state/stuck-eso-webhooks"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a webhook configuration that is not removed fails the run" test "$rc" -eq 1
+check "and the one that is left is named" grep -q 'secretstore-validate' "$work/tdout"
+check "nothing after that step runs" test "$(grep -c -e 'persistentvolumeclaim' -e 'delete statefulset' "$state/kubectl.log")" = 0 -a ! -e "$state/aws.log"
+new_cluster
+run_teardown --context test-cluster --region eu-north-1 --dry-run --skip-aws
+check "a dry run with --skip-aws numbers the steps 1 to 13 and names the External Secrets step" grep -q '^\[4/13\] Delete the External Secrets objects' "$work/tdout"
 
 new_cluster
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
@@ -476,7 +505,7 @@ argo_patch_re='-n argocd patch (application|appproject)\.argoproj\.io/(platform-
 new_argo_cluster
 run_argocd --context test-cluster --timeout 5
 check "the normal path exits 0" test "$rc" -eq 0
-check "the steps are numbered 1 to 10" grep -q -e '^\[1/10\]' -e '^\[10/10\]' "$work/tdout"
+check "the steps are numbered 1 to 11" grep -q -e '^\[1/11\]' -e '^\[11/11\]' "$work/tdout"
 check "the volume check comes first, before anything is deleted" test "$(line_of 'get pv')" -lt "$(line_of ' delete ')"
 check "the namespaces data, shop and observability are deleted without waiting in the command" test "$(grep -c -e 'delete namespace data --wait=false' -e 'delete namespace shop --wait=false' -e 'delete namespace observability --wait=false' "$state/kubectl.log")" = 3
 check "the storage class is deleted after the namespaces" test "$(line_of 'delete namespace observability')" -lt "$(line_of 'delete storageclass platform-data')"
@@ -608,7 +637,22 @@ check "a refusal for Kyverno also applies to a dry run" test "$(PATH="$fakes:$PA
 new_argo_cluster
 run_argocd --context test-cluster --timeout 5
 check "without Kyverno the check passes and says so" grep -q 'ok: no Kyverno policy and no webhook configuration whose name starts with kyverno' "$work/tdout"
-check "the Kyverno check is the second step, before anything is deleted" grep -q '^\[2/10\] Check that no Kyverno policy' "$work/tdout"
+check "the Kyverno check is the second step, before anything is deleted" grep -q '^\[2/11\] Check that no Kyverno policy' "$work/tdout"
+
+# External Secrets: the objects and the webhook configurations of the operator must be gone before Argo CD is removed.
+new_argo_cluster
+printf '%s\n' externalsecrets.external-secrets.io clusterexternalsecrets.external-secrets.io secretstores.external-secrets.io clustersecretstores.external-secrets.io >> "$state/crds"
+touch "$state/eso-objects" "$state/eso-webhooks"
+run_argocd --context test-cluster --timeout 5
+check "External Secrets objects and webhook configurations that are left make the script refuse with exit 1" test "$rc" -eq 1
+check "the objects are named" test "$(grep -c -e 'left: externalsecret.external-secrets.io/orders-db' -e 'left: clustersecretstore.external-secrets.io/aws-parameter-store' "$work/tdout")" = 2
+check "and both webhook configurations, and no other" test "$(grep -c -e 'left: .*secretstore-validate' -e 'left: .*externalsecret-validate' "$work/tdout")" = 2 -a "$(grep -c 'left: .*cert-manager-webhook' "$work/tdout")" = 0
+check "nothing is deleted after the refusal" test "$(grep -c -e ' delete ' -e ' patch ' "$state/kubectl.log")" = 0 -a ! -e "$state/helm.log"
+check "a refusal for External Secrets also applies to a dry run" test "$(PATH="$fakes:$PATH" FAKE_STATE="$state" "$teardown_argocd" --context test-cluster --dry-run > /dev/null 2>&1; echo $?)" = 1
+new_argo_cluster
+run_argocd --context test-cluster --timeout 5
+check "without External Secrets the check passes and says so" grep -q 'ok: no External Secrets object and no webhook configuration of the External Secrets Operator' "$work/tdout"
+check "the External Secrets check is the third step, before anything is deleted" grep -q '^\[3/11\] Check that no External Secrets object' "$work/tdout"
 
 # Helm.
 new_argo_cluster
@@ -978,6 +1022,36 @@ check "and the message names the argument" grep -q 'unknown argument: extra' "$w
 check "the help lists the policy flag" grep -q -e '--enable-policy' "$work/bout"
 check "and says it is off by default" test "$(sed -n '/--enable-policy/,/--enable-apps/p' "$work/bout" | grep -c 'Off by default')" -ge 1
 check "and what it requests" test "$(sed -n '/--enable-policy/,/--enable-apps/p' "$work/bout" | grep -c '225m CPU and 320Mi of memory')" -ge 1
+
+echo "bootstrap-argocd.sh --enable-external-secrets"
+
+run_bootstrap
+check "the External Secrets Operator is off by default" grep -q '"platform.example/external-secrets": "false"' "$work/bout"
+check "and nothing says it is enabled" test "$(grep -c 'external secrets enabled' "$work/bout")" = 0
+
+run_bootstrap --enable-external-secrets
+check "the flag exits 0 on its own" test "$rc" -eq 0
+check "it sets the label to true" grep -q '"platform.example/external-secrets": "true"' "$work/bout"
+check "the label is written once" test "$(grep -c '"platform.example/external-secrets":' "$work/bout")" = 1
+check "the cluster secret carries the role of the operator, from the Terraform output external_secrets_role_arn" grep -q '"platform.example/external-secrets-role-arn": "<external_secrets_role_arn>"' "$work/bout"
+check "and the parameter path, from the Terraform output secrets_parameter_prefix" grep -q '"platform.example/secrets-prefix": "<secrets_parameter_prefix>"' "$work/bout"
+check "the output says what the flag deploys, what it asks for and that no credential is stored" grep -q 'external secrets enabled: the External Secrets Operator (controller, webhook and certificate controller, requests 100m CPU and 228Mi of memory) in the external-secrets namespace' "$work/bout"
+check "and that the webhooks fail open and that no ExternalSecret is deployed" grep -q 'its validating webhooks fail open; no ExternalSecret is deployed by it, and the values are written by scripts/seed-secrets.sh' "$work/bout"
+check "the other layers stay off" test "$(grep -c -e '"platform.example/observability": "false"' -e '"platform.example/data": "false"' -e '"platform.example/policy": "false"' "$work/bout")" = 3
+check "the dry run with the flag called no tool" test ! -e "$stubs/calls.log"
+
+run_bootstrap --enable-external-secrets --enable-policy --enable-data --enable-observability
+check "with the other flags every label is set on the same run" test "$(grep -c -e '"platform.example/external-secrets": "true"' -e '"platform.example/policy": "true"' -e '"platform.example/data": "true"' -e '"platform.example/observability": "true"' "$work/bout")" = 4
+
+run_bootstrap --enable-external-secrets extra
+check "the flag takes no value" test "$rc" -eq 1 -a "$(grep -c 'unknown argument: extra' "$work/bout")" = 1
+
+"$bootstrap" --help > "$work/bout" 2>&1
+check "the help lists the flag, says it is off by default and names the two Terraform outputs" test "$(sed -n '/--enable-external-secrets/,/--enable-apps/p' "$work/bout" | grep -c -e 'Off by default' -e 'external_secrets_role_arn' -e 'secrets_parameter_prefix')" -ge 2
+check "and where the values come from" test "$(sed -n '/--enable-external-secrets/,/--enable-apps/p' "$work/bout" | grep -c 'scripts/seed-secrets.sh')" -ge 1
+check "the script reads both outputs, checks their format and refuses an empty one when the flag is set" test "$(grep -c -e 'tf_value external_secrets_role_arn' -e 'tf_value secrets_parameter_prefix' -e 'require_match external_secrets_role_arn' -e 'require_match secrets_parameter_prefix' -e 'needs the external_secrets_role_arn Terraform output' -e 'needs the secrets_parameter_prefix Terraform output' scripts/bootstrap-argocd.sh)" = 6
+check "the three ApplicationSets of the operator select the label the flag sets" test "$(grep -l 'platform.example/external-secrets: "true"' platform/argocd/apps/8[789]-eso-*.yaml | wc -l | tr -d ' ')" = 3
+check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/external-secrets:' platform/argocd/apps/*.yaml | grep -vc '/8[789]-eso-')" = 0
 
 echo "chart-contract-check.py (observability checks)"
 
@@ -1864,6 +1938,7 @@ else
   helm template data-network-policies platform/data/network-policies --namespace data -f platform/data/network-policies/ci/aws-params.yaml > "$npm/data.yaml" 2> /dev/null || true
   helm template observability-network-policies platform/observability/network-policies --namespace observability -f platform/observability/network-policies/ci/aws-params.yaml > "$npm/observability.yaml" 2> /dev/null || true
   helm template policy-network-policies platform/security/network-policies --namespace kyverno -f platform/security/network-policies/ci/aws-params.yaml > "$npm/kyverno.yaml" 2> /dev/null || true
+  helm template eso-network-policies platform/security/external-secrets-network-policies --namespace external-secrets -f platform/security/external-secrets-network-policies/ci/aws-params.yaml > "$npm/external-secrets.yaml" 2> /dev/null || true
   "$contract_py" - "$npm" << 'NPMUTPY' > "$npm/results.out" 2>&1 || true
 import copy
 import importlib.util
@@ -1877,7 +1952,7 @@ flows = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(flows)
 matrix = yaml.safe_load(open("scripts/tests/fixtures/network-policies/flows.yaml", encoding="utf-8"))
 entries = [("shop", d + "/shop-" + s + ".yaml") for s in ("gateway", "orders", "payments", "notifier")]
-entries += [("data", d + "/data.yaml"), ("observability", d + "/observability.yaml"), ("kyverno", d + "/kyverno.yaml")]
+entries += [("data", d + "/data.yaml"), ("observability", d + "/observability.yaml"), ("kyverno", d + "/kyverno.yaml"), ("external-secrets", d + "/external-secrets.yaml")]
 base = flows.load_manifests(entries)
 results = []
 
@@ -2041,6 +2116,35 @@ def internet_on_all_ports(docs):
 
 
 expect("an internet rule without ports opens more than 443", internet_on_all_ports, "flow kyverno-admission -> internet:80/TCP should be denied but is allowed")
+
+
+expect("removing the webhook rule of the External Secrets Operator breaks the call of the API server", drop("webhook-allow-webhook-from-api-server", "external-secrets"), "flow api-server-eni -> eso-webhook:10250/TCP should be allowed but is blocked", "ingress of external-secrets/external-secrets-webhook")
+expect("removing the scrape rule of the controller breaks the metrics flow", drop("controller-allow-prometheus-scrape", "external-secrets"), "flow prometheus -> eso-controller:8080/TCP should be allowed but is blocked")
+expect("removing the egress to the operator from the observability policies breaks the scrape", drop("prometheus-allow-to-external-secrets", "observability"), "flow prometheus -> eso-webhook:8080/TCP should be allowed but is blocked", "egress of observability/")
+expect("removing the API rule of the controller breaks its calls to the API", drop("allow-kube-api-controller", "external-secrets"), "flow eso-controller -> api-server:443/TCP should be allowed but is blocked")
+expect("removing the internet rule of the controller breaks its calls to AWS", drop("controller-allow-internet-https", "external-secrets"), "flow eso-controller -> internet:443/TCP should be allowed but is blocked")
+expect("removing the default deny of the external-secrets namespace lets a new pod through", drop("default-deny", "external-secrets"), "flow internet -> eso-stray:8080/TCP should be denied but is allowed", "ingress of external-secrets/stray open: no policy isolates it")
+
+
+def eso_webhook_open_to_all(docs):
+    policy(docs, "webhook-allow-webhook-from-api-server", "external-secrets")["spec"]["ingress"][0]["from"][0]["ipBlock"]["cidr"] = "0.0.0.0/0"
+
+
+expect("a webhook port open to every address lets the internet in", eso_webhook_open_to_all, "flow internet -> eso-webhook:10250/TCP should be denied but is allowed")
+
+
+def eso_internet_for_webhook(docs):
+    policy(docs, "controller-allow-internet-https", "external-secrets")["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] = "external-secrets-webhook"
+
+
+expect("an internet rule given to the webhook is found", eso_internet_for_webhook, "flow eso-webhook -> internet:443/TCP should be denied but is allowed")
+
+
+def eso_internet_without_except(docs):
+    policy(docs, "controller-allow-internet-https", "external-secrets")["spec"]["egress"][0]["to"][0]["ipBlock"].pop("except")
+
+
+expect("an internet rule that does not leave out the VPC range reaches the API server addresses", eso_internet_without_except, "flow eso-controller -> api-server-eni:443/TCP should be denied but is allowed")
 for line in results:
     print(line)
 NPMUTPY
@@ -2649,6 +2753,773 @@ PMPY
   pm_fails "$pm/monitors.yaml" bad-anchor "points at #nowhere, which is not a heading of the alerts runbook" "a runbook link to a heading that does not exist is named" scaling-rules t docs/runbooks/alerts.md
   pm_fails "$pm/monitors.yaml" other-metric "PodsPending uses the metrics ['kube_pod_info']" "a metric that was not checked is named" scaling-rules t docs/runbooks/alerts.md
   pm_fails "$pm/monitors.yaml" drop-alert "the alert PodDisruptionBudgetBlocked is missing" "a missing alert is named" scaling-rules t docs/runbooks/alerts.md
+fi
+
+echo "seed-secrets.sh (against a fake aws)"
+
+seed="./scripts/seed-secrets.sh"
+manifest="scripts/secrets/manifest.yaml"
+seed_state="$work/seed"
+
+new_store() {
+  rm -rf "$seed_state"
+  mkdir -p "$seed_state"
+}
+
+# run_seed ARGS...: the output (standard output and error) is in $work/sout, the status in $rc, the recorded calls in $seed_state.
+run_seed() {
+  rc=0
+  PATH="$fakes:$PATH" FAKE_STATE="$seed_state" "$seed" "$@" > "$work/sout" 2>&1 < /dev/null || rc=$?
+}
+
+# run_seed_answer ANSWER ARGS...: the same, with ANSWER typed at the prompt.
+run_seed_answer() {
+  local answer="$1"
+  shift
+  rc=0
+  printf '%s\n' "$answer" | PATH="$fakes:$PATH" FAKE_STATE="$seed_state" "$seed" "$@" > "$work/sout" 2>&1 || rc=$?
+}
+
+n_calls() { if [ -f "$seed_state/aws.log" ]; then grep -c -e "$1" "$seed_state/aws.log" || true; else echo 0; fi; }
+n_params() { grep -c . "$seed_state/ssm/names" 2> /dev/null || true; }
+
+check "--help prints the usage and exits 0" test "$("$seed" --help | grep -c -e '--purge' -e '--check' -e '--dry-run')" -ge 3
+new_store
+run_seed
+check "without a region the script exits 2" test "$rc" -eq 2
+check "and says so" grep -q -e '--region is required' "$work/sout"
+run_seed --region eu-north-1 --yes
+check "--yes is not accepted" test "$rc" -eq 2
+check "and the message says --purge always asks" grep -q 'always asks you to type the environment name' "$work/sout"
+run_seed --region eu-north-1 --check --purge
+check "--check and --purge cannot be combined" test "$rc" -eq 2
+run_seed --region eu-north-1 --environment production
+check "an environment that is not dev, staging or prod is refused" test "$rc" -eq 2
+run_seed --region eu-north-1 --prefix 'Bad/Prefix'
+check "a prefix with a slash or capitals is refused" test "$rc" -eq 2
+run_seed --region 'eu north' --dry-run
+check "a region that is not a region name is refused" test "$rc" -eq 2
+run_seed --region eu-north-1 --nonsense
+check "an unknown option is refused" test "$rc" -eq 2
+check "none of these made an AWS call" test ! -e "$seed_state/aws.log"
+rc=0
+AWS_REGION=eu-west-1 PATH="$fakes:$PATH" FAKE_STATE="$seed_state" "$seed" --dry-run > "$work/sout" 2>&1 || rc=$?
+check "the region can come from AWS_REGION" grep -q 'in eu-west-1 (dev)' "$work/sout"
+
+# A dry run makes no call and generates nothing.
+new_store
+run_seed --region eu-north-1 --dry-run
+check "a dry run exits 0" test "$rc" -eq 0
+check "it makes no AWS call" test ! -e "$seed_state/aws.log"
+check "it writes nothing" test ! -e "$seed_state/ssm"
+check "it names the six parameters it would write" test "$(grep -c 'would write  /multi-cloud-sre/dev/' "$work/sout")" = 6
+check "the steps are numbered" grep -q '^\[3/3\] Create the parameters that are missing' "$work/sout"
+run_seed --region eu-north-1 --check --dry-run
+check "--check --dry-run makes no call either" test "$rc" -eq 0 -a ! -e "$seed_state/aws.log"
+run_seed --region eu-north-1 --purge --dry-run
+check "--purge --dry-run makes no call and does not ask" test "$rc" -eq 0 -a ! -e "$seed_state/aws.log"
+
+# The first run creates everything.
+new_store
+run_seed --region eu-north-1
+check "the first run exits 0" test "$rc" -eq 0
+check "it reports six created" grep -q '^6 created, 0 already existed, 0 failed\.$' "$work/sout"
+check "each parameter is reported as created, under /multi-cloud-sre/dev" test "$(grep -c '^  created  /multi-cloud-sre/dev/' "$work/sout")" = 6
+check "six put-parameter calls were made" test "$(n_calls ' ssm put-parameter ')" = 6
+check "each is a SecureString of the standard tier with the AWS-managed key, and does not overwrite, with the JSON in a file" test "$(grep -c -e ' --type SecureString --tier Standard --key-id alias/aws/ssm --no-overwrite --cli-input-json file:///[^ ]*/seed-secrets\.[A-Za-z0-9]*/parameter\.json$' "$seed_state/aws.log")" = 6
+check "the file was mode 0600 in a directory of mode 0700 at every call" test "$(grep -c '^dir drwx------ file -rw-------$' "$seed_state/ssm/modes")" = 6
+check "one directory was used for the whole run, and it is gone" test "$(sed 's#/[^/]*$##' "$seed_state/ssm/paths" | sort -u | wc -l | tr -d ' ')" = 1 -a ! -e "$(sed 's#/[^/]*$##' "$seed_state/ssm/paths" | head -n 1)"
+check "the file of every call is gone" test "$(while read -r f; do [ -e "$f" ] && echo left; done < "$seed_state/ssm/paths" | wc -l | tr -d ' ')" = 0
+check "no call reads a value: there is no get-parameter and no decryption" test "$(grep -c -e 'get-parameter' -e 'with-decryption' "$seed_state/aws.log")" = 0
+check "the names are the ones of the manifest" test "$(sort "$seed_state/ssm/names" | tr '\n' ' ')" = "/multi-cloud-sre/dev/grafana/admin-password /multi-cloud-sre/dev/postgres/orders-password /multi-cloud-sre/dev/postgres/payments-password /multi-cloud-sre/dev/rabbitmq/default-password /multi-cloud-sre/dev/rabbitmq/default-username /multi-cloud-sre/dev/valkey/default-password "
+
+# Length and characters of what was generated, against the manifest.
+if [ -n "$contract_py" ]; then
+  "$contract_py" - "$manifest" "$seed_state/ssm/values" << 'SEEDPY' > "$work/seedcheck.out" 2>&1 || true
+import os
+import re
+import sys
+
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+values = sys.argv[2]
+seen = []
+for s in doc["secrets"]:
+    path = os.path.join(values, ("/multi-cloud-sre/dev/" + s["name"]).replace("/", "_"))
+    if not os.path.exists(path):
+        print("missing value for " + s["name"])
+        continue
+    v = open(path, encoding="utf-8").read()
+    seen.append(v)
+    cls = doc["charsets"][s["charset"]]
+    if len(v) != s["length"]:
+        print("%s has %d characters, expected %d" % (s["name"], len(v), s["length"]))
+    if not re.fullmatch("[" + cls + "]+", v):
+        print("%s has a character outside %s" % (s["name"], cls))
+    if s.get("prefix") and not v.startswith(s["prefix"]):
+        print("%s does not start with %s" % (s["name"], s["prefix"]))
+if len(set(seen)) != len(seen):
+    print("two values are equal")
+print("checked %d" % len(seen))
+SEEDPY
+  check "every generated value has the length and the character set of its manifest entry, and no two are equal" test "$(cat "$work/seedcheck.out")" = "checked 6"
+fi
+user_file="$seed_state/ssm/values/_multi-cloud-sre_dev_rabbitmq_default-username"
+check "the user name starts with its prefix and is 16 characters" test "$(cut -c1-2 "$user_file")" = mq -a "$(wc -c < "$user_file" | tr -d ' ')" = 16
+
+# No value is ever printed or recorded in a command line.
+leak=0
+for f in "$seed_state"/ssm/values/*; do
+  v="$(cat "$f")"
+  if grep -qF -- "$v" "$work/sout" || grep -qF -- "$v" "$seed_state/aws.log"; then leak=$((leak + 1)); fi
+done
+check "no value appears in the output or in the recorded command lines" test "$leak" = 0
+check "neither the output nor the command lines have a Value field" test "$(grep -c '"Value"' "$work/sout" "$seed_state/aws.log" | grep -vc ':0$')" = 0
+check "the recorded file names and modes hold no value" test "$(cat "$seed_state/ssm/paths" "$seed_state/ssm/modes" | grep -c -F -f <(cat "$seed_state"/ssm/values/*; echo) | tr -d ' ')" = 0
+
+# Running again changes nothing.
+before="$(cat "$seed_state"/ssm/values/* | cksum)"
+run_seed --region eu-north-1
+check "a second run exits 0" test "$rc" -eq 0
+check "it reports six already existing and none created" grep -q '^0 created, 6 already existed, 0 failed\.$' "$work/sout"
+check "the stored values are the same as before" test "$(cat "$seed_state"/ssm/values/* | cksum)" = "$before"
+sed -i.bak '/postgres\/orders-password/d' "$seed_state/ssm/names"
+rm -f "$seed_state/ssm/names.bak"
+run_seed --region eu-north-1
+check "when one parameter is gone only that one is created" grep -q '^1 created, 5 already existed, 0 failed\.$' "$work/sout"
+run_seed --region eu-north-1 --profile example
+check "--profile is passed to the AWS CLI" grep -q -e '^--region eu-north-1 --profile example ssm put-parameter ' "$seed_state/aws.log"
+run_seed --region eu-north-1 --environment staging --prefix shop
+check "the environment and the prefix make the path" test "$(grep -c '^  created  /shop/staging/' "$work/sout")" = 6
+
+# A failure is reported with its code and not with the CLI's message, and the exit status says so.
+new_store
+touch "$seed_state/ssm-put-denied"
+run_seed --region eu-north-1
+check "a put that is refused exits 1" test "$rc" -eq 1
+check "each parameter is reported as an error with the AWS error code" test "$(grep -c 'AccessDeniedException (exit status 254)$' "$work/sout")" = 6
+check "the message of the CLI is not repeated" test "$(grep -c 'not authorized' "$work/sout")" = 0
+check "the exit status of the CLI is shown with the code" test "$(grep -c 'AccessDeniedException (exit status 254)$' "$work/sout")" = 6
+check "no file or directory is left after failed puts" test "$(while read -r f; do [ -e "$f" ] && echo left; [ -e "$(dirname "$f")" ] && echo left; done < "$seed_state/ssm/paths" | wc -l | tr -d ' ')" = 0
+check "and the summary counts the failures" grep -q '^0 created, 0 already existed, 6 failed\.$' "$work/sout"
+
+# The old hand-over fails like the real CLI, so it cannot come back unnoticed.
+new_store
+rc=0
+PATH="$fakes:$PATH" FAKE_STATE="$seed_state" aws --region eu-north-1 ssm put-parameter --name /x/y --cli-input-json file:///dev/stdin < /dev/null > "$work/old.out" 2>&1 || rc=$?
+check "the fake refuses the JSON from file:///dev/stdin with Invalid JSON received" test "$rc" -ne 0 -a "$(grep -c 'Invalid JSON received' "$work/old.out")" = 1
+rc=0
+PATH="$fakes:$PATH" FAKE_STATE="$seed_state" aws --region eu-north-1 ssm put-parameter --name /x/y --cli-input-json "file://$work/no-such-file.json" > "$work/old.out" 2>&1 || rc=$?
+check "and from a path it cannot read" test "$rc" -ne 0 -a "$(grep -c 'Invalid JSON received' "$work/old.out")" = 1
+check "nothing was stored by either" test ! -s "$seed_state/ssm/names"
+
+# An interrupt while the AWS CLI is running leaves nothing behind. (Job control gives the background job default signal handling;
+# without it a non-interactive shell starts a background job with SIGINT ignored, which a script cannot trap.)
+set -m
+for sig in TERM INT HUP; do
+  new_store
+  mkdir -p "$seed_state/ssm"
+  touch "$seed_state/ssm-put-wait"
+  rc=0
+  PATH="$fakes:$PATH" FAKE_STATE="$seed_state" "$seed" --region eu-north-1 > "$work/sout" 2>&1 < /dev/null &
+  seed_pid=$!
+  waited=0
+  while [ ! -e "$seed_state/ssm-waiting" ] && [ "$waited" -lt 100 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  held_dir="$(dirname "$(head -n 1 "$seed_state/ssm/paths")")"
+  held_mode="$(cut -c1-10 < <(ls -ld "$held_dir"))"
+  kill "-$sig" "$seed_pid"
+  rm -f "$seed_state/ssm-put-wait"
+  wait "$seed_pid" || rc=$?
+  check "SIG$sig while the CLI runs: the directory was mode 0700 and the script stops with a non-zero status" test "$held_mode" = drwx------ -a "$rc" -ne 0
+  check "SIG$sig: the directory and the file are gone" test ! -e "$held_dir"
+  check "SIG$sig: no value in the output or the recorded names" test "$(cat "$seed_state"/ssm/values/* 2> /dev/null | grep -c -F -f - "$work/sout" "$seed_state/aws.log" "$seed_state/ssm/paths" 2> /dev/null | grep -vc ':0$')" = 0
+done
+set +m
+
+# --check
+new_store
+run_seed --region eu-north-1 --check
+check "--check on an empty path exits 1" test "$rc" -eq 1
+check "it lists six missing parameters" test "$(grep -c '^  missing  /multi-cloud-sre/dev/' "$work/sout")" = 6
+check "and says how many" grep -q '^6 of 6 parameter(s) missing\.$' "$work/sout"
+check "it writes nothing" test "$(n_calls ' ssm put-parameter ')" = 0 -a "$(n_params)" = 0
+run_seed --region eu-north-1
+run_seed --region eu-north-1 --check
+check "--check after a seed exits 0" test "$rc" -eq 0
+check "it lists six existing parameters" test "$(grep -c '^  exists   /multi-cloud-sre/dev/' "$work/sout")" = 6
+check "it uses describe-parameters, which returns names and not values" test "$(n_calls ' ssm describe-parameters ')" -ge 1 -a "$(n_calls 'get-parameter')" = 0
+sed -i.bak '/grafana\/admin-password/d' "$seed_state/ssm/names"
+rm -f "$seed_state/ssm/names.bak"
+run_seed --region eu-north-1 --check
+check "one parameter missing makes --check exit 1" test "$rc" -eq 1
+check "and it is the one named" grep -q '^  missing  /multi-cloud-sre/dev/grafana/admin-password$' "$work/sout"
+touch "$seed_state/ssm-list-denied"
+run_seed --region eu-north-1 --check
+check "a listing that is refused is an error, not an empty result" test "$rc" -eq 1
+
+# --purge
+new_store
+run_seed --region eu-north-1
+printf '%s\n' /other/dev/keep /multi-cloud-sre/staging/postgres/orders-password >> "$seed_state/ssm/names"
+run_seed_answer "yes" --region eu-north-1 --purge
+check "--purge with a wrong answer exits 1" test "$rc" -eq 1
+check "it deletes nothing" test "$(n_calls ' ssm delete-parameters ')" = 0 -a "$(n_params)" = 8
+check "and says so" grep -q 'Not confirmed\. Nothing was deleted' "$work/sout"
+run_seed --region eu-north-1 --purge
+check "--purge with no answer at all exits 1 and deletes nothing" test "$rc" -eq 1 -a "$(n_calls ' ssm delete-parameters ')" = 0
+run_seed_answer "prod" --region eu-north-1 --purge
+check "the name of another environment does not confirm" test "$rc" -eq 1 -a "$(n_calls ' ssm delete-parameters ')" = 0
+run_seed_answer "dev" --region eu-north-1 --purge
+check "typing the environment name deletes the parameters under the path" test "$rc" -eq 0 -a "$(grep -c '^  deleted  /multi-cloud-sre/dev/' "$work/sout")" = 6
+check "six parameters go in one call" test "$(n_calls ' ssm delete-parameters ')" = 1
+check "a parameter outside the path and one of another environment are kept" test "$(sort "$seed_state/ssm/names" | tr '\n' ' ')" = "/multi-cloud-sre/staging/postgres/orders-password /other/dev/keep "
+run_seed_answer "dev" --region eu-north-1 --purge
+check "purging an empty path is a no-op that exits 0" test "$rc" -eq 0 -a "$(n_calls ' ssm delete-parameters ')" = 1
+check "and says there is nothing to delete" grep -q 'nothing to delete' "$work/sout"
+new_store
+mkdir -p "$seed_state/ssm"
+i=0
+while [ "$i" -lt 12 ]; do
+  echo "/multi-cloud-sre/dev/x/p$i" >> "$seed_state/ssm/names"
+  i=$((i + 1))
+done
+run_seed_answer "dev" --region eu-north-1 --purge
+check "twelve parameters go in two calls (the API takes ten at a time)" test "$(n_calls ' ssm delete-parameters ')" = 2 -a "$(n_params)" = 0
+
+# The manifest is checked before anything is done.
+bad_manifest() {
+  printf '%s\n' "$2" > "$work/manifest-$1.yaml"
+  run_seed --region eu-north-1 --dry-run --manifest "$work/manifest-$1.yaml"
+  check "$3" test "$rc" -eq 2
+}
+good='version: 1
+charsets: {alnum: "A-Za-z0-9"}
+secrets:
+  - {name: a/b, length: 32, charset: alnum, consumers: [x]}'
+printf '%s\n' "$good" > "$work/manifest-good.yaml"
+run_seed --region eu-north-1 --dry-run --manifest "$work/manifest-good.yaml"
+check "a small valid manifest passes" test "$rc" -eq 0
+bad_manifest short 'version: 1
+charsets: {alnum: "A-Za-z0-9"}
+secrets:
+  - {name: a/b, length: 8, charset: alnum, consumers: [x]}' "a value shorter than 16 characters is refused"
+bad_manifest charset 'version: 1
+charsets: {odd: "A-Za-z0-9+/="}
+secrets:
+  - {name: a/b, length: 32, charset: odd, consumers: [x]}' "a character set with characters that need escaping is refused"
+bad_manifest unknown 'version: 1
+charsets: {alnum: "A-Za-z0-9"}
+secrets:
+  - {name: a/b, length: 32, charset: hex, consumers: [x]}' "a character set that is not defined is refused"
+bad_manifest twice 'version: 1
+charsets: {alnum: "A-Za-z0-9"}
+secrets:
+  - {name: a/b, length: 32, charset: alnum, consumers: [x]}
+  - {name: a/b, length: 32, charset: alnum, consumers: [x]}' "a name listed twice is refused"
+bad_manifest noconsumer 'version: 1
+charsets: {alnum: "A-Za-z0-9"}
+secrets:
+  - {name: a/b, length: 32, charset: alnum}' "a secret nobody reads is refused"
+bad_manifest badname 'version: 1
+charsets: {alnum: "A-Za-z0-9"}
+secrets:
+  - {name: A_b, length: 32, charset: alnum, consumers: [x]}' "a name that is not <component>/<name> is refused"
+bad_manifest nolist 'version: 1
+charsets: {alnum: "A-Za-z0-9"}
+secrets: []' "a manifest without secrets is refused"
+
+# The real manifest: every credential the charts generate is listed, and the script has no way to print or trace a value.
+if [ -n "$contract_py" ]; then
+  "$contract_py" - << 'SEEDPY' > "$work/seedcover.out" 2>&1 || true
+import yaml
+
+manifest = yaml.safe_load(open("scripts/secrets/manifest.yaml", encoding="utf-8"))
+names = {s["name"] for s in manifest["secrets"]}
+data = yaml.safe_load(open("platform/data/secrets/values.yaml", encoding="utf-8"))
+need = {"postgres/%s-password" % u["name"] for u in data["postgres"]["users"]}
+need.add("valkey/default-password")
+need.add("grafana/admin-password")
+need.add("rabbitmq/default-password")
+missing = sorted(need - names)
+print("missing: " + ", ".join(missing) if missing else "all listed")
+SEEDPY
+  check "the manifest lists a password for each PostgreSQL role, Valkey, RabbitMQ and Grafana" test "$(cat "$work/seedcover.out")" = "all listed"
+fi
+check "the script turns shell tracing off and never on" test "$(grep -v '^ *#' "$seed" | grep -c -e 'set -x' -e 'set -o xtrace' -e 'set -[a-z]*x')" = 0
+check "the line that turns it off is there" grep -q '^set +o xtrace$' "$seed"
+check "the script does not call get-parameter or ask for decryption" test "$(grep -v '^ *#' "$seed" | grep -c -e 'get-parameter' -e 'with-decryption')" = 0
+# shellcheck disable=SC2016 # the patterns are literal text of the script
+check "the value goes to the CLI in a file, not on the command line and not through /dev/stdin" test "$(grep -v '^ *#' "$seed" | grep -c 'cli-input-json "file://\$SEED_FILE"')" = 1 -a "$(grep -v '^ *#' "$seed" | grep -c '/dev/stdin')" = 0
+check "the directory is made with umask 077 and mktemp -d" grep -q -e 'umask 077' -e 'mktemp -d' "$seed"
+check "the directory is removed on exit, interrupt, termination and hangup" test "$(grep -c -e "^trap .*rm -rf .*' EXIT$" -e "^trap 'exit 130' INT$" -e "^trap 'exit 143' TERM$" -e "^trap 'exit 129' HUP$" "$seed")" = 4
+check "the script does not claim to erase the file" test "$(grep -i -c -e 'securely erase' -e 'shred' "$seed" | tr -d ' ')" = 0 -a "$(grep -c 'does not erase the value' "$seed")" = 1
+new_store
+rc=0
+PATH="$fakes:$PATH" FAKE_STATE="$seed_state" bash -x "$seed" --region eu-north-1 > "$work/sout" 2>&1 < /dev/null || rc=$?
+leak=0
+for f in "$seed_state"/ssm/values/*; do
+  if grep -qF -- "$(cat "$f")" "$work/sout"; then leak=$((leak + 1)); fi
+done
+check "even when started with bash -x no value reaches the output" test "$rc" -eq 0 -a "$leak" = 0 -a "$(n_params)" = 6
+
+echo "External Secrets Operator (the operator, the store and the AppProjects)"
+
+eso_apps="platform/argocd/apps"
+check "the operator ApplicationSet selects the label the flag sets, EKS clusters only, and syncs server-side" test "$(grep -c -e 'platform.example/external-secrets: "true"' -e 'platform.example/cloud: aws' -e '- ServerSideApply=true' "$eso_apps/87-eso-operator.yaml")" = 3
+check "it is wave 3, before the data layer (5), the observability stack (10) and the services (20)" grep -q 'argocd.argoproj.io/sync-wave: "3"' "$eso_apps/87-eso-operator.yaml"
+check "the store is wave 4 and the network policies wave 4, after the operator" test "$(grep -c 'argocd.argoproj.io/sync-wave: "4"' "$eso_apps/88-eso-store.yaml" "$eso_apps/89-eso-network-policies.yaml" | grep -vc ':0$')" = 2
+check "the three are deployed by the platform-addons project" test "$(grep -l 'project: platform-addons$' "$eso_apps"/8[789]-eso-*.yaml | wc -l | tr -d ' ')" = 3
+check "the operator namespace is created at the restricted Pod Security level" test "$(grep -c -e 'pod-security.kubernetes.io/enforce: restricted' "$eso_apps/87-eso-operator.yaml")" = 1
+check "the role comes from the cluster annotation and is passed as a string" test "$(grep -c -e 'name: roleArn' -e 'forceString: true' "$eso_apps/87-eso-operator.yaml")" = 2 -a "$(grep -c "value: '.*platform.example/external-secrets-role-arn" "$eso_apps/87-eso-operator.yaml")" = 1
+check "the store gets the region and the parameter path from cluster annotations" test "$(grep -c -e 'platform.example/region' -e 'platform.example/secrets-prefix' "$eso_apps/88-eso-store.yaml")" -ge 2
+check "the network policies get both ranges from cluster annotations" test "$(grep -c -e 'platform.example/vpc-cidr' -e 'platform.example/service-cidr' "$eso_apps/89-eso-network-policies.yaml")" -ge 2
+check "no ApplicationSet of the operator passes a credential, a key or a token" test "$(grep -i -c -e 'secretAccessKey' -e 'accessKeyID' -e 'token:' "$eso_apps"/8[789]-eso-*.yaml | grep -vc ':0$')" = 0
+check "the operator values carry no credential of any kind" test "$(grep -i -c -e 'accessKey' -e 'secretKey' -e 'AKIA' platform/security/external-secrets/values.yaml platform/security/external-secrets-store/values.yaml | grep -vc ':0$')" = 0
+check "the monitors chart has the ServiceMonitor and Prometheus may reach the operator's metrics port" test -f platform/observability/monitors/templates/secrets.yaml -a "$(grep -c 'prometheus-allow-to-external-secrets' platform/observability/network-policies/templates/other-namespaces.yaml)" = 1
+
+if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
+  echo "  skip  needs helm and a Python with PyYAML"
+else
+  es="$work/eso"
+  rm -rf "$es"
+  mkdir -p "$es"
+  op="platform/security/external-secrets"
+  st="platform/security/external-secrets-store"
+  np="platform/security/external-secrets-network-policies"
+  helm template external-secrets "$op" --namespace external-secrets -f "$op/values.yaml" -f "$op/ci/aws-params.yaml" --include-crds > "$es/operator.yaml" 2> /dev/null || true
+  helm template external-secrets-store "$st" --namespace external-secrets -f "$st/values.yaml" -f "$st/ci/aws-params.yaml" > "$es/store.yaml" 2> /dev/null || true
+  helm template eso-network-policies "$np" --namespace external-secrets -f "$np/values.yaml" -f "$np/ci/aws-params.yaml" > "$es/policies.yaml" 2> /dev/null || true
+
+  contract "$es/operator.yaml" external-secrets t "$eso_apps/87-eso-operator.yaml"
+  check "the operator as rendered passes: three workloads, small, failing open, with its role, no store, server-side apply" test "$rc" -eq 0
+  contract "$es/store.yaml" eso-store t "$eso_apps/88-eso-store.yaml"
+  check "the store as rendered passes: Parameter Store, the web identity of the operator's service account, no credential" test "$rc" -eq 0
+  check "the store names the service account the IAM role trusts" test "$(grep -c -e 'name: external-secrets$' -e 'namespace: external-secrets$' "$es/store.yaml")" = 2
+  check "the operator's service account is the one the store names, with the role annotation" test "$(grep -c -e 'serviceAccountName: external-secrets$' "$es/operator.yaml")" = 1 -a "$(grep -c 'eks.amazonaws.com/role-arn: ' "$es/operator.yaml")" = 1
+  check "the validating webhooks fail open" test "$(grep -c 'failurePolicy: Ignore' "$es/operator.yaml")" = 3 -a "$(grep -c 'failurePolicy: Fail' "$es/operator.yaml")" = 0
+  check "the operator requests under 200m CPU and 300Mi of memory (100m and 228Mi)" test "$(grep -c -e 'cpu: 50m' -e 'cpu: 25m' -e 'memory: 100Mi' -e 'memory: 64Mi' "$es/operator.yaml")" -ge 6
+  check "the biggest CRDs need server-side apply (larger than 256 KiB)" test "$(awk '/^kind: CustomResourceDefinition/{c=1} /^---/{c=0} {if(c)n++} END{print n+0}' "$es/operator.yaml")" -gt 1000
+
+  cat > "$es/mutate.py" << 'ESOPY'
+import copy
+import sys
+
+import yaml
+
+src, dst, how = sys.argv[1:4]
+docs = [d for d in yaml.safe_load_all(open(src, encoding="utf-8")) if d]
+
+
+def one(kind, name=None):
+    return next(d for d in docs if d["kind"] == kind and (name is None or d["metadata"]["name"] == name))
+
+
+def containers(name):
+    return one("Deployment", name)["spec"]["template"]["spec"]["containers"]
+
+
+if how == "webhook-closed":
+    for d in docs:
+        if d["kind"] == "ValidatingWebhookConfiguration":
+            for h in d["webhooks"]:
+                h["failurePolicy"] = "Fail"
+elif how == "no-role":
+    del one("ServiceAccount", "external-secrets")["metadata"]["annotations"]["eks.amazonaws.com/role-arn"]
+elif how == "wrong-account":
+    one("Deployment", "external-secrets")["spec"]["template"]["spec"]["serviceAccountName"] = "default"
+elif how == "extra-deployment":
+    d = copy.deepcopy(one("Deployment", "external-secrets"))
+    d["metadata"]["name"] = "extra"
+    docs.append(d)
+elif how == "no-limits":
+    del containers("external-secrets-webhook")[0]["resources"]["limits"]
+elif how == "too-big":
+    containers("external-secrets")[0]["resources"]["requests"]["cpu"] = "300m"
+elif how == "too-much-memory":
+    containers("external-secrets")[0]["resources"]["requests"]["memory"] = "400Mi"
+elif how == "has-store":
+    docs.append({"apiVersion": "external-secrets.io/v1", "kind": "ClusterSecretStore", "metadata": {"name": "x"}, "spec": {}})
+elif how == "has-externalsecret":
+    docs.append({"apiVersion": "external-secrets.io/v1", "kind": "ExternalSecret", "metadata": {"name": "x", "namespace": "shop"}, "spec": {}})
+elif how == "wrong-webhook-service":
+    for d in docs:
+        if d["kind"] == "ValidatingWebhookConfiguration":
+            d["webhooks"][0]["clientConfig"]["service"]["name"] = "other"
+elif how == "no-crds":
+    docs = [d for d in docs if d["kind"] != "CustomResourceDefinition"]
+elif how == "no-metrics-service":
+    docs = [d for d in docs if not (d["kind"] == "Service" and d["metadata"]["name"].endswith("-metrics"))]
+elif how == "store-v1beta1":
+    one("ClusterSecretStore")["apiVersion"] = "external-secrets.io/v1beta1"
+elif how == "store-secrets-manager":
+    one("ClusterSecretStore")["spec"]["provider"]["aws"]["service"] = "SecretsManager"
+elif how == "store-no-region":
+    one("ClusterSecretStore")["spec"]["provider"]["aws"]["region"] = ""
+elif how == "store-secretref":
+    one("ClusterSecretStore")["spec"]["provider"]["aws"]["auth"]["secretRef"] = {"accessKeyIDSecretRef": {"name": "aws", "key": "id"}}
+elif how == "store-access-key":
+    one("ClusterSecretStore")["spec"]["provider"]["aws"]["externalID"] = "AKIAABCDEFGHIJKLMNOP"
+elif how == "store-wrong-sa":
+    one("ClusterSecretStore")["spec"]["provider"]["aws"]["auth"]["jwt"]["serviceAccountRef"]["name"] = "default"
+elif how == "store-wrong-namespace":
+    one("ClusterSecretStore")["spec"]["provider"]["aws"]["auth"]["jwt"]["serviceAccountRef"]["namespace"] = "kube-system"
+elif how == "store-no-skip":
+    del one("ClusterSecretStore")["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+elif how == "store-extra":
+    docs.append({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "keys"}})
+elif how == "store-other-provider":
+    one("ClusterSecretStore")["spec"]["provider"]["fake"] = {}
+else:
+    sys.exit("unknown mutation " + how)
+yaml.safe_dump_all(docs, open(dst, "w", encoding="utf-8"), sort_keys=False)
+ESOPY
+  # eso_fails FILE CHECK APPSET MUTATION MESSAGE DESCRIPTION
+  eso_fails() {
+    "$contract_py" "$es/mutate.py" "$1" "$es/mutated.yaml" "$4" || { bad "$6 (mutation $4 failed)"; return; }
+    contract "$es/mutated.yaml" "$2" t "$3"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$5" "$work/cout"; then ok "$6"; else bad "$6 (exit $rc)"; fi
+  }
+  oa="$eso_apps/87-eso-operator.yaml"
+  sa="$eso_apps/88-eso-store.yaml"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" webhook-closed "fails closed (failurePolicy Fail); a dead operator could block the cluster" "a webhook that fails closed is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" no-role "has no eks.amazonaws.com/role-arn annotation with a role ARN" "a controller service account without its role is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" wrong-account "not as the service account external-secrets that the IAM role trusts" "a controller that runs as another service account is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" extra-deployment "is not one of the three of the operator" "a fourth workload is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" no-limits "external-secrets-webhook container webhook has no limits cpu" "a container without limits is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" too-big "which is not under 200m" "requests of 200m CPU or more are named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" too-much-memory "of memory, which is not under 300Mi" "requests of 300Mi or more are named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" has-store "the operator chart holds no store and no ExternalSecret" "a store inside the operator chart is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" has-externalsecret "the operator chart holds no store and no ExternalSecret" "an ExternalSecret inside the operator chart is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" wrong-webhook-service "does not call the Service external-secrets-webhook in external-secrets" "a webhook that calls another Service is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" no-crds "no CRD is rendered; render with --include-crds" "a render without CRDs is named"
+  eso_fails "$es/operator.yaml" external-secrets "$oa" no-metrics-service "expected a metrics Service (port 8080) for each of the three pods" "a missing metrics Service is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-v1beta1 "the store must be external-secrets.io/v1" "the deprecated v1beta1 API is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-secrets-manager "the service must be ParameterStore, not SecretsManager" "another AWS service is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-no-region "the store has no AWS region" "a store without a region is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-secretref "the only authentication is jwt" "a store with a key pair secret reference is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-secretref "the store has accessKeyIDSecretRef" "and the credential field is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-access-key "an AWS access key id is in the store" "an access key id in the store is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-wrong-sa "must sign in with the service account external-secrets in the namespace external-secrets" "a store that signs in as another service account is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-wrong-namespace "must sign in with the service account external-secrets in the namespace external-secrets" "and one that names another namespace"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-no-skip "must carry SkipDryRunOnMissingResource=true" "a store that does not skip the dry run is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-extra "the store chart renders only the store" "another object in the store chart is named"
+  eso_fails "$es/store.yaml" eso-store "$sa" store-other-provider "must have the aws provider and no other" "a second provider is named"
+
+  # The ApplicationSets: a changed file must be noticed.
+  "$contract_py" - "$oa" "$es" << 'ESOPY'
+import sys
+
+import yaml
+
+src, out = sys.argv[1:3]
+base = yaml.safe_load(open(src, encoding="utf-8"))
+
+
+def write(name, fn):
+    d = yaml.safe_load(yaml.safe_dump(base))
+    fn(d)
+    yaml.safe_dump(d, open(out + "/" + name, "w", encoding="utf-8"), sort_keys=False)
+
+
+tpl = lambda d: d["spec"]["template"]["spec"]
+write("appset-no-ssa.yaml", lambda d: tpl(d)["syncPolicy"]["syncOptions"].remove("ServerSideApply=true"))
+write("appset-baseline.yaml", lambda d: tpl(d)["syncPolicy"]["managedNamespaceMetadata"]["labels"].update({"pod-security.kubernetes.io/enforce": "baseline"}))
+write("appset-label.yaml", lambda d: d["spec"]["generators"][0]["clusters"]["selector"]["matchLabels"].pop("platform.example/external-secrets"))
+write("appset-namespace.yaml", lambda d: tpl(d)["destination"].update({"namespace": "default"}))
+write("appset-no-role.yaml", lambda d: tpl(d)["source"]["helm"].update({"parameters": []}))
+write("appset-no-ignore.yaml", lambda d: tpl(d).pop("ignoreDifferences"))
+write("appset-no-respect.yaml", lambda d: tpl(d)["syncPolicy"]["syncOptions"].remove("RespectIgnoreDifferences=true"))
+ESOPY
+  contract "$es/operator.yaml" external-secrets t "$es/appset-no-ssa.yaml"
+  check "an ApplicationSet without ServerSideApply is named, because the CRDs are larger than client-side apply can store" test "$rc" -eq 1 -a "$(grep -c 'is larger than client-side apply can store (256 KiB), so the ApplicationSet needs ServerSideApply=true' "$work/cout")" = 1
+  contract "$es/operator.yaml" external-secrets t "$es/appset-baseline.yaml"
+  check "a namespace created below the restricted level is named" grep -q 'not created at the restricted Pod Security level' "$work/cout"
+  contract "$es/operator.yaml" external-secrets t "$es/appset-label.yaml"
+  check "the wrong cluster label is named" grep -q 'does not select clusters by platform.example/external-secrets=true' "$work/cout"
+  contract "$es/operator.yaml" external-secrets t "$es/appset-namespace.yaml"
+  check "the wrong namespace is named" grep -q 'does not deploy to the external-secrets namespace' "$work/cout"
+  contract "$es/operator.yaml" external-secrets t "$es/appset-no-role.yaml"
+  check "an ApplicationSet that does not pass the role is named" grep -q 'does not pass roleArn from the annotation platform.example/external-secrets-role-arn' "$work/cout"
+  contract "$es/operator.yaml" external-secrets t "$es/appset-no-ignore.yaml"
+  check "a CA bundle that the certificate controller writes and Argo CD does not ignore is named" grep -q 'is not ignored' "$work/cout"
+  contract "$es/operator.yaml" external-secrets t "$es/appset-no-respect.yaml"
+  check "ignored differences that the sync does not respect are named" grep -q 'RespectIgnoreDifferences=true' "$work/cout"
+
+  # The charts refuse to render without what the cluster Secret supplies.
+  if helm template check "$op" --namespace external-secrets -f "$op/values.yaml" > "$es/norole.out" 2>&1; then bad "the operator chart rendered without a role"; else ok "the operator chart refuses to render without the role"; fi
+  check "and says which value and where it comes from" grep -q 'roleArn must be set: Argo CD passes it from the cluster annotation platform.example/external-secrets-role-arn' "$es/norole.out"
+  if helm template check "$op" --namespace external-secrets -f "$op/values.yaml" --set roleArn= > /dev/null 2>&1; then bad "the operator chart rendered with an empty role"; else ok "an empty role fails the render too"; fi
+  if helm template check "$st" --set parameterPrefix=/multi-cloud-sre/dev > "$es/noregion.out" 2>&1; then bad "the store rendered without a region"; else ok "the store chart refuses to render without the region"; fi
+  check "and says so" grep -q 'region must be set' "$es/noregion.out"
+  if helm template check "$st" --set region=eu-north-1 > "$es/noprefix.out" 2>&1; then bad "the store rendered without the parameter path"; else ok "and without the parameter path"; fi
+  check "and says which annotation it comes from" grep -q 'platform.example/secrets-prefix' "$es/noprefix.out"
+  helm template check "$st" -f "$st/ci/aws-params.yaml" --set parameterPrefix=/other/prod > "$es/prefix.yaml" 2> /dev/null || true
+  check "the parameter path reaches the store" grep -q 'platform.example/parameter-prefix: "/other/prod"' "$es/prefix.yaml"
+  if helm template check "$np" --set serviceCidr=203.0.113.0/24 > /dev/null 2>&1; then bad "the policies rendered without the VPC range"; else ok "the network policy chart refuses to render without the VPC range"; fi
+  if helm template check "$np" --set vpcCidr=192.0.2.0/24 > /dev/null 2>&1; then bad "the policies rendered without the Service range"; else ok "and without the Service range"; fi
+  helm template check "$np" -f "$np/ci/aws-params.yaml" --set enabled=false > "$es/off.yaml" 2> /dev/null || true
+  check "the network policies can be switched off" test "$(grep -c '^kind:' "$es/off.yaml")" = 0
+  check "only the controller may reach the internet, with the reason on the policy" test "$(grep -c 'platform.example/internet-egress:' "$es/policies.yaml")" = 1 -a "$(grep -c 'cidr: 0.0.0.0/0' "$es/policies.yaml")" = 1
+
+  # The AppProjects: what the charts render is allowed, and the lists are no wider than that.
+  addons_project="platform/argocd/bootstrap/appproject-platform-addons.yaml"
+  obs_project="platform/argocd/bootstrap/appproject-platform-observability.yaml"
+  apps_project="platform/argocd/bootstrap/appproject-platform-apps.yaml"
+  data_project="platform/argocd/bootstrap/appproject-platform-data.yaml"
+  contract "$fixtures/secrets/eso-project-ok.yaml" project-fit eso "$addons_project" external-secrets
+  check "everything the operator and the store render is allowed by the platform-addons project" test "$rc" -eq 0
+  contract "$es/operator.yaml" project-fit eso "$addons_project" external-secrets
+  check "and so is the real render of the operator" test "$rc" -eq 0
+  contract "$es/store.yaml" project-fit eso "$addons_project" external-secrets
+  check "the real render of the store" test "$rc" -eq 0
+  contract "$es/policies.yaml" project-fit eso "$addons_project" external-secrets
+  check "and of the network policies" test "$rc" -eq 0
+  contract "$fixtures/secrets/eso-project-bad.yaml" project-fit eso "$addons_project" external-secrets
+  check "a workload in another namespace and kinds outside the list are refused" test "$rc" -eq 1
+  check "the namespace is named" grep -q 'is in the namespace shop, which is not a destination of platform-addons' "$work/cout"
+  check "a storage class and a persistent volume are named" test "$(grep -c -e 'StorageClass/demo (storage.k8s.io) is cluster-scoped and not in clusterResourceWhitelist' -e 'PersistentVolume/demo (core) is cluster-scoped and not in clusterResourceWhitelist' "$work/cout")" = 2
+  check "the push kinds and the cluster generator are refused: only the ClusterSecretStore is added" test "$(grep -c -e 'ClusterPushSecret/demo (external-secrets.io) is cluster-scoped and not in clusterResourceWhitelist' -e 'ClusterGenerator/demo (generators.external-secrets.io) is cluster-scoped and not in clusterResourceWhitelist' "$work/cout")" = 2
+  check "the addons project allows the ClusterSecretStore and no other kind of the group" test "$(grep -c 'group: external-secrets.io' "$addons_project")" = 1 -a "$(grep -A1 'group: external-secrets.io' "$addons_project" | grep -c 'kind: ClusterSecretStore$')" = 1
+  contract "$fixtures/secrets/externalsecret-observability.yaml" project-fit eso "$obs_project" observability
+  check "an ExternalSecret in the observability namespace is allowed by the observability project" test "$rc" -eq 0
+  contract "$fixtures/secrets/externalsecret-bad.yaml" project-fit eso "$obs_project" observability
+  check "an ExternalSecret in the shop namespace is refused by the observability project" grep -q 'ExternalSecret/orders-db is in the namespace shop, which is not a destination of platform-observability' "$work/cout"
+  check "a ClusterSecretStore is refused by it" grep -q 'ClusterSecretStore/demo (external-secrets.io) is cluster-scoped and not in clusterResourceWhitelist of platform-observability' "$work/cout"
+  check "a SecretStore is refused by it" grep -q 'SecretStore/demo (external-secrets.io) is not in namespaceResourceWhitelist of platform-observability' "$work/cout"
+  contract "$fixtures/secrets/externalsecret-shop.yaml" project-fit eso "$apps_project" shop
+  check "the apps project does not allow ExternalSecret: the shop Secrets come from the data charts" grep -q 'ExternalSecret/orders-db (external-secrets.io) is not in namespaceResourceWhitelist of platform-apps' "$work/cout"
+  contract "$fixtures/secrets/externalsecret-shop.yaml" project-fit eso "$data_project" shop
+  check "the data project, which deploys into data and shop, allows an ExternalSecret (it allows every namespaced kind)" test "$rc" -eq 0
+  contract "$fixtures/secrets/eso-clusterstore.yaml" project-fit eso "$data_project" data
+  check "but the data project does not allow a ClusterSecretStore" grep -q 'ClusterSecretStore/aws-parameter-store (external-secrets.io) is cluster-scoped and not in clusterResourceWhitelist of platform-data' "$work/cout"
+fi
+
+echo "Secrets from Parameter Store (the credential charts in both modes)"
+
+sec_apps="platform/argocd/apps"
+check "the four ApplicationSets of the credential charts pass the mode and the path as parameters" test "$(grep -l -e 'name: externalSecrets.enabled' "$sec_apps/72-data-secrets.yaml" "$sec_apps/77-data-rabbitmq.yaml" "$sec_apps/78-data-rabbitmq-credentials.yaml" "$sec_apps/90-observability-secrets.yaml" | wc -l | tr -d ' ')" = 4
+check "the mode comes from the cluster label and is off when the label is absent" test "$(grep -c "value: '{{ default \"false\" (index .metadata.labels \"platform.example/external-secrets\") }}'" "$sec_apps/72-data-secrets.yaml" "$sec_apps/77-data-rabbitmq.yaml" "$sec_apps/78-data-rabbitmq-credentials.yaml" "$sec_apps/90-observability-secrets.yaml" | grep -vc ':0$')" = 4
+check "the path comes from the cluster annotation and is passed as a string" test "$(grep -c -e "platform.example/secrets-prefix" "$sec_apps/72-data-secrets.yaml" "$sec_apps/77-data-rabbitmq.yaml" "$sec_apps/78-data-rabbitmq-credentials.yaml" "$sec_apps/90-observability-secrets.yaml" | grep -vc ':0$')" = 4
+check "the charts are off by default" test "$(grep -A1 '^externalSecrets:' platform/data/secrets/values.yaml platform/data/rabbitmq/values.yaml platform/data/rabbitmq-credentials/values.yaml platform/observability/secrets/values.yaml | grep -c 'enabled: false')" = 4
+check "the seed manifest and the contract exist and the contract lists every Secret once" test "$(grep -c '^  - namespace:' scripts/secrets/contract.yaml)" = 9
+
+if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
+  echo "  skip  needs helm and a Python with PyYAML"
+else
+  sc="$work/sec"
+  rm -rf "$sc"
+  mkdir -p "$sc"
+  cred_charts="platform/data/secrets platform/data/rabbitmq platform/data/rabbitmq-credentials platform/observability/secrets"
+  : > "$sc/generated.yaml"
+  : > "$sc/external.yaml"
+  for chart in $cred_charts; do
+    ns="$(basename "$(dirname "$chart")")"
+    printf '\n---\n' >> "$sc/generated.yaml"
+    helm template "$(basename "$chart")" "$chart" --namespace "$ns" -f "$chart/values.yaml" >> "$sc/generated.yaml" 2> /dev/null || true
+    printf '\n---\n' >> "$sc/external.yaml"
+    helm template "$(basename "$chart")" "$chart" --namespace "$ns" -f "$chart/values.yaml" --set externalSecrets.enabled=true --set externalSecrets.prefix=/multi-cloud-sre/dev >> "$sc/external.yaml" 2> /dev/null || true
+  done
+  contract_file="scripts/secrets/contract.yaml"
+  manifest_file="scripts/secrets/manifest.yaml"
+
+  contract "$sc/generated.yaml" secrets-generated t "$contract_file"
+  check "in the default mode the generators make every Secret of the contract, with its keys, types and labels" test "$rc" -eq 0
+  contract "$sc/external.yaml" secrets-external t /multi-cloud-sre/dev "$contract_file" "$manifest_file"
+  check "in external mode the ExternalSecrets declare the same Secrets, from entries of the seed manifest, and every entry is read" test "$rc" -eq 0
+  check "external mode renders no Job, no ServiceAccount of a generator and no Role for Secrets" test "$(grep -c -e '^kind: Job' -e 'secrets-generator' -e 'credentials-copier' "$sc/external.yaml")" = 0
+  check "external mode renders no Secret and none with a value" test "$(grep -c '^kind: Secret$' "$sc/external.yaml")" = 0
+  check "the exempt label is not rendered in external mode, and is in the default mode (the copy Job)" test "$(grep -c 'platform.example/policy-exempt' "$sc/external.yaml")" = 0 -a "$(grep -c 'platform.example/policy-exempt' "$sc/generated.yaml")" -ge 2
+  check "the default mode still renders the generators and the copy Job" test "$(grep -c -e '^kind: Job' "$sc/generated.yaml")" = 3 -a "$(grep -c '^kind: ExternalSecret' "$sc/generated.yaml")" = 0
+  check "the broker starts from the Secret of the store in external mode, and not in the default mode" test "$(grep -c 'secretBackend:' "$sc/external.yaml")" = 1 -a "$(grep -c 'secretBackend:' "$sc/generated.yaml")" = 0
+  check "the cluster of the broker names the Secret the ExternalSecret makes" test "$(grep -A2 'externalSecret:' "$sc/external.yaml" | grep -c 'name: platform-mq-default-user')" = 1
+  check "the role Secrets keep the label CloudNativePG watches and the basic-auth type" test "$(grep -c -e 'type: kubernetes.io/basic-auth' -e 'cnpg.io/reload: "true"' "$sc/external.yaml")" = 4
+
+  for chart in $cred_charts; do
+    if helm template check "$chart" --set externalSecrets.enabled=true > "$sc/noprefix.out" 2>&1; then bad "$chart rendered in external mode without the prefix"; else ok "$chart refuses to render in external mode without the parameter path"; fi
+  done
+  check "and the message names the annotation it comes from" grep -q 'platform.example/secrets-prefix' "$sc/noprefix.out"
+  helm template check platform/data/secrets --set externalSecrets.enabled=true --set externalSecrets.prefix=/other/prod/ > "$sc/slash.yaml" 2> /dev/null || true
+  check "a trailing slash on the path does not double up" grep -q 'key: /other/prod/postgres/orders-password$' "$sc/slash.yaml"
+  helm template check platform/data/secrets --set externalSecrets.enabled=false --set externalSecrets.prefix=/other/prod > "$sc/off.yaml" 2> /dev/null || true
+  check "the prefix alone does not switch the mode on" test "$(grep -c '^kind: ExternalSecret' "$sc/off.yaml")" = 0
+
+  cat > "$sc/mutate.py" << 'SECPY'
+import copy
+import sys
+
+import yaml
+
+src, dst, how = sys.argv[1:4]
+docs = [d for d in yaml.safe_load_all(open(src, encoding="utf-8")) if d]
+
+
+def es(name):
+    return next(d for d in docs if d["kind"] == "ExternalSecret" and d["metadata"]["name"] == name)
+
+
+if how == "missing-key":
+    del es("orders-db")["spec"]["target"]["template"]["data"]["dbname"]
+elif how == "extra-key":
+    es("orders-db")["spec"]["target"]["template"]["data"]["token"] = "x"
+elif how == "wrong-name":
+    es("orders-db")["spec"]["target"]["name"] = "orders-database"
+    es("orders-db")["metadata"]["name"] = "orders-database"
+elif how == "wrong-namespace":
+    es("cache-auth")["metadata"]["namespace"] = "data"
+elif how == "unknown-remote":
+    es("pg-orders")["spec"]["data"][0]["remoteRef"]["key"] = "/multi-cloud-sre/dev/postgres/unknown-password"
+elif how == "other-prefix":
+    es("pg-orders")["spec"]["data"][0]["remoteRef"]["key"] = "/another/prod/postgres/orders-password"
+elif how == "wrong-parameter":
+    es("pg-orders")["spec"]["data"][0]["remoteRef"]["key"] = "/multi-cloud-sre/dev/postgres/payments-password"
+elif how == "wrong-type":
+    es("pg-orders")["spec"]["target"]["template"]["type"] = "Opaque"
+elif how == "no-label":
+    del es("pg-payments")["spec"]["target"]["template"]["metadata"]
+elif how == "refresh":
+    es("grafana-admin")["spec"]["refreshInterval"] = "6h"
+elif how == "orphan":
+    es("grafana-admin")["spec"]["target"]["creationPolicy"] = "Orphan"
+elif how == "other-store":
+    es("grafana-admin")["spec"]["secretStoreRef"]["name"] = "other"
+elif how == "namespaced-store":
+    es("grafana-admin")["spec"]["secretStoreRef"]["kind"] = "SecretStore"
+elif how == "v1beta1":
+    es("grafana-admin")["apiVersion"] = "external-secrets.io/v1beta1"
+elif how == "no-skip":
+    del es("grafana-admin")["metadata"]["annotations"]["argocd.argoproj.io/sync-options"]
+elif how == "datafrom":
+    es("grafana-admin")["spec"]["dataFrom"] = [{"extract": {"key": "/multi-cloud-sre/dev/grafana"}}]
+elif how == "missing-es":
+    docs = [d for d in docs if not (d["kind"] == "ExternalSecret" and d["metadata"]["name"] == "valkey-auth")]
+elif how == "unknown-secret":
+    d = copy.deepcopy(es("grafana-admin"))
+    d["metadata"]["name"] = "surprise"
+    d["spec"]["target"]["name"] = "surprise"
+    docs.append(d)
+elif how == "secret-with-data":
+    docs.append({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "leak", "namespace": "data"}, "stringData": {"password": "not-a-real-value"}})
+elif how == "empty-secret":
+    docs.append({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "empty", "namespace": "data"}})
+elif how == "exempt-label":
+    es("grafana-admin")["metadata"]["labels"] = {"platform.example/policy-exempt": "true"}
+elif how == "role-for-secrets":
+    docs.append({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": {"name": "gen", "namespace": "data"},
+                 "rules": [{"apiGroups": [""], "resources": ["secrets"], "verbs": ["create"]}]})
+elif how == "wrong-remote-count":
+    es("rabbitmq-auth")["spec"]["data"] = es("rabbitmq-auth")["spec"]["data"][:1]
+else:
+    sys.exit("unknown mutation " + how)
+yaml.safe_dump_all(docs, open(dst, "w", encoding="utf-8"), sort_keys=False)
+SECPY
+  # sec_fails FILE MUTATION MESSAGE DESCRIPTION [CHECK ARGS...]
+  sec_fails() {
+    "$contract_py" "$sc/mutate.py" "$1" "$sc/mutated.yaml" "$2" || { bad "$4 (mutation $2 failed)"; return; }
+    contract "$sc/mutated.yaml" secrets-external t /multi-cloud-sre/dev "$contract_file" "${5:-$manifest_file}"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$3" "$work/cout"; then ok "$4"; else bad "$4 (exit $rc)"; fi
+  }
+  ext="$sc/external.yaml"
+  sec_fails "$ext" missing-key "has the keys" "a missing key of a Secret is named"
+  sec_fails "$ext" missing-key "missing ['dbname']" "and the key is named"
+  sec_fails "$ext" extra-key "not in the contract ['token']" "a key that the contract does not have is named"
+  sec_fails "$ext" wrong-name "no ExternalSecret makes the Secret shop/orders-db" "a wrong Secret name is named (the one that is missing)"
+  sec_fails "$ext" wrong-name "makes the Secret shop/orders-database, which is not in scripts/secrets/contract.yaml" "and the one that is not in the contract"
+  sec_fails "$ext" wrong-namespace "no ExternalSecret makes the Secret shop/cache-auth" "a Secret in the wrong namespace is named"
+  sec_fails "$ext" unknown-remote "which is not an entry of scripts/secrets/manifest.yaml" "a remote key that is not in the manifest is named"
+  sec_fails "$ext" other-prefix "which is not under /multi-cloud-sre/dev" "a remote key under another path is named"
+  sec_fails "$ext" wrong-parameter "the contract says ['/multi-cloud-sre/dev/postgres/orders-password']" "a Secret made from another parameter is named"
+  sec_fails "$ext" wrong-type "makes a Secret of type Opaque, the contract says kubernetes.io/basic-auth" "a role Secret that is not basic-auth is named"
+  sec_fails "$ext" no-label "labels the Secret {}, the contract says {'cnpg.io/reload': 'true'}" "a role Secret without the label CloudNativePG watches is named"
+  sec_fails "$ext" refresh "has the refresh interval 6h, not 1h" "another refresh interval is named"
+  sec_fails "$ext" orphan "does not have creationPolicy Owner" "another creation policy is named"
+  sec_fails "$ext" other-store "does not use the ClusterSecretStore aws-parameter-store" "another store is named"
+  sec_fails "$ext" namespaced-store "does not use the ClusterSecretStore aws-parameter-store" "a namespaced store is named"
+  sec_fails "$ext" v1beta1 "is external-secrets.io/v1beta1, not external-secrets.io/v1" "the deprecated API version is named"
+  sec_fails "$ext" no-skip "does not skip the dry run" "an ExternalSecret that does not skip the dry run is named"
+  sec_fails "$ext" datafrom "uses dataFrom; every key must be listed" "dataFrom, which hides the keys from the manifest check, is named"
+  sec_fails "$ext" missing-es "no ExternalSecret makes the Secret data/valkey-auth" "a missing ExternalSecret is named"
+  sec_fails "$ext" unknown-secret "which is not in scripts/secrets/contract.yaml" "a Secret the contract does not know is named"
+  sec_fails "$ext" secret-with-data "holds data; in external mode no chart renders a Secret with a value" "a Secret with a value in external mode is named"
+  sec_fails "$ext" empty-secret "is rendered; the Secrets are made by the ExternalSecrets" "any Secret in external mode is named"
+  sec_fails "$ext" exempt-label "carries the label platform.example/policy-exempt" "the exempt label in external mode is named"
+  sec_fails "$ext" role-for-secrets "may write Secrets; in external mode nothing needs to" "a Role that writes Secrets in external mode is named"
+  sec_fails "$ext" wrong-remote-count "the contract says ['/multi-cloud-sre/dev/rabbitmq/default-password', '/multi-cloud-sre/dev/rabbitmq/default-username']" "a Secret made from fewer parameters than the contract names is named"
+
+  # A leftover generator in external mode: the Jobs of the default mode next to the ExternalSecrets.
+  cat "$sc/external.yaml" "$sc/generated.yaml" > "$sc/mixed.yaml"
+  contract "$sc/mixed.yaml" secrets-external t /multi-cloud-sre/dev "$contract_file" "$manifest_file"
+  check "a Job that is left in external mode is refused" test "$rc" -eq 1
+  check "and named: it makes Secrets" grep -q 'Job/data-secrets-generator makes Secrets; in external mode no Job generates or copies a credential' "$work/cout"
+  check "the copy Job of the RabbitMQ credentials, which uses a public image, is named too" grep -q 'Job/rabbitmq-credentials-copy makes Secrets' "$work/cout"
+  check "and the exempt label that goes with it" grep -q 'carries the label platform.example/policy-exempt' "$work/cout"
+
+  # The manifest: an entry that nothing reads is found, unless it is marked unused.
+  "$contract_py" - "$manifest_file" "$sc" << 'SECPY'
+import sys
+
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+extra = {"name": "demo/unused-password", "length": 32, "charset": "alnum", "consumers": ["nobody"]}
+doc["secrets"].append(extra)
+yaml.safe_dump(doc, open(sys.argv[2] + "/manifest-extra.yaml", "w", encoding="utf-8"), sort_keys=False)
+extra["unused"] = True
+yaml.safe_dump(doc, open(sys.argv[2] + "/manifest-unused.yaml", "w", encoding="utf-8"), sort_keys=False)
+SECPY
+  contract "$ext" secrets-external t /multi-cloud-sre/dev "$contract_file" "$sc/manifest-extra.yaml"
+  check "a manifest entry that no ExternalSecret reads is named" test "$rc" -eq 1 -a "$(grep -c 'the manifest entry demo/unused-password is read by no ExternalSecret' "$work/cout")" = 1
+  contract "$ext" secrets-external t /multi-cloud-sre/dev "$contract_file" "$sc/manifest-unused.yaml"
+  check "unless it is marked unused" test "$rc" -eq 0
+  run_seed --region eu-north-1 --dry-run --manifest "$sc/manifest-unused.yaml"
+  check "the seed script accepts an entry marked unused" test "$rc" -eq 0
+
+  # The default mode: a generator that no longer sets a key is found.
+  "$contract_py" - "$sc/generated.yaml" "$sc" << 'SECPY'
+import sys
+
+import yaml
+
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if d]
+
+
+def write(name, fn):
+    out = yaml.safe_load(yaml.safe_dump(docs))
+    for d in out:
+        if d["kind"] == "Job":
+            c = d["spec"]["template"]["spec"]["containers"][0]
+            c["args"] = [fn(a) for a in c["args"]]
+        if d["kind"] == "ConfigMap":
+            d["data"] = {k: fn(v) for k, v in (d.get("data") or {}).items()}
+    yaml.safe_dump_all(out, open(sys.argv[2] + "/" + name, "w", encoding="utf-8"), sort_keys=False)
+
+
+write("gen-nokey.yaml", lambda a: a.replace('\\"dbname\\"', '\\"database\\"'))
+write("gen-notype.yaml", lambda a: a.replace("kubernetes.io/basic-auth", "Opaque"))
+write("gen-nolabel.yaml", lambda a: a.replace("cnpg.io/reload", "cnpg.io/other"))
+write("gen-nosecret.yaml", lambda a: a.replace("cache-auth", "cache-credentials"))
+write("gen-nograf.yaml", lambda a: a.replace("admin-password", "password"))
+SECPY
+  contract "$sc/gen-nokey.yaml" secrets-generated t "$contract_file"
+  check "a generator that does not set a key of the contract is named" grep -q 'the generator of shop/orders-db does not set the key dbname' "$work/cout"
+  contract "$sc/gen-notype.yaml" secrets-generated t "$contract_file"
+  check "a generator that does not set the basic-auth type is named" grep -q 'does not set the type kubernetes.io/basic-auth' "$work/cout"
+  contract "$sc/gen-nolabel.yaml" secrets-generated t "$contract_file"
+  check "a generator that does not set the reload label is named" grep -q 'does not set the label cnpg.io/reload' "$work/cout"
+  contract "$sc/gen-nosecret.yaml" secrets-generated t "$contract_file"
+  check "a generator that makes another Secret is named" grep -q 'no generator makes the Secret shop/cache-auth' "$work/cout"
+  contract "$sc/gen-nograf.yaml" secrets-generated t "$contract_file"
+  check "the Grafana key is checked in the observability generator" grep -q 'the generator of observability/grafana-admin does not set the key admin-password' "$work/cout"
+
+  # The mode off: everything of the default mode is as it was (the unit checks of ADR-0018 still run on it).
+  for chart in $cred_charts; do
+    helm template "$(basename "$chart")" "$chart" -f "$chart/values.yaml" > "$sc/default.yaml" 2> /dev/null || true
+    contract "$sc/default.yaml" hooks "$chart"
+  done
+  check "the default mode of each chart still renders ordinary resources next to its hooks" test "$rc" -eq 0
 fi
 
 echo

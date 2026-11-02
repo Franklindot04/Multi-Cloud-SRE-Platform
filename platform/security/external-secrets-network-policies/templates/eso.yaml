@@ -1,0 +1,81 @@
+{{- if .Values.enabled }}
+{{- range $name := .Values.webhook.pods }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-webhook-from-api-server
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The API server calls the webhook from its network interfaces, which are in the VPC subnets, straight to the pod (the
+  # Service in front of it is translated before the connection reaches the pod). A pod selector cannot name the API server, so
+  # the source is the VPC range, on the webhook port only.
+  podSelector:
+    matchLabels:
+      {{- toYaml (get $.Values.pods $name) | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: {{ include "np.vpcCidr" $ }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.webhook.port }}
+{{- end }}
+{{- range $name, $labels := .Values.pods }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-prometheus-scrape
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $labels | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.peer" (dict "namespace" $.Values.prometheus.namespace "labels" $.Values.prometheus.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.metricsPort }}
+{{- end }}
+{{- range $name := .Values.internetEgress.pods }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-internet-https
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    # Read by scripts/chart-contract-check.py: the one policy that may open a /0 range, and only on one port.
+    platform.example/internet-egress: "the controller signs in to AWS (STS) and reads Systems Manager parameters, which are public endpoints"
+spec:
+  # AWS Security Token Service and Systems Manager are public addresses that no pod selector can name (the cluster has no VPC
+  # endpoints for them), so this is an ipBlock of every address on TCP 443 only, for the controller only, without the VPC and
+  # Service ranges (which have their own rules).
+  podSelector:
+    matchLabels:
+      {{- toYaml (get $.Values.pods $name) | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - {{ include "np.vpcCidr" $ }}
+              - {{ include "np.serviceCidr" $ }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.internetEgress.port }}
+{{- end }}
+{{- end }}

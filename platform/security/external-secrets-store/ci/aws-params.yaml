@@ -1,0 +1,4 @@
+---
+# Fixture values standing in for the Helm parameters that Argo CD supplies from the cluster secret.
+region: eu-north-1
+parameterPrefix: /multi-cloud-sre/dev

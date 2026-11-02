@@ -57,7 +57,7 @@ The policies
 
 A known weak spot: the exemption
 
-- The Job that copies the RabbitMQ credentials into `shop` runs a public `curl` image. It would fail the registry, digest and signature policies, so it carries the label `platform.example/policy-exempt: "true"` and every policy skips a workload that has it.
+- The Job that copies the RabbitMQ credentials into `shop` runs a public `curl` image. It would fail the registry, digest and signature policies, so it carries the label `platform.example/policy-exempt: "true"` and every policy skips a workload that has it. Since [ADR-0027](0027-external-secrets.md) the Job exists only in generated mode (the default); on a cluster in external mode an ExternalSecret replaces it and the label is not rendered.
 - **The label is not protected.** Anyone who can create a workload in `shop` can copy it, and the policies then skip that workload. It is a `matchCondition` and not an `objectSelector`, because Kyverno does not generate the rules for pod controllers when a policy has an `objectSelector`, and nothing stops the label from spreading. The fix is to run that Job from a pinned image of ours, which does not need the exemption. Until then it is a hole, written down here so that it is not forgotten.
 
 Teardown

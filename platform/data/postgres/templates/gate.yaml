@@ -96,7 +96,7 @@ spec:
                     -o /dev/null -w '%{http_code}' "$API/api/v1/namespaces/{{ .Values.cluster.namespace }}/secrets/$name" || echo 000)"
                   [ "$code" = 200 ] && { echo "found    Secret $name"; break; }
                   if [ "$waited" -ge {{ .Values.gate.waitSeconds }} ]; then
-                    echo "gave up after ${waited}s: Secret {{ .Values.cluster.namespace }}/$name does not exist (HTTP $code). It is created by the data-secrets Application; check that it synced." >&2
+                    echo "gave up after ${waited}s: Secret {{ .Values.cluster.namespace }}/$name does not exist (HTTP $code). It is created by the data-secrets Application (by its generator, or in external mode by its ExternalSecret); check that it synced." >&2
                     exit 1
                   fi
                   echo "waiting  Secret $name (HTTP $code, ${waited}s of {{ .Values.gate.waitSeconds }}s)"

@@ -68,6 +68,33 @@ The observability charts (platform/observability) add checks on the rendered out
                       PostgresInstancesNotReady, each a ticket (never a page) that waits at least 15, 30, 10 and 10 minutes, with a
                       summary, a description and a runbook_url whose anchor is a heading of ALERTS_MD, and with an expression that
                       uses only the metrics kube-state-metrics 2.20 documents for them
+  external-secrets LABEL APPSET
+                      the External Secrets Operator install is safe and small: the controller, the webhook and the certificate
+                      controller are the only workloads, each container has requests and limits, together under 200m CPU and 300Mi of
+                      memory; the validating webhook configurations all fail open (failurePolicy Ignore) and point at the webhook Service
+                      in the namespace; the controller's service account is named external-secrets and carries the annotation
+                      eks.amazonaws.com/role-arn with a value; no store and no ExternalSecret is rendered; metrics are served on port
+                      8080 and exposed by a Service; and, because a CRD is larger than client-side apply can store, the ApplicationSet
+                      (APPSET) syncs with ServerSideApply=true, in the namespace external-secrets at the restricted level, for clusters
+                      labelled platform.example/external-secrets=true, and passes the role from the cluster annotation
+  eso-store LABEL APPSET
+                      the store chart renders one ClusterSecretStore aws-parameter-store of external-secrets.io/v1 for Parameter Store,
+                      with the region and the web identity (jwt) of the service account external-secrets in the namespace
+                      external-secrets, and no credential of any kind (no secretRef, no key pair, no access key); the ApplicationSet
+                      skips the dry run for the missing kind and passes the region and the parameter path from cluster annotations
+  secrets-external LABEL PREFIX CONTRACT MANIFEST
+                      the platform's credential charts rendered in external mode (the passwords come from Parameter Store through
+                      ExternalSecrets): no Secret with data, no Job or Role that makes a Secret, no use of the exempt label of
+                      the admission policies; every ExternalSecret is external-secrets.io/v1 with the ClusterSecretStore
+                      aws-parameter-store, a refresh interval of 1h, creationPolicy Owner and the skip of the dry run; every remote
+                      key is PREFIX plus an entry of the seed MANIFEST; each Secret of the CONTRACT is declared once, with its
+                      name, namespace, type, labels and keys, and from the parameters the contract names; no other Secret is
+                      declared; and every entry of the manifest that is not marked unused is read by one
+  secrets-generated LABEL CONTRACT
+                      the same charts rendered in the default mode: the generator Job (or the copy Job of the RabbitMQ
+                      credentials) names each Secret of the CONTRACT that a chart makes, in its namespace, with its keys, its
+                      type and its labels. The Secrets a generator makes exist only when the Job runs, so this reads the script
+                      of the Job; a Secret made by an operator has only its name checked in the copy Job
   loki LABEL          the Loki configuration is single tenant, uses the TSDB index with schema v13 and the filesystem,
                       has the compactor's retention on with a retention period of at most 168h, and sets ingestion and
                       line size limits
@@ -309,6 +336,10 @@ CLUSTER_SCOPED = {
     "GeneratingPolicy",
     "DeletingPolicy",
     "IngressClassParams",
+    "ClusterSecretStore",
+    "ClusterExternalSecret",
+    "ClusterPushSecret",
+    "ClusterGenerator",
 }
 # Volume types the restricted Pod Security level allows.
 RESTRICTED_VOLUMES = {"configMap", "csi", "downwardAPI", "emptyDir", "ephemeral", "persistentVolumeClaim", "projected", "secret"}
@@ -1616,6 +1647,14 @@ def check_waves(apps_dir, readme):
         ("policy-kyverno", "policy-network-policies"),
         ("policy-network-policies", "policy-policies"),
         ("policy-kyverno", "policy-policies"),
+        # The External Secrets Operator and its store come before everything that will read secrets through them, and the store after
+        # the operator whose CRDs define its kind.
+        ("eso-operator", "eso-store"),
+        ("eso-operator", "eso-network-policies"),
+        ("eso-store", "data-namespaces"),
+        ("eso-store", "data-secrets"),
+        ("eso-store", "observability-secrets"),
+        ("eso-store", "apps-notifier"),
     ]
     for first, second in before:
         a, b = wave(first), wave(second)
@@ -1624,7 +1663,7 @@ def check_waves(apps_dir, readme):
 
     # The README must say what the files say.
     for name, (w, path) in sorted(actual.items()):
-        if not name.startswith(("data-", "apps-", "observability-", "policy-")):
+        if not name.startswith(("data-", "apps-", "observability-", "policy-", "eso-")):
             continue
         if name not in documented:
             problems.append("{} ({}) is not in the wave table of {}".format(name, path, readme))
@@ -1916,6 +1955,298 @@ def check_kyverno(docs, label, appset_file):
     return problems
 
 
+ESO_DEPLOYMENTS = ("external-secrets", "external-secrets-webhook", "external-secrets-cert-controller")
+ESO_CREDENTIAL_KEYS = {"secretRef", "accessKeyIDSecretRef", "secretAccessKeySecretRef", "sessionTokenSecretRef", "accessKeyID", "secretAccessKey"}
+
+
+def check_external_secrets(docs, label, appset_file):
+    problems = []
+    deployments = {(d.get("metadata") or {}).get("name"): d for d in docs if d["kind"] == "Deployment"}
+    for extra in sorted(set(deployments) - set(ESO_DEPLOYMENTS)):
+        problems.append("{}: the Deployment {} is not one of the three of the operator".format(label, extra))
+    cpu = memory = 0.0
+    for name in ESO_DEPLOYMENTS:
+        d = deployments.get(name)
+        if d is None:
+            problems.append("{}: the Deployment {} is not rendered".format(label, name))
+            continue
+        replicas = (d.get("spec") or {}).get("replicas") or 1
+        pod = ((d.get("spec") or {}).get("template") or {}).get("spec") or {}
+        for c in (pod.get("containers") or []) + (pod.get("initContainers") or []):
+            res = c.get("resources") or {}
+            for part in ("requests", "limits"):
+                for key in ("cpu", "memory"):
+                    if key not in (res.get(part) or {}):
+                        problems.append("{}: {} container {} has no {} {}".format(label, name, c["name"], part, key))
+        for c in pod.get("containers") or []:
+            req = (c.get("resources") or {}).get("requests") or {}
+            if "cpu" in req and "memory" in req:
+                cpu += replicas * cpu_millicores(req["cpu"])
+                memory += replicas * memory_mebibytes(req["memory"])
+        ports = {p.get("containerPort") for c in pod.get("containers") or [] for p in c.get("ports") or []}
+        if 8080 not in ports:
+            problems.append("{}: {} does not serve metrics on port 8080".format(label, name))
+    if cpu >= 200:
+        problems.append("{}: the operator requests {:g}m CPU, which is not under 200m".format(label, cpu))
+    if memory >= 300:
+        problems.append("{}: the operator requests {:g}Mi of memory, which is not under 300Mi".format(label, memory))
+
+    controller = deployments.get("external-secrets")
+    if controller is not None:
+        account = (((controller.get("spec") or {}).get("template") or {}).get("spec") or {}).get("serviceAccountName")
+        if account != "external-secrets":
+            problems.append("{}: the controller runs as {!r}, not as the service account external-secrets that the IAM role trusts".format(label, account))
+        sa = next((d for d in docs if d["kind"] == "ServiceAccount" and (d.get("metadata") or {}).get("name") == "external-secrets"), None)
+        role = ((sa or {}).get("metadata") or {}).get("annotations", {}).get("eks.amazonaws.com/role-arn") if sa else None
+        if sa is None:
+            problems.append("{}: no ServiceAccount external-secrets is rendered".format(label))
+        elif not role or not str(role).startswith("arn:"):
+            problems.append("{}: the service account external-secrets has no eks.amazonaws.com/role-arn annotation with a role ARN".format(label))
+
+    for d in docs:
+        if d["kind"] in ("ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"):
+            for hook in d.get("webhooks") or []:
+                if hook.get("failurePolicy") != "Ignore":
+                    problems.append("{}: the webhook {} of {} fails closed (failurePolicy {}); a dead operator could block the cluster".format(
+                        label, hook.get("name"), name_of(d), hook.get("failurePolicy")))
+                service = (hook.get("clientConfig") or {}).get("service") or {}
+                if service.get("name") != "external-secrets-webhook" or service.get("namespace") != "external-secrets":
+                    problems.append("{}: the webhook {} does not call the Service external-secrets-webhook in external-secrets".format(label, hook.get("name")))
+        if d["kind"] in ("ClusterSecretStore", "SecretStore", "ExternalSecret", "ClusterExternalSecret"):
+            problems.append("{}: {} is rendered; the operator chart holds no store and no ExternalSecret".format(label, name_of(d)))
+        if "pre-delete" in str(annotations(d).get(HELM_HOOK, "")):
+            problems.append("{}: {} is a Helm pre-delete hook, which Argo CD does not run".format(label, name_of(d)))
+    if not any(d["kind"] == "ValidatingWebhookConfiguration" for d in docs):
+        problems.append("{}: no validating webhook configuration is rendered".format(label))
+    services = [d for d in docs if d["kind"] == "Service" and any(p.get("name") == "metrics" and p.get("port") == 8080 for p in (d.get("spec") or {}).get("ports") or [])]
+    if len(services) != 3:
+        problems.append("{}: expected a metrics Service (port 8080) for each of the three pods, found {}".format(label, len(services)))
+
+    crds = [d for d in docs if d["kind"] == "CustomResourceDefinition"]
+    appset = yaml.safe_load(open(appset_file, encoding="utf-8"))
+    tpl = ((appset.get("spec") or {}).get("template") or {}).get("spec") or {}
+    sync = tpl.get("syncPolicy") or {}
+    if not crds:
+        problems.append("{}: no CRD is rendered; render with --include-crds".format(label))
+    big = [d["metadata"]["name"] for d in crds if len(json.dumps(d)) > CLIENT_SIDE_APPLY_LIMIT]
+    if big and "ServerSideApply=true" not in (sync.get("syncOptions") or []):
+        problems.append(
+            "{}: {} is larger than client-side apply can store (256 KiB), so the ApplicationSet needs ServerSideApply=true".format(label, big[0])
+        )
+    labels = ((sync.get("managedNamespaceMetadata") or {}).get("labels")) or {}
+    if labels.get("pod-security.kubernetes.io/enforce") != "restricted":
+        problems.append("{}: the external-secrets namespace is not created at the restricted Pod Security level".format(label))
+    if tpl.get("destination", {}).get("namespace") != "external-secrets":
+        problems.append("{}: the ApplicationSet does not deploy to the external-secrets namespace".format(label))
+    match = (((appset.get("spec") or {}).get("generators") or [{}])[0].get("clusters") or {}).get("selector", {}).get("matchLabels", {})
+    if match.get("platform.example/external-secrets") != "true":
+        problems.append("{}: the ApplicationSet does not select clusters by platform.example/external-secrets=true".format(label))
+    params = {p.get("name"): p.get("value", "") for p in ((tpl.get("source") or {}).get("helm") or {}).get("parameters") or []}
+    if "platform.example/external-secrets-role-arn" not in params.get("roleArn", ""):
+        problems.append("{}: the ApplicationSet does not pass roleArn from the annotation platform.example/external-secrets-role-arn".format(label))
+    ignored = [i for i in tpl.get("ignoreDifferences") or []]
+    if not any(i.get("kind") == "ValidatingWebhookConfiguration" for i in ignored):
+        problems.append("{}: the CA bundle that the certificate controller writes into the webhooks is not ignored".format(label))
+    if "RespectIgnoreDifferences=true" not in (sync.get("syncOptions") or []):
+        problems.append("{}: the ApplicationSet ignores differences but does not respect them in the sync (RespectIgnoreDifferences=true)".format(label))
+    return problems
+
+
+def check_eso_store(docs, label, appset_file):
+    problems = []
+    stores = [d for d in docs if d["kind"] == "ClusterSecretStore"]
+    others = [name_of(d) for d in docs if d["kind"] != "ClusterSecretStore"]
+    if len(stores) != 1:
+        return ["{}: expected one ClusterSecretStore, found {}".format(label, len(stores))]
+    if others:
+        problems.append("{}: the store chart renders only the store, not {}".format(label, ", ".join(others)))
+    store = stores[0]
+    if store.get("apiVersion") != "external-secrets.io/v1":
+        problems.append("{}: the store must be external-secrets.io/v1, not {}".format(label, store.get("apiVersion")))
+    if store["metadata"]["name"] != "aws-parameter-store":
+        problems.append("{}: the store must be named aws-parameter-store".format(label))
+    aws = (((store.get("spec") or {}).get("provider")) or {}).get("aws") or {}
+    if list(((store.get("spec") or {}).get("provider") or {}).keys()) != ["aws"]:
+        problems.append("{}: the store must have the aws provider and no other".format(label))
+    if aws.get("service") != "ParameterStore":
+        problems.append("{}: the service must be ParameterStore, not {}".format(label, aws.get("service")))
+    if not re.fullmatch(r"[a-z]{2}(?:-[a-z]+)+-[0-9]", str(aws.get("region", ""))):
+        problems.append("{}: the store has no AWS region".format(label))
+    ref = (((aws.get("auth") or {}).get("jwt")) or {}).get("serviceAccountRef") or {}
+    if (ref.get("name"), ref.get("namespace")) != ("external-secrets", "external-secrets"):
+        problems.append("{}: the store must sign in with the service account external-secrets in the namespace external-secrets (jwt)".format(label))
+    if list((aws.get("auth") or {}).keys()) != ["jwt"]:
+        problems.append("{}: the only authentication is jwt".format(label))
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in ESO_CREDENTIAL_KEYS:
+                    problems.append("{}: the store has {} at {}; it must hold no credential".format(label, k, path))
+                walk(v, path + "." + str(k))
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, "{}[{}]".format(path, i))
+        elif isinstance(node, str) and re.search(r"AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}", node):
+            problems.append("{}: an AWS access key id is in the store at {}".format(label, path))
+
+    walk(store.get("spec"), "spec")
+    if "SkipDryRunOnMissingResource=true" not in str(annotations(store).get("argocd.argoproj.io/sync-options", "")):
+        problems.append("{}: the store must carry SkipDryRunOnMissingResource=true (its kind comes from the operator's CRDs)".format(label))
+    appset = yaml.safe_load(open(appset_file, encoding="utf-8"))
+    tpl = ((appset.get("spec") or {}).get("template") or {}).get("spec") or {}
+    params = {p.get("name"): p.get("value", "") for p in ((tpl.get("source") or {}).get("helm") or {}).get("parameters") or []}
+    if "platform.example/region" not in params.get("region", ""):
+        problems.append("{}: the ApplicationSet does not pass the region from the annotation platform.example/region".format(label))
+    if "platform.example/secrets-prefix" not in params.get("parameterPrefix", ""):
+        problems.append("{}: the ApplicationSet does not pass the path from the annotation platform.example/secrets-prefix".format(label))
+    match = (((appset.get("spec") or {}).get("generators") or [{}])[0].get("clusters") or {}).get("selector", {}).get("matchLabels", {})
+    if match.get("platform.example/external-secrets") != "true":
+        problems.append("{}: the ApplicationSet does not select clusters by platform.example/external-secrets=true".format(label))
+    return problems
+
+
+SECRETS_STORE = "aws-parameter-store"
+
+
+def _secrets_contract(contract_file):
+    return yaml.safe_load(open(contract_file, encoding="utf-8"))["secrets"]
+
+
+def _manifest_entries(manifest_file):
+    doc = yaml.safe_load(open(manifest_file, encoding="utf-8"))
+    return {s["name"]: s for s in doc.get("secrets") or []}
+
+
+def check_secrets_external(docs, label, prefix, contract_file, manifest_file):
+    problems = []
+    contract = _secrets_contract(contract_file)
+    manifest = _manifest_entries(manifest_file)
+    prefix = prefix.rstrip("/")
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    for d in docs:
+        if d["kind"] == "Secret" and (d.get("data") or d.get("stringData")):
+            fail("{} holds data; in external mode no chart renders a Secret with a value".format(name_of(d)))
+        elif d["kind"] == "Secret":
+            fail("{} is rendered; the Secrets are made by the ExternalSecrets".format(name_of(d)))
+        if d["kind"] == "Job" and creates_secrets(d, docs):
+            fail("{} makes Secrets; in external mode no Job generates or copies a credential".format(name_of(d)))
+        if d["kind"] in ("Role", "ClusterRole"):
+            for rule in d.get("rules") or []:
+                if "secrets" in (rule.get("resources") or []) and WRITE_VERBS & set(rule.get("verbs") or []):
+                    fail("{} may write Secrets; in external mode nothing needs to".format(name_of(d)))
+        labels = (d.get("metadata") or {}).get("labels") or {}
+        pod_labels = (pod_template(d).get("metadata") or {}).get("labels") or {} if d["kind"] in ("Job", "Deployment", "StatefulSet") else {}
+        if "platform.example/policy-exempt" in labels or "platform.example/policy-exempt" in pod_labels:
+            fail("{} carries the label platform.example/policy-exempt; in external mode nothing needs the exemption".format(name_of(d)))
+
+    declared = {}
+    referenced = set()
+    for d in docs:
+        if d["kind"] != "ExternalSecret":
+            continue
+        meta = d["metadata"]
+        where = "ExternalSecret {}/{}".format(meta.get("namespace"), meta["name"])
+        spec = d.get("spec") or {}
+        if d.get("apiVersion") != "external-secrets.io/v1":
+            fail("{} is {}, not external-secrets.io/v1".format(where, d.get("apiVersion")))
+        ref = spec.get("secretStoreRef") or {}
+        if (ref.get("kind"), ref.get("name")) != ("ClusterSecretStore", SECRETS_STORE):
+            fail("{} does not use the ClusterSecretStore {}".format(where, SECRETS_STORE))
+        if spec.get("refreshInterval") != "1h":
+            fail("{} has the refresh interval {}, not 1h".format(where, spec.get("refreshInterval")))
+        target = spec.get("target") or {}
+        if target.get("creationPolicy") != "Owner":
+            fail("{} does not have creationPolicy Owner".format(where))
+        if "SkipDryRunOnMissingResource=true" not in str(annotations(d).get("argocd.argoproj.io/sync-options", "")):
+            fail("{} does not skip the dry run (its kind comes from the operator's CRDs)".format(where))
+        keys = {}
+        for item in spec.get("data") or []:
+            key = (item.get("remoteRef") or {}).get("key", "")
+            keys[item.get("secretKey")] = key
+            if not key.startswith(prefix + "/"):
+                fail("{} reads {!r}, which is not under {}".format(where, key, prefix))
+                continue
+            entry = key[len(prefix) + 1:]
+            if entry not in manifest:
+                fail("{} reads {!r}, which is not an entry of scripts/secrets/manifest.yaml".format(where, key))
+            else:
+                referenced.add(entry)
+        for extra in spec.get("dataFrom") or []:
+            fail("{} uses dataFrom; every key must be listed, so that the manifest can be checked".format(where))
+        template = target.get("template") or {}
+        shown = set((template.get("data") or {}).keys()) or set(keys)
+        declared[(meta.get("namespace"), target.get("name", meta["name"]))] = {
+            "type": template.get("type", "Opaque"),
+            "labels": (template.get("metadata") or {}).get("labels") or {},
+            "keys": shown,
+            "remote": keys,
+            "where": where,
+        }
+        if target.get("name", meta["name"]) != meta["name"]:
+            fail("{} makes a Secret with another name ({}); the object and its Secret are named alike".format(where, target.get("name")))
+
+    expected = {(c["namespace"], c["name"]): c for c in contract}
+    for (ns, name), c in expected.items():
+        got = declared.get((ns, name))
+        if got is None:
+            fail("no ExternalSecret makes the Secret {}/{}".format(ns, name))
+            continue
+        if got["type"] != c["type"]:
+            fail("{} makes a Secret of type {}, the contract says {}".format(got["where"], got["type"], c["type"]))
+        if got["labels"] != (c.get("labels") or {}):
+            fail("{} labels the Secret {}, the contract says {}".format(got["where"], got["labels"], c.get("labels") or {}))
+        if got["keys"] != set(c["keys"]):
+            missing = sorted(set(c["keys"]) - got["keys"])
+            extra = sorted(got["keys"] - set(c["keys"]))
+            fail("{} has the keys {}: missing {}, not in the contract {}".format(got["where"], sorted(got["keys"]), missing, extra))
+        want = {prefix + "/" + path for path in c.get("remote") or []}
+        if set(got["remote"].values()) != want:
+            fail("{} reads {}, the contract says {}".format(got["where"], sorted(got["remote"].values()), sorted(want)))
+    for (ns, name), got in declared.items():
+        if (ns, name) not in expected:
+            fail("{} makes the Secret {}/{}, which is not in scripts/secrets/contract.yaml".format(got["where"], ns, name))
+    for entry, item in manifest.items():
+        if entry not in referenced and not item.get("unused"):
+            fail("the manifest entry {} is read by no ExternalSecret (mark it unused: true if nothing reads it yet)".format(entry))
+    return problems
+
+
+def check_secrets_generated(docs, label, contract_file):
+    problems = []
+    contract = _secrets_contract(contract_file)
+    text = ""
+    for d in docs:
+        if d["kind"] == "Job":
+            text += script_text(d) + "\n"
+        if d["kind"] == "ConfigMap":
+            text += "\n".join(str(v) for v in (d.get("data") or {}).values()) + "\n"
+    for c in contract:
+        ns, name = c["namespace"], c["name"]
+        if c["generator"] == "operator":
+            if name not in text:
+                problems.append("{}: the copy Job does not read the operator's Secret {}".format(label, name))
+            continue
+        where = "{}/{}".format(ns, name)
+        if not re.search(r"(?<![\w-]){}(?![\w-])".format(re.escape(name)), text):
+            problems.append("{}: no generator makes the Secret {}".format(label, where))
+            continue
+        if not re.search(r"(?<![\w-]){}(?![\w])".format(re.escape(ns)), text):
+            problems.append("{}: no generator works in the namespace {} of the Secret {}".format(label, ns, where))
+        for key in c["keys"]:
+            if not re.search(r"\\?\"{}\\?\"".format(re.escape(key)), text):
+                problems.append("{}: the generator of {} does not set the key {}".format(label, where, key))
+        if c["type"] != "Opaque" and c["type"] not in text:
+            problems.append("{}: the generator of {} does not set the type {}".format(label, where, c["type"]))
+        for lk in (c.get("labels") or {}):
+            if lk not in text:
+                problems.append("{}: the generator of {} does not set the label {}".format(label, where, lk))
+    return problems
+
+
 POLICY_NAMES = {
     "require-image-digest",
     "restrict-image-registries",
@@ -2072,6 +2403,14 @@ def main(argv):
         problems = check_postgres_ha(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "scaling":
         problems = check_scaling(load_stdin(), argv[2], argv[3])
+    elif len(argv) == 6 and argv[1] == "secrets-external":
+        problems = check_secrets_external(load_stdin(), argv[2], argv[3], argv[4], argv[5])
+    elif len(argv) == 4 and argv[1] == "secrets-generated":
+        problems = check_secrets_generated(load_stdin(), argv[2], argv[3])
+    elif len(argv) == 4 and argv[1] == "external-secrets":
+        problems = check_external_secrets(load_stdin(), argv[2], argv[3])
+    elif len(argv) == 4 and argv[1] == "eso-store":
+        problems = check_eso_store(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "kyverno":
         problems = check_kyverno(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "crds":

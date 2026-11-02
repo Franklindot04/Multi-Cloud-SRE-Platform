@@ -15,6 +15,7 @@ The permissions are the minimum for the copy:
 The create verb cannot be limited to a name in Kubernetes RBAC, so the copier can create any Secret in the
 shop namespace, but it cannot read or change any other one, and it has no permission anywhere else.
 */ -}}
+{{- if not (include "secrets.external" .) }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -190,3 +191,4 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 8Mi
+{{- end }}

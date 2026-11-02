@@ -23,6 +23,11 @@ spec:
     # Argo CD does not manage them.
     - server: "*"
       namespace: kyverno
+    # The External Secrets Operator (platform/security/external-secrets), its network policies and the store. The cluster-scoped kinds the
+    # operator's chart renders (CRDs, ClusterRoles, ClusterRoleBindings and the validating webhook configurations) are in the list below
+    # already; the store is the one new kind.
+    - server: "*"
+      namespace: external-secrets
   # Cluster-scoped kinds the add-on charts create. Anything else is rejected.
   clusterResourceWhitelist:
     - group: ""
@@ -53,6 +58,10 @@ spec:
       kind: ValidatingPolicy
     - group: policies.kyverno.io
       kind: ImageValidatingPolicy
+    # The ClusterSecretStore of platform/security/external-secrets-store, and no other kind of store: a SecretStore is namespaced and is
+    # not used. ExternalSecrets are namespaced and are allowed in the projects that deploy the consumers.
+    - group: external-secrets.io
+      kind: ClusterSecretStore
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"

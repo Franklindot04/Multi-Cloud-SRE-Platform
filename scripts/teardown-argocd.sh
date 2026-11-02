@@ -15,25 +15,28 @@
 #   2. refuse to start (also in a dry run) while a Kyverno policy (ClusterPolicy, Policy, ValidatingPolicy or ImageValidatingPolicy) or a validating or
 #      mutating webhook configuration whose name starts with kyverno is left; scripts/teardown-prep.sh removes
 #      them, and a webhook with no controller behind it can block the deletions below
-#   3. delete the namespaces data, shop and observability, if they exist, and wait until they are gone
-#   4. delete the storage class platform-data, if it exists
-#   5. delete the Application platform-root, then the ApplicationSets in the argocd namespace
-#   6. wait until no Application is left in the argocd namespace
-#   7. helm uninstall argocd (a release that is not found is fine; the Argo CD CRDs are kept, they go with
+#   3. refuse to start (also in a dry run) while an External Secrets object (ExternalSecret, ClusterExternalSecret, SecretStore or
+#      ClusterSecretStore) or a validating webhook configuration of the External Secrets Operator (secretstore-validate
+#      or externalsecret-validate) is left; scripts/teardown-prep.sh removes them
+#   4. delete the namespaces data, shop and observability, if they exist, and wait until they are gone
+#   5. delete the storage class platform-data, if it exists
+#   6. delete the Application platform-root, then the ApplicationSets in the argocd namespace
+#   7. wait until no Application is left in the argocd namespace
+#   8. helm uninstall argocd (a release that is not found is fine; the Argo CD CRDs are kept, they go with
 #      the cluster)
-#   8. wait until the Argo CD application controller has no running pod
-#   9. remove the Argo CD finalizer from any AppProject left in the argocd namespace
-#  10. delete the argocd namespace and wait until it is gone
+#   9. wait until the Argo CD application controller has no running pod
+#  10. remove the Argo CD finalizer from any AppProject left in the argocd namespace
+#  11. delete the argocd namespace and wait until it is gone
 #
 # Anything that is already gone is skipped. Nothing is forced: a deletion that does not finish is reported
 # and the script stops. It deletes no cloud resource; terraform destroy is the next, separate step.
 #
 # The one finalizer this script removes. Applications and AppProjects carry
-# resources-finalizer.argocd.argoproj.io, and only the Argo CD application controller removes it. In step 6,
+# resources-finalizer.argocd.argoproj.io, and only the Argo CD application controller removes it. In step 7,
 # if the controller has no running pod and an Application is stuck on it (it has a deletion timestamp), the
 # script says so and removes that one finalizer from that one Application with a JSON patch whose first
 # operation tests the finalizer value at its position, so nothing else can change. With the controller
-# running it only waits. In step 9 the controller is gone, and the same patch is applied to each AppProject
+# running it only waits. In step 10 the controller is gone, and the same patch is applied to each AppProject
 # that still has the finalizer. Any other finalizer, on these or on any other object, is never touched.
 #
 # Options:
@@ -110,7 +113,7 @@ fi
 
 k() { kubectl --context "$CONTEXT" "$@"; }
 
-TOTAL=10
+TOTAL=11
 n=0
 DETAIL=""
 
@@ -323,6 +326,28 @@ if [ -n "$kyverno_left" ]; then
   refuse "Kyverno policies or webhook configurations are left. With no Kyverno controller behind them they can block the deletions this script makes."
 fi
 echo "  ok: no Kyverno policy and no webhook configuration whose name starts with kyverno"
+
+step "Check that no External Secrets object and no webhook configuration of the External Secrets Operator is left (scripts/teardown-prep.sh removes them)"
+eso_left=""
+for crd in externalsecrets.external-secrets.io clusterexternalsecrets.external-secrets.io secretstores.external-secrets.io clustersecretstores.external-secrets.io; do
+  if crd_present "$crd"; then
+    case "$crd" in
+      externalsecrets.external-secrets.io | secretstores.external-secrets.io) found="$(k get "$crd" -A -o name)" || fail "could not list $crd" ;;
+      *) found="$(k get "$crd" -o name)" || fail "could not list $crd" ;;
+    esac
+    [ -z "$found" ] || eso_left="${eso_left:+$eso_left
+}$found"
+  fi
+done
+webhooks="$(k get validatingwebhookconfigurations.admissionregistration.k8s.io -o name)" || fail "could not list the webhook configurations"
+webhooks="$(printf '%s\n' "$webhooks" | grep -E '^[^/]+/(secretstore-validate|externalsecret-validate)$' || true)"
+[ -z "$webhooks" ] || eso_left="${eso_left:+$eso_left
+}$webhooks"
+if [ -n "$eso_left" ]; then
+  printf '%s\n' "$eso_left" | sed 's/^/  left: /' >&2
+  refuse "External Secrets objects or webhook configurations are left. With no operator behind them they can block the deletions this script makes."
+fi
+echo "  ok: no External Secrets object and no webhook configuration of the External Secrets Operator"
 
 step "Delete the namespaces $WORKLOAD_NAMESPACES, if they exist"
 WAIT_NAMESPACES=""

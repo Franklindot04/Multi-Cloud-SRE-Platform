@@ -13,7 +13,8 @@
 #      This proves the policies mean what we intend; whether the VPC CNI policy agent behaves the same is for a cluster
 #   4. the policy charts refuse to render without the address ranges, which Argo CD supplies from the cluster
 #
-# The kyverno namespace is covered too (platform/security/network-policies).
+# The kyverno namespace (platform/security/network-policies) and the external-secrets namespace
+# (platform/security/external-secrets-network-policies) are covered too.
 #
 # Helm and the vendored chart tarballs are needed (they are fetched from the lock files, as in scripts/observability-check.sh).
 # Nothing is installed in a cluster.
@@ -54,7 +55,7 @@ build_dependencies() {
   helm dependency build "$dir" > /dev/null
 }
 for dir in platform/observability/kube-prometheus-stack platform/observability/loki platform/observability/alloy \
-  platform/observability/tempo platform/data/cloudnative-pg platform/data/valkey platform/security/kyverno; do
+  platform/observability/tempo platform/data/cloudnative-pg platform/data/valkey platform/security/kyverno platform/security/external-secrets; do
   build_dependencies "$dir" || status=1
 done
 
@@ -76,6 +77,9 @@ helm template observability-network-policies platform/observability/network-poli
 helm template policy-network-policies platform/security/network-policies --namespace kyverno \
   -f platform/security/network-policies/ci/aws-params.yaml > "$work/kyverno-policies.yaml" || status=1
 "$py" "$check" network-policies "kyverno" < "$work/kyverno-policies.yaml" || status=1
+helm template eso-network-policies platform/security/external-secrets-network-policies --namespace external-secrets \
+  -f platform/security/external-secrets-network-policies/ci/aws-params.yaml > "$work/eso-policies.yaml" || status=1
+"$py" "$check" network-policies "external-secrets" < "$work/eso-policies.yaml" || status=1
 
 echo "==> labels and namespaces used by the policies"
 obs=platform/observability
@@ -91,15 +95,17 @@ helm template data-secrets "$data/secrets" --namespace data > "$work/data-secret
 helm template data-postgres "$data/postgres" --namespace data -f "$data/postgres/values.yaml" -f "$data/postgres/values-standard.yaml" > "$work/postgres.yaml" || status=1
 helm template data-valkey "$data/valkey" --namespace data -f "$data/valkey/values.yaml" -f "$data/valkey/values-standard.yaml" > "$work/valkey.yaml" || status=1
 helm template kyverno platform/security/kyverno --namespace kyverno -f platform/security/kyverno/values.yaml > "$work/kyverno.yaml" || status=1
+helm template external-secrets platform/security/external-secrets --namespace external-secrets \
+  -f platform/security/external-secrets/values.yaml -f platform/security/external-secrets/ci/aws-params.yaml > "$work/eso.yaml" || status=1
 helm template data-cnpg-operator "$data/cloudnative-pg" --namespace cnpg-system -f "$data/cloudnative-pg/values.yaml" -f "$data/cloudnative-pg/values-standard.yaml" > "$work/cnpg.yaml" || status=1
 (
   cd "$work"
-  cat shop-*.yaml data-policies.yaml observability-policies.yaml kyverno-policies.yaml kyverno.yaml stack.yaml obs-secrets.yaml collector.yaml monitors.yaml \
+  cat shop-*.yaml data-policies.yaml observability-policies.yaml kyverno-policies.yaml kyverno.yaml eso-policies.yaml eso.yaml stack.yaml obs-secrets.yaml collector.yaml monitors.yaml \
     loki.yaml alloy.yaml tempo.yaml data-secrets.yaml postgres.yaml valkey.yaml cnpg.yaml
   printf '\n---\n'
   cat "$OLDPWD/$data/rabbitmq-operator/cluster-operator.yml"
 ) > "$work/all.yaml"
-"$py" "$check" policy-labels "all charts" kube-system observability shop data kyverno cnpg-system rabbitmq-system < "$work/all.yaml" || status=1
+"$py" "$check" policy-labels "all charts" kube-system observability shop data kyverno external-secrets cnpg-system rabbitmq-system < "$work/all.yaml" || status=1
 
 echo "==> flows"
 for svc in gateway orders payments notifier; do
@@ -108,7 +114,7 @@ for svc in gateway orders payments notifier; do
 done
 flows="scripts/tests/fixtures/network-policies/flows.yaml"
 others=("data:$work/data-policies.yaml" "observability:$work/observability-policies.yaml" "kyverno:$work/kyverno-policies.yaml"
-  "kyverno:$work/kyverno.yaml" "observability:$work/stack.yaml"
+  "kyverno:$work/kyverno.yaml" "external-secrets:$work/eso-policies.yaml" "external-secrets:$work/eso.yaml" "observability:$work/stack.yaml"
   "observability:$work/obs-secrets.yaml" "observability:$work/collector.yaml" "observability:$work/loki.yaml"
   "observability:$work/alloy.yaml" "observability:$work/tempo.yaml" "data:$work/data-secrets.yaml" "data:$work/postgres.yaml"
   "data:$work/valkey.yaml" "cnpg-system:$work/cnpg.yaml" "rabbitmq-system:$work/rabbitmq-operator.yaml")
@@ -123,7 +129,7 @@ cp "$data/rabbitmq-operator/cluster-operator.yml" "$work/rabbitmq-operator.yaml"
 echo "==> the policy charts need the address ranges"
 # The Service range is required by every policy chart (a deny must not land without the rule for DNS and the API), and the
 # observability chart also needs the VPC range (the kubelets and the API server addresses Prometheus reaches by address).
-for chart in platform/data/network-policies platform/observability/network-policies platform/security/network-policies; do
+for chart in platform/data/network-policies platform/observability/network-policies platform/security/network-policies platform/security/external-secrets-network-policies; do
   if helm template check "$chart" > /dev/null 2>&1; then
     echo "    FAIL $chart rendered without its address ranges"
     status=1
@@ -151,8 +157,17 @@ if helm template check platform/security/network-policies --set serviceCidr="$se
   status=1
 fi
 
+if helm template check platform/security/external-secrets-network-policies --set vpcCidr=192.0.2.0/24 > /dev/null 2>&1; then
+  echo "    FAIL platform/security/external-secrets-network-policies rendered without serviceCidr"
+  status=1
+fi
+if helm template check platform/security/external-secrets-network-policies --set serviceCidr="$service_cidr" > /dev/null 2>&1; then
+  echo "    FAIL platform/security/external-secrets-network-policies rendered without vpcCidr (the API server reaches the webhook from the VPC)"
+  status=1
+fi
+
 echo "==> the policy charts can be switched off"
-for chart in platform/data/network-policies platform/observability/network-policies platform/security/network-policies; do
+for chart in platform/data/network-policies platform/observability/network-policies platform/security/network-policies platform/security/external-secrets-network-policies; do
   if helm template check "$chart" --set enabled=false 2> /dev/null | grep -q '^kind:'; then
     echo "    FAIL $chart renders policies with enabled=false"
     status=1

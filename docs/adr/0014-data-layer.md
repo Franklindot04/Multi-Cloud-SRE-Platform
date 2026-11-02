@@ -28,7 +28,7 @@ One cluster, many databases
 Credential handling and the path to external secrets
 
 - **No credential is committed or passed through Git, Argo CD parameters or Terraform.** A Job run by Argo CD during the sync (an Argo CD Sync hook; see [ADR-0018](0018-secret-generation-and-ordering.md)) generates random passwords inside the cluster, once, and creates the Secrets only if they do not exist (never overwriting them). The services read Secrets in the `shop` namespace with a documented, stable shape (`orders-db`, `payments-db`, `cache-auth`). RabbitMQ and CloudNativePG-managed credentials follow the same idea.
-- The interim has known limits: it does not rotate, and the password exists as a Kubernetes Secret (base64, not encrypted beyond the cluster's own encryption at rest). The path forward is External Secrets Operator reading the cloud's secret manager and producing the same Secret names and keys, after which the generator is removed and consumers do not change. Rotation then becomes a secret-manager operation plus role password updates by the operator.
+- The interim has known limits: it does not rotate, and the password exists as a Kubernetes Secret (base64, not encrypted beyond the cluster's own encryption at rest). The path forward is External Secrets Operator reading the cloud's secret manager and producing the same Secret names and keys, so that consumers do not change. That is now defined as a second mode, chosen per cluster, with the generator kept as the default ([ADR-0027](0027-external-secrets.md)); neither has changed what the consumers read. Rotation then becomes a secret-manager operation plus role password updates by the operator.
 
 Ordering, hooks and teardown (revised by [ADR-0018](0018-secret-generation-and-ordering.md))
 

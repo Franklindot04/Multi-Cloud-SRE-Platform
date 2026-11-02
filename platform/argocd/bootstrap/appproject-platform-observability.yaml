@@ -61,6 +61,10 @@ spec:
       kind: Role
     - group: rbac.authorization.k8s.io
       kind: RoleBinding
+    # An ExternalSecret can make the Secrets of the stack from Parameter Store instead of a generator Job (a later change). Only this
+    # kind: the stores are cluster-scoped and belong to the platform-addons project.
+    - group: external-secrets.io
+      kind: ExternalSecret
     # Prometheus, ServiceMonitor, PodMonitor, PrometheusRule and the other monitoring.coreos.com kinds. The rules and
     # the Alertmanager resource use the same group.
     - group: monitoring.coreos.com

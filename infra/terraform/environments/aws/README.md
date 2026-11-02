@@ -10,7 +10,7 @@ Root Terraform stack for the AWS side of the platform. It currently provisions t
 | `backend.hcl.example` | Template for the per-environment backend values |
 | `network.tf` | VPC network via the `aws-network` module |
 | `eks.tf` | EKS cluster via the `aws-eks` module |
-| `addons-iam.tf` | IAM roles for the cluster add-ons (IRSA) via the `aws-irsa` module |
+| `addons-iam.tf` | IAM roles for the cluster add-ons and the External Secrets Operator (IRSA) via the `aws-irsa` and `aws-external-secrets-iam` modules |
 | `policies/` | Vendored official load balancer controller IAM policy, with its source and version |
 | `dns.tf` | Optional Route 53 zone, delegation and traffic steering via the `aws-dns` module |
 | `outputs.tf` | VPC, subnet, NAT and cluster outputs, including a kubeconfig command |
@@ -91,9 +91,12 @@ Roles for the cluster add-ons in [`platform/addons`](../../../../platform/addons
 | `enable_load_balancer_controller_iam` | `true` | Role for the AWS Load Balancer Controller, using the vendored official policy |
 | `enable_external_dns_iam` | `false` | Route 53 role scoped to one hosted zone; needs `domain_name` or `addons_hosted_zone_id` |
 | `enable_cert_manager_iam` | `false` | Route 53 DNS-01 role scoped to one hosted zone; same requirement |
+| `enable_external_secrets` | `true` | Role for the External Secrets Operator: read-only access to the SSM parameters below `/<prefix>/<environment>/` and decrypt through SSM; see the [module](../../modules/aws-external-secrets-iam) |
+| `secrets_parameter_prefix` | `multi-cloud-sre` | First segment of the parameter path; `scripts/seed-secrets.sh` writes below `/<prefix>/<environment>/` |
+| `external_secrets_namespace`, `external_secrets_service_account` | `external-secrets`, `external-secrets` | The service account the role trusts |
 | `addons_hosted_zone_id` | `""` | Hosted zone the DNS roles may change; defaults to the zone from `domain_name` |
 
-Outputs `aws_load_balancer_controller_role_arn`, `external_dns_role_arn` and `cert_manager_role_arn` go into the `eks.amazonaws.com/role-arn` annotations in the add-on values files. See the [cluster add-ons runbook](../../../../docs/runbooks/cluster-addons.md).
+Outputs `aws_load_balancer_controller_role_arn`, `external_dns_role_arn`, `cert_manager_role_arn` and `external_secrets_role_arn` go into the `eks.amazonaws.com/role-arn` annotations in the add-on values files. The output `secrets_parameter_prefix` is the full path (`/multi-cloud-sre/dev` by default) that `scripts/seed-secrets.sh` writes below; Terraform creates no parameter, and the values never pass through it or its state. See the [cluster add-ons runbook](../../../../docs/runbooks/cluster-addons.md).
 
 ## Validate without a backend
 

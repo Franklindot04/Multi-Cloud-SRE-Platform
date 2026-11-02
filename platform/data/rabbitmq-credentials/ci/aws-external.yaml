@@ -1,0 +1,6 @@
+---
+# External mode: the passwords come from Parameter Store through ExternalSecrets. Argo CD sets these from the cluster label
+# platform.example/external-secrets and the annotation platform.example/secrets-prefix; the prefix here is a made-up path.
+externalSecrets:
+  enabled: true
+  prefix: /multi-cloud-sre/dev

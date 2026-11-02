@@ -1,0 +1,63 @@
+---
+# The ClusterSecretStore aws-parameter-store: AWS Systems Manager Parameter Store, signing in with the service account of the External
+# Secrets Operator. No credential of any kind. Wave 4: after the operator (wave 3), whose CRDs define the kind, and before the data
+# layer (wave 5). The store's kind comes from those CRDs, so the object carries SkipDryRunOnMissingResource and the Application retries
+# until they exist. The region and the parameter path come from the cluster annotations platform.example/region and
+# platform.example/secrets-prefix (Terraform output secrets_parameter_prefix), never from Git; the chart refuses to render without
+# either. Only clusters labelled platform.example/external-secrets=true get it.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: eso-store
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/external-secrets: "true"
+            platform.example/cloud: aws
+  template:
+    metadata:
+      name: 'eso-store-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: eso-store
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/security/external-secrets-store
+        helm:
+          releaseName: external-secrets-store
+          valueFiles:
+            - values.yaml
+          parameters:
+            - name: region
+              value: '{{ index .metadata.annotations "platform.example/region" }}'
+              forceString: true
+            - name: parameterPrefix
+              value: '{{ index .metadata.annotations "platform.example/secrets-prefix" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: external-secrets
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

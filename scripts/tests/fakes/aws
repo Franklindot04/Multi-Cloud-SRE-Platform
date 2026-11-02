@@ -2,6 +2,15 @@
 # A fake AWS CLI for scripts/test-scripts.sh. Every call is appended to $FAKE_STATE/aws.log. The text of the
 # files aws-volumes, aws-load-balancers and aws-security-groups in $FAKE_STATE is what the three queries
 # print; a missing or empty file means an empty result. Any other call exits 99.
+#
+# For scripts/seed-secrets.sh it also keeps a small Parameter Store in $FAKE_STATE/ssm: put-parameter (the value arrives as
+# {"Value": "..."} in the file named by --cli-input-json file://<path>; a pipe or an unreadable path fails with "Invalid JSON
+# received", as the real CLI does), describe-parameters and delete-parameters. Only $* is logged, which is what a process
+# listing would show; the value is not in it. The paths and the modes of the file and its directory are recorded in ssm/paths and
+# ssm/modes. The file ssm-put-wait holds a put-parameter call until the file is removed (ssm-waiting says the call is held).
+# The value itself is stored in $FAKE_STATE/ssm/values, so a test can check its length and characters, and that it appears in no
+# output. The file ssm/names lists the parameters (put the names of existing ones in it
+# to test --no-overwrite). The files ssm-put-denied and ssm-list-denied make those calls fail with AccessDeniedException.
 set -eu
 
 state="${FAKE_STATE:?FAKE_STATE is not set}"
@@ -9,10 +18,104 @@ echo "$*" >> "$state/aws.log"
 
 show() { if [ -s "$state/$1" ]; then cat "$state/$1"; fi; }
 
+ssm="$state/ssm"
+mkdir -p "$ssm/values"
+touch "$ssm/names"
+
+denied() {
+  echo "An error occurred (AccessDeniedException) when calling the $1 operation: User is not authorized to perform: $2" >&2
+  exit 254
+}
+
+# arg_after FLAG ARG...: the argument that follows FLAG.
+arg_after() {
+  local flag="$1" prev=""
+  shift
+  for a in "$@"; do
+    if [ "$prev" = "$flag" ]; then
+      echo "$a"
+      return 0
+    fi
+    prev="$a"
+  done
+  return 1
+}
+
+ssm_put() {
+  local name input path waited=0
+  name="$(arg_after --name "$@")"
+  input="$(arg_after --cli-input-json "$@" || true)"
+  # Like the real CLI: the JSON has to come from a plain file named file://<path>. A pipe (file:///dev/stdin) or a path that cannot
+  # be read gives "Invalid JSON received".
+  case "$input" in
+    file:///dev/*) invalid ;;
+    file://*) path="${input#file://}" ;;
+    *) invalid ;;
+  esac
+  [ -f "$path" ] && [ -r "$path" ] || invalid
+  # What a test needs to know about the hand-over, and no value: the path, the mode of the file and of its directory.
+  echo "$path" >> "$ssm/paths"
+  # shellcheck disable=SC2012 # only the mode string of two known paths is wanted
+  echo "dir $(ls -ld "$(dirname "$path")" | cut -c1-10) file $(ls -l "$path" | cut -c1-10)" >> "$ssm/modes"
+  # A test can hold the call here (to send the script a signal) by creating ssm-put-wait and removing it again.
+  if [ -e "$state/ssm-put-wait" ]; then
+    : > "$state/ssm-waiting"
+    while [ -e "$state/ssm-put-wait" ] && [ "$waited" -lt 100 ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+  fi
+  [ ! -e "$state/ssm-put-denied" ] || denied PutParameter ssm:PutParameter
+  if grep -qxF -- "$name" "$ssm/names"; then
+    case " $* " in
+      *" --no-overwrite "*)
+        echo "An error occurred (ParameterAlreadyExists) when calling the PutParameter operation: The parameter already exists. To overwrite this value, set the overwrite option in the request to true." >&2
+        exit 254
+        ;;
+    esac
+  fi
+  sed -n 's/^{"Value":"\(.*\)"}$/\1/p' "$path" | tr -d '\n' > "$ssm/values/$(echo "$name" | tr '/' '_')"
+  grep -qxF -- "$name" "$ssm/names" || echo "$name" >> "$ssm/names"
+  echo '{"Version": 1, "Tier": "Standard"}'
+}
+
+invalid() {
+  echo "Error parsing parameter '--cli-input-json': Invalid JSON received." >&2
+  exit 252
+}
+
+ssm_describe() {
+  local filter path
+  [ ! -e "$state/ssm-list-denied" ] || denied DescribeParameters ssm:DescribeParameters
+  filter="$(arg_after --parameter-filters "$@")"
+  path="${filter##*Values=}"
+  grep "^$path/" "$ssm/names" | tr '\n' '\t' | sed 's/\t$//' || true
+  echo
+}
+
+ssm_delete() {
+  local names=() seen=0 a
+  for a in "$@"; do
+    if [ "$seen" -eq 1 ]; then
+      case "$a" in --*) seen=0 ;; *) names+=("$a") ;; esac
+    fi
+    [ "$a" != "--names" ] || seen=1
+  done
+  for a in "${names[@]}"; do
+    grep -vxF -- "$a" "$ssm/names" > "$ssm/names.new" || true
+    mv "$ssm/names.new" "$ssm/names"
+    rm -f "$ssm/values/$(echo "$a" | tr '/' '_')"
+  done
+  echo
+}
+
 case "$*" in
   "--region "*" ec2 describe-volumes --filters Name=tag-key,Values=kubernetes.io/created-for/pvc/name "*) show aws-volumes ;;
   "--region "*" resourcegroupstaggingapi get-resources --resource-type-filters elasticloadbalancing:loadbalancer "*) show aws-load-balancers ;;
   "--region "*" ec2 describe-security-groups --filters "*) show aws-security-groups ;;
+  "--region "*" ssm put-parameter "*) ssm_put "$@" ;;
+  "--region "*" ssm describe-parameters "*) ssm_describe "$@" ;;
+  "--region "*" ssm delete-parameters "*) ssm_delete "$@" ;;
   *)
     echo "fake aws: unexpected call: $*" >&2
     exit 99

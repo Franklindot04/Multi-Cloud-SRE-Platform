@@ -1,0 +1,7 @@
+apiVersion: v2
+name: external-secrets-network-policies
+description: Default-deny network policies for the external-secrets namespace, with the allow rules the External Secrets Operator needs
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws"

@@ -1,0 +1,64 @@
+---
+# Default-deny network policies for the external-secrets namespace and the allow rules of the operator's three pods. Wave 4: after the
+# operator (wave 3). Only EKS clusters get it. The VPC CNI network policy agent matches egress against Service addresses, so the chart
+# allows the Service range (DNS, the API server) on the ports it needs; the API server calls the validating webhook from addresses
+# inside the VPC, so the webhook port accepts the VPC range. The controller alone may reach the internet on TCP 443 (AWS STS and
+# Systems Manager, through the NAT gateway). Both ranges come from the cluster annotations platform.example/service-cidr and
+# platform.example/vpc-cidr (written by scripts/bootstrap-argocd.sh), never from Git. Inside the Application the allow rules are applied
+# (sync wave -2) before the deny (wave -1), so a deny never lands without them.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: eso-network-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/external-secrets: "true"
+            platform.example/cloud: aws
+  template:
+    metadata:
+      name: 'eso-network-policies-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: eso-network-policies
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/security/external-secrets-network-policies
+        helm:
+          releaseName: eso-network-policies
+          valueFiles:
+            - values.yaml
+          parameters:
+            - name: vpcCidr
+              value: '{{ index .metadata.annotations "platform.example/vpc-cidr" }}'
+              forceString: true
+            - name: serviceCidr
+              value: '{{ index .metadata.annotations "platform.example/service-cidr" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: external-secrets
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

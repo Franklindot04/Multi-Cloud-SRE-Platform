@@ -112,7 +112,7 @@ Only a policy in Enforce blocks; with Audit nothing does. The webhooks fail open
 
 1. **Read the message.** The error of `kubectl apply`, or the sync error of the Argo CD Application, names the policy and its message (for example that a container needs a digest). The report shows the same.
 2. **Fix the workload.** A digest, an image from the platform registry, requests and a memory limit, probes, the label `app.kubernetes.io/name`. The service chart does all of this already; a failure of a service chart is a finding about the chart or the values file, not a reason to turn the policy off.
-3. **Do not copy the exempt label.** The label `platform.example/policy-exempt: "true"` makes every policy skip a workload. It exists for one Job (the RabbitMQ credentials copy, which runs a public `curl` image) and it is **not protected**: anyone can add it to a workload. Putting it on a workload to get a deploy through is a security decision and not a fix. The way to remove the weak spot is to run that Job from a pinned image of ours ([ADR-0025](../adr/0025-admission-policies.md)).
+3. **Do not copy the exempt label.** The label `platform.example/policy-exempt: "true"` makes every policy skip a workload. It exists for one Job (the RabbitMQ credentials copy, which runs a public `curl` image, and which is rendered only in generated mode, the default; in external mode an ExternalSecret replaces it and the label is not used) and it is **not protected**: anyone can add it to a workload. Putting it on a workload to get a deploy through is a security decision and not a fix. The way to remove the weak spot is to run that Job from a pinned image of ours ([ADR-0025](../adr/0025-admission-policies.md)).
 4. **Break-glass, in order of speed.**
    - **Set the policy back to Audit in Git** (`policies.<name>.action: Audit`, or `action: Audit` for all) and let Argo CD sync. This is the normal way.
    - **In an emergency, delete Kyverno's webhook configurations.** The webhooks fail open and Kyverno recreates them, so this is safe: requests pass until Kyverno is back. Not run.
@@ -170,8 +170,8 @@ The signature policy loads (its CEL compiles) and has been compared with `script
 
 Kyverno's webhook configurations and its policies must go before the namespaces and Argo CD, or a webhook with no controller behind it can block the deletions that follow. The scripts do it ([data layer teardown](data-layer.md#teardown), [Argo CD teardown](argocd.md#teardown)):
 
-- `scripts/teardown-prep.sh` has 15 steps (12 with `--skip-aws`). It removes the label `platform.example/policy` with the others, waits for the `policy-*` Applications, then deletes every `ClusterPolicy`, `Policy`, `ValidatingPolicy` and `ImageValidatingPolicy`, then the validating and mutating webhook configurations whose names start with `kyverno` and only those, and waits for them to be gone.
-- `scripts/teardown-argocd.sh` has 10 steps and refuses to start while a Kyverno policy or webhook configuration is left.
+- `scripts/teardown-prep.sh` has 16 steps (13 with `--skip-aws`). It removes the label `platform.example/policy` with the others, waits for the `policy-*` Applications, then deletes every `ClusterPolicy`, `Policy`, `ValidatingPolicy` and `ImageValidatingPolicy`, then the validating and mutating webhook configurations whose names start with `kyverno` and only those, and waits for them to be gone.
+- `scripts/teardown-argocd.sh` has 11 steps and refuses to start while a Kyverno policy or webhook configuration is left.
 - Both are tested against a fake `kubectl` and not against a cluster. Run `--dry-run` first and read the output.
 
 ## What has not been run

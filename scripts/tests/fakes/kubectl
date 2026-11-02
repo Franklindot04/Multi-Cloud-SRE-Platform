@@ -32,6 +32,12 @@
 #                       (cert-manager and the load balancer controller); deleting one creates deleted-<object>
 #   stuck-kyverno-webhooks
 #                       the Kyverno webhook configurations are not removed by a deletion
+#   eso-objects         an ExternalSecret, a ClusterExternalSecret, a SecretStore and a ClusterSecretStore exist (their CRDs must be in
+#                       the crds file for the scripts to look at them); deleting them creates eso-externalsecrets-deleted,
+#                       eso-clusterexternalsecrets-deleted, eso-secretstores-deleted and eso-clustersecretstores-deleted
+#   eso-webhooks        the two validating webhook configurations of the External Secrets Operator (secretstore-validate and
+#                       externalsecret-validate) exist; deleting one creates deleted-<object>
+#   stuck-eso-webhooks  the External Secrets webhook configurations are not removed by a deletion
 # For scripts/teardown-argocd.sh (the marker argocd-script switches the Application list to this model):
 #   ns-data, ns-shop, ns-argocd
 #                       these namespaces exist (the observability one is obs-namespace); deleting one creates
@@ -166,7 +172,7 @@ case "$*" in
     fi
     echo secret/cluster-in-cluster
     ;;
-  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-")
+  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets-")
     mark labels-removed
     echo "secret/cluster-in-cluster unlabeled"
     ;;
@@ -180,6 +186,7 @@ case "$*" in
     else
       printf '%s\n' application.argoproj.io/apps-orders-in-cluster application.argoproj.io/data-postgres-in-cluster \
         application.argoproj.io/observability-stack-in-cluster application.argoproj.io/policy-kyverno-in-cluster \
+        application.argoproj.io/eso-operator-in-cluster \
         application.argoproj.io/cert-manager-in-cluster
     fi
     ;;
@@ -248,7 +255,9 @@ case "$*" in
   "get crd clusters.postgresql.cnpg.io -o name" | "get crd rabbitmqclusters.rabbitmq.com -o name" | "get crd databases.postgresql.cnpg.io -o name" | \
     "get crd applications.argoproj.io -o name" | "get crd applicationsets.argoproj.io -o name" | "get crd appprojects.argoproj.io -o name" | \
     "get crd clusterpolicies.kyverno.io -o name" | "get crd policies.kyverno.io -o name" | \
-    "get crd validatingpolicies.policies.kyverno.io -o name" | "get crd imagevalidatingpolicies.policies.kyverno.io -o name")
+    "get crd validatingpolicies.policies.kyverno.io -o name" | "get crd imagevalidatingpolicies.policies.kyverno.io -o name" | \
+    "get crd externalsecrets.external-secrets.io -o name" | "get crd clusterexternalsecrets.external-secrets.io -o name" | \
+    "get crd secretstores.external-secrets.io -o name" | "get crd clustersecretstores.external-secrets.io -o name")
     grep -Fxq -- "$3" "$state/crds" || exit 1
     echo "customresourcedefinition.apiextensions.k8s.io/$3"
     ;;
@@ -279,6 +288,49 @@ case "$*" in
   "delete policies.kyverno.io --all -A --wait=true --timeout="*)
     mark kyverno-policies-deleted
     echo "policy.kyverno.io \"require-labels\" deleted"
+    ;;
+  "get externalsecrets.external-secrets.io -A -o name")
+    if flag eso-objects && ! flag eso-externalsecrets-deleted; then echo externalsecret.external-secrets.io/orders-db; fi
+    ;;
+  "get clusterexternalsecrets.external-secrets.io -o name")
+    if flag eso-objects && ! flag eso-clusterexternalsecrets-deleted; then echo clusterexternalsecret.external-secrets.io/shared; fi
+    ;;
+  "get secretstores.external-secrets.io -A -o name")
+    if flag eso-objects && ! flag eso-secretstores-deleted; then echo secretstore.external-secrets.io/local; fi
+    ;;
+  "get clustersecretstores.external-secrets.io -o name")
+    if flag eso-objects && ! flag eso-clustersecretstores-deleted; then echo clustersecretstore.external-secrets.io/aws-parameter-store; fi
+    ;;
+  "delete externalsecrets.external-secrets.io --all -A --wait=true --timeout="*)
+    mark eso-externalsecrets-deleted
+    echo 'externalsecret.external-secrets.io "orders-db" deleted'
+    ;;
+  "delete clusterexternalsecrets.external-secrets.io --all --wait=true --timeout="*)
+    mark eso-clusterexternalsecrets-deleted
+    echo 'clusterexternalsecret.external-secrets.io "shared" deleted'
+    ;;
+  "delete secretstores.external-secrets.io --all -A --wait=true --timeout="*)
+    mark eso-secretstores-deleted
+    echo 'secretstore.external-secrets.io "local" deleted'
+    ;;
+  "delete clustersecretstores.external-secrets.io --all --wait=true --timeout="*)
+    mark eso-clustersecretstores-deleted
+    echo 'clustersecretstore.external-secrets.io "aws-parameter-store" deleted'
+    ;;
+  "get validatingwebhookconfigurations.admissionregistration.k8s.io -o name")
+    printf '%s\n' validatingwebhookconfiguration.admissionregistration.k8s.io/cert-manager-webhook \
+      validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-resource-validating-webhook-cfg
+    if flag eso-webhooks; then
+      for w in validatingwebhookconfiguration.admissionregistration.k8s.io/secretstore-validate \
+        validatingwebhookconfiguration.admissionregistration.k8s.io/externalsecret-validate; do
+        if flag stuck-eso-webhooks || ! flag "deleted-$(key "$w")"; then echo "$w"; fi
+      done
+    fi
+    ;;
+  "delete validatingwebhookconfiguration.admissionregistration.k8s.io/secretstore-validate --wait=true --timeout="* | \
+    "delete validatingwebhookconfiguration.admissionregistration.k8s.io/externalsecret-validate --wait=true --timeout="*)
+    mark "deleted-$(key "$2")"
+    echo "$2 deleted"
     ;;
   "get validatingwebhookconfigurations.admissionregistration.k8s.io,mutatingwebhookconfigurations.admissionregistration.k8s.io -o name")
     printf '%s\n' validatingwebhookconfiguration.admissionregistration.k8s.io/cert-manager-webhook \
