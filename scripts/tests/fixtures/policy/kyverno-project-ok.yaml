@@ -1,0 +1,68 @@
+---
+# What the Kyverno chart renders, by kind and namespace: all of it is allowed by the platform-addons AppProject.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-admission-controller
+  namespace: kyverno
+spec: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kyverno-admission-controller
+  namespace: kyverno
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kyverno-svc
+  namespace: kyverno
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kyverno-migrate-resources
+  namespace: kyverno
+spec: {}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno:admission-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno:admission-controller
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterpolicies.kyverno.io
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: kyverno
+spec: {}
+---
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-image-digest
+---
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-image-signatures
+---
+# A Helm test hook: Argo CD does not apply it, so it needs no place in the project.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kyverno-test
+  namespace: kyverno
+  annotations:
+    helm.sh/hook: test

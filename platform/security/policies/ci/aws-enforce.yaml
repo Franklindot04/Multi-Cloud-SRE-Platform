@@ -1,0 +1,7 @@
+---
+# The enforcing profile (values-enforce.yaml), so that it is rendered and checked too.
+action: Enforce
+
+policies:
+  verifyImageSignatures:
+    action: Audit

@@ -1,0 +1,92 @@
+---
+# Network policies for the kyverno namespace: the four Kyverno controllers and the Job that migrates its resources.
+
+# Turn the policies off (nothing is rendered, and Argo CD prunes what it created). The way back if a policy blocks something that
+# must work; see docs/runbooks/network-policies.md.
+enabled: true
+
+namespace: kyverno
+
+# The address range of the cluster's Services. The VPC CNI network policy agent matches an egress rule against the address the
+# pod connects to, which for a Service (the Kubernetes API, the cluster DNS) is its ClusterIP, translated to a pod only
+# afterwards. So the API server is reached by port 443 to this range (the Service "kubernetes"), and DNS gets it next to the
+# DNS pods. Argo CD passes it from the cluster annotation platform.example/service-cidr, which scripts/bootstrap-argocd.sh
+# writes from the Terraform output service_cidr_block. It is never committed, and the chart refuses to render without it.
+serviceCidr: ""
+
+# The address range of the VPC, for the one thing that reaches the pods from outside the cluster network: the API server calls
+# the admission webhook from its own network interfaces, which are in the VPC subnets, and connects to the pod, so the source
+# is an address in the VPC. Argo CD passes it from the cluster annotation platform.example/vpc-cidr (Terraform output
+# vpc_cidr_block). It is never committed, and the chart refuses to render without it.
+vpcCidr: ""
+
+dns:
+  namespace: kube-system
+  podLabels:
+    k8s-app: kube-dns
+
+# Where Prometheus runs. It scrapes the metrics port of every controller, by pod address.
+prometheus:
+  namespace: observability
+  podLabels:
+    app.kubernetes.io/name: prometheus
+    operator.prometheus.io/name: kube-prometheus-stack-prometheus
+
+# The pods, by the labels the Kyverno chart puts on them (platform/security/kyverno, chart 3.9.2).
+pods:
+  admission:
+    app.kubernetes.io/part-of: kyverno
+    app.kubernetes.io/component: admission-controller
+  background:
+    app.kubernetes.io/part-of: kyverno
+    app.kubernetes.io/component: background-controller
+  cleanup:
+    app.kubernetes.io/part-of: kyverno
+    app.kubernetes.io/component: cleanup-controller
+  reports:
+    app.kubernetes.io/part-of: kyverno
+    app.kubernetes.io/component: reports-controller
+
+# Webhooks: the API server calls the admission controller (validating and mutating policies) and the cleanup controller
+# (cleanup policies) on their container port. The Services in front of them listen on 443.
+webhook:
+  port: 9443
+  pods: [admission, cleanup]
+
+# Every controller serves its metrics on this port.
+metricsPort: 8000
+
+# The Kyverno controllers call the Kubernetes API (leader election, watching resources, writing reports and the webhook
+# configurations) and so get TCP 443 to the Service range, each on its own. The Job is the CRD migration that the chart runs
+# after an upgrade (found by its Job name, which its pod carries as the label batch.kubernetes.io/job-name).
+apiAccess:
+  - name: admission
+    matchLabels:
+      app.kubernetes.io/part-of: kyverno
+      app.kubernetes.io/component: admission-controller
+  - name: background
+    matchLabels:
+      app.kubernetes.io/part-of: kyverno
+      app.kubernetes.io/component: background-controller
+  - name: cleanup
+    matchLabels:
+      app.kubernetes.io/part-of: kyverno
+      app.kubernetes.io/component: cleanup-controller
+  - name: reports
+    matchLabels:
+      app.kubernetes.io/part-of: kyverno
+      app.kubernetes.io/component: reports-controller
+  - name: migrate-job
+    matchExpressions:
+      - key: batch.kubernetes.io/job-name
+        operator: In
+        values:
+          - kyverno-migrate-resources
+
+# The admission controller checks image signatures and attestations when policies ask for it (later): it reaches a registry,
+# and for keyless verification the Sigstore services (Fulcio, Rekor, the TUF root). Those are public addresses that no pod
+# selector can name, so the admission controller, and only it, gets TCP 443 to any address except the VPC and the Service
+# ranges (which have their own rules). No other pod of the namespace has any egress to the internet.
+internetEgress:
+  pods: [admission]
+  port: 443

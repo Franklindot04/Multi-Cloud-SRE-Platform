@@ -1,0 +1,28 @@
+{{- if .Values.policy.kyverno.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kyverno
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: kyverno-monitor
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  jobLabel: app.kubernetes.io/component
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.policy.kyverno.namespace }}
+  # Every Service of the chart carries these labels. Only the metrics Services have the port below, so the others give no
+  # target.
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: kyverno
+      app.kubernetes.io/instance: kyverno
+  endpoints:
+    - port: metrics-port
+      path: /metrics
+      interval: {{ .Values.policy.kyverno.interval }}
+{{- end }}

@@ -1,0 +1,278 @@
+---
+# The expected results of the policies on the resources in resources.yaml. The policies are rendered from the chart into policies.yaml
+# (scripts/policy-check.sh does that into a temporary folder), so the test covers what Argo CD would apply.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: admission-policies
+policies:
+  - policies.yaml
+resources:
+  - resources.yaml
+results:
+  - policy: require-image-digest
+    isValidatingPolicy: true
+    resources:
+      - good-deployment
+      - good-statefulset
+      - good-job
+      - good-cronjob
+      - registry-docker
+      - registry-other-owner
+      - registry-prefix-trick
+      - registry-init
+      - registry-pod
+      - debug-pod
+      - debug-pod-tagless
+      - resources-none
+      - resources-no-memory-limit
+      - resources-no-cpu-request
+      - resources-no-memory-request
+      - resources-no-limits
+      - resources-no-cpu-limit
+      - resources-init
+      - resources-job
+      - probes-no-readiness
+      - probes-no-liveness
+      - probes-none
+      - probes-second-container
+      - probes-statefulset
+      - probes-daemonset
+      - probes-job-exempt
+      - label-none
+      - label-other
+      - label-empty
+      - label-pod
+    result: pass
+  - policy: require-image-digest
+    isValidatingPolicy: true
+    resources:
+      - digest-tag-only
+      - digest-tagless
+      - digest-latest
+      - digest-latest-with-digest
+      - digest-short
+      - digest-init
+      - digest-second-container
+      - digest-job
+      - digest-cronjob
+      - digest-pod
+    result: fail
+  - policy: require-image-digest
+    isValidatingPolicy: true
+    resources:
+      - elsewhere
+      - elsewhere-pod
+      - exempt-job
+      - exempt-pod
+    result: skip
+  - policy: restrict-image-registries
+    isValidatingPolicy: true
+    resources:
+      - good-deployment
+      - good-statefulset
+      - good-job
+      - good-cronjob
+      - digest-tag-only
+      - digest-tagless
+      - digest-latest
+      - digest-latest-with-digest
+      - digest-short
+      - digest-init
+      - digest-second-container
+      - digest-job
+      - digest-cronjob
+      - digest-pod
+      - debug-pod
+      - debug-pod-tagless
+      - resources-none
+      - resources-no-memory-limit
+      - resources-no-cpu-request
+      - resources-no-memory-request
+      - resources-no-limits
+      - resources-no-cpu-limit
+      - resources-init
+      - resources-job
+      - probes-no-readiness
+      - probes-no-liveness
+      - probes-none
+      - probes-second-container
+      - probes-statefulset
+      - probes-daemonset
+      - probes-job-exempt
+      - label-none
+      - label-other
+      - label-empty
+      - label-pod
+    result: pass
+  - policy: restrict-image-registries
+    isValidatingPolicy: true
+    resources:
+      - registry-docker
+      - registry-other-owner
+      - registry-prefix-trick
+      - registry-init
+      - registry-pod
+    result: fail
+  - policy: restrict-image-registries
+    isValidatingPolicy: true
+    resources:
+      - elsewhere
+      - elsewhere-pod
+      - exempt-job
+      - exempt-pod
+    result: skip
+  - policy: require-resources
+    isValidatingPolicy: true
+    resources:
+      - good-deployment
+      - good-statefulset
+      - good-job
+      - good-cronjob
+      - digest-tag-only
+      - digest-tagless
+      - digest-latest
+      - digest-latest-with-digest
+      - digest-short
+      - digest-init
+      - digest-second-container
+      - digest-job
+      - digest-cronjob
+      - digest-pod
+      - registry-docker
+      - registry-other-owner
+      - registry-prefix-trick
+      - registry-init
+      - registry-pod
+      - debug-pod
+      - debug-pod-tagless
+      - resources-no-cpu-limit
+      - probes-no-readiness
+      - probes-no-liveness
+      - probes-none
+      - probes-second-container
+      - probes-statefulset
+      - probes-daemonset
+      - probes-job-exempt
+      - label-none
+      - label-other
+      - label-empty
+      - label-pod
+    result: pass
+  - policy: require-resources
+    isValidatingPolicy: true
+    resources:
+      - resources-none
+      - resources-no-memory-limit
+      - resources-no-cpu-request
+      - resources-no-memory-request
+      - resources-no-limits
+      - resources-init
+      - resources-job
+    result: fail
+  - policy: require-resources
+    isValidatingPolicy: true
+    resources:
+      - elsewhere
+      - elsewhere-pod
+      - exempt-job
+      - exempt-pod
+    result: skip
+  - policy: require-probes
+    isValidatingPolicy: true
+    resources:
+      - good-deployment
+      - good-statefulset
+      - digest-tag-only
+      - digest-tagless
+      - digest-latest
+      - digest-latest-with-digest
+      - digest-short
+      - digest-init
+      - digest-second-container
+      - registry-docker
+      - registry-other-owner
+      - registry-prefix-trick
+      - registry-init
+      - resources-none
+      - resources-no-memory-limit
+      - resources-no-cpu-request
+      - resources-no-memory-request
+      - resources-no-limits
+      - resources-no-cpu-limit
+      - resources-init
+      - label-none
+      - label-other
+      - label-empty
+    result: pass
+  - policy: require-probes
+    isValidatingPolicy: true
+    resources:
+      - probes-no-readiness
+      - probes-no-liveness
+      - probes-none
+      - probes-second-container
+      - probes-statefulset
+      - probes-daemonset
+    result: fail
+  - policy: require-probes
+    isValidatingPolicy: true
+    resources:
+      - elsewhere
+    result: skip
+  - policy: require-app-name-label
+    isValidatingPolicy: true
+    resources:
+      - good-deployment
+      - good-statefulset
+      - good-job
+      - good-cronjob
+      - digest-tag-only
+      - digest-tagless
+      - digest-latest
+      - digest-latest-with-digest
+      - digest-short
+      - digest-init
+      - digest-second-container
+      - digest-job
+      - digest-cronjob
+      - digest-pod
+      - registry-docker
+      - registry-other-owner
+      - registry-prefix-trick
+      - registry-init
+      - registry-pod
+      - debug-pod
+      - debug-pod-tagless
+      - resources-none
+      - resources-no-memory-limit
+      - resources-no-cpu-request
+      - resources-no-memory-request
+      - resources-no-limits
+      - resources-no-cpu-limit
+      - resources-init
+      - resources-job
+      - probes-no-readiness
+      - probes-no-liveness
+      - probes-none
+      - probes-second-container
+      - probes-statefulset
+      - probes-daemonset
+      - probes-job-exempt
+    result: pass
+  - policy: require-app-name-label
+    isValidatingPolicy: true
+    resources:
+      - label-none
+      - label-other
+      - label-empty
+      - label-pod
+    result: fail
+  - policy: require-app-name-label
+    isValidatingPolicy: true
+    resources:
+      - elsewhere
+      - elsewhere-pod
+      - exempt-job
+      - exempt-pod
+    result: skip

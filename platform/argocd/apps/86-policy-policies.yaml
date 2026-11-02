@@ -1,0 +1,54 @@
+---
+# The Kyverno admission policies for the shop namespace (platform/security/policies): images, resources, probes and labels, in Audit
+# unless values-enforce.yaml is added to the valueFiles below. Wave 20: after Kyverno and its network policies (waves 18 and 19),
+# with the services. The policy kinds (ValidatingPolicy and ImageValidatingPolicy) come from the Kyverno chart, so the objects carry
+# SkipDryRunOnMissingResource and the Application retries until the CRDs exist. Only clusters labelled platform.example/policy=true
+# get it, like Kyverno itself.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: policy-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "20"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/policy: "true"
+  template:
+    metadata:
+      name: 'policy-policies-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: policy-policies
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/security/policies
+        helm:
+          releaseName: policies
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: kyverno
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

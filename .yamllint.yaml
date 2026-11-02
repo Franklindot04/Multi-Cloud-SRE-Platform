@@ -19,6 +19,9 @@ ignore: |
   platform/observability/*/templates/
   platform/observability/*/charts/
   platform/observability/*/Chart.lock
+  platform/security/*/templates/
+  platform/security/*/charts/
+  platform/security/*/Chart.lock
 
 rules:
   line-length:

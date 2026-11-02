@@ -28,3 +28,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0022](0022-tracing-stack.md) | Tracing stack | Accepted |
 | [0023](0023-slos-and-alerting.md) | SLOs and burn-rate alerting | Accepted |
 | [0024](0024-network-policies.md) | Network policies | Accepted |
+| [0025](0025-admission-policies.md) | Admission policies | Accepted |

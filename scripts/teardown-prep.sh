@@ -7,33 +7,38 @@
 # Steps, in this order. Each one waits for its result and the script stops at the first step that does not
 # complete within the timeout; nothing later runs after a failure.
 #
-#    1. remove the cluster Secret labels platform.example/apps, platform.example/data and
-#       platform.example/observability (the label keys are deleted, not set to false), so the ApplicationSets stop
-#       recreating Applications
-#    2. wait until the apps-*, data-* and observability-* Applications are gone (this also removes the
-#       CloudNativePG, RabbitMQ Cluster and Prometheus operators)
-#    3. wait until the shop namespace holds no workloads
-#    4. if the observability namespace exists, wait until it holds no pods
-#    5. if it exists, delete its PersistentVolumeClaims (there are none unless values-persistent.yaml was used)
-#    6. delete the CloudNativePG Database objects in the data namespace and wait for them
-#    7. delete the CloudNativePG Clusters in the data namespace
-#    8. delete the RabbitmqClusters in the data namespace and wait for them, then their StatefulSets if those
+#    1. remove the cluster Secret labels platform.example/apps, platform.example/data,
+#       platform.example/observability and platform.example/policy (the label keys are deleted, not set to false),
+#       so the ApplicationSets stop recreating Applications
+#    2. wait until the apps-*, data-*, observability-* and policy-* Applications are gone (this also removes the
+#       CloudNativePG, RabbitMQ Cluster, Prometheus and Kyverno controllers)
+#    3. delete the Kyverno policies (every ClusterPolicy, Policy, ValidatingPolicy and ImageValidatingPolicy), then the validating and mutating webhook
+#       configurations whose names start with kyverno, and wait until they are gone; a webhook with no controller
+#       behind it can block the deletions that follow
+#    4. wait until the shop namespace holds no workloads
+#    5. if the observability namespace exists, wait until it holds no pods
+#    6. if it exists, delete its PersistentVolumeClaims (there are none unless values-persistent.yaml was used)
+#    7. delete the CloudNativePG Database objects in the data namespace and wait for them
+#    8. delete the CloudNativePG Clusters in the data namespace
+#    9. delete the RabbitmqClusters in the data namespace and wait for them, then their StatefulSets if those
 #       survive (the operator does not remove them)
-#    9. wait until no pods are left in the data namespace
-#   10. delete the PersistentVolumeClaims in the data namespace (including platform-valkey)
-#   11. confirm kubectl get pv is empty
-#   12. AWS: confirm no EBS volume tagged kubernetes.io/created-for/pvc/name remains, so only node root
+#   10. wait until no pods are left in the data namespace
+#   11. delete the PersistentVolumeClaims in the data namespace (including platform-valkey)
+#   12. confirm kubectl get pv is empty
+#   13. AWS: confirm no EBS volume tagged kubernetes.io/created-for/pvc/name remains, so only node root
 #       volumes are left
-#   13. AWS: confirm no load balancer created by the AWS Load Balancer Controller remains
-#   14. AWS: confirm no security group created by the AWS Load Balancer Controller remains
+#   14. AWS: confirm no load balancer created by the AWS Load Balancer Controller remains
+#   15. AWS: confirm no security group created by the AWS Load Balancer Controller remains
 #
 # Deletions name the resource and the namespace (argocd, shop, data and observability are the only namespaces
-# changed; cnpg-system and rabbitmq-system are only read, to see whether an operator is still running). Nothing is
+# changed; cnpg-system and rabbitmq-system are only read, to see whether an operator is still running). The two
+# cluster-scoped kinds step 3 deletes are Kyverno's: its policies and the webhook configurations whose names
+# start with kyverno, and no other. Nothing is
 # forced: a deletion that does not finish is reported and the script stops. It does not delete namespaces, the
 # storage class, Argo CD or any cloud resource; terraform destroy is a separate, manual step.
 #
 # Finalizers of operators that are gone. Step 2 removes the operators, and a Database or a RabbitmqCluster
-# carries a finalizer that only its operator removes. For these two kinds, and only these, steps 6 and 8 look
+# carries a finalizer that only its operator removes. For these two kinds, and only these, steps 7 and 9 look
 # at whether the operator is running while they wait:
 #
 #   Database          finalizer cnpg.io/deleteDatabase
@@ -51,16 +56,16 @@
 # objects themselves, never on ServiceMonitors, PodMonitors or rules, and only when its feature gate
 # StatusForConfigurationResources is on. The gate is off by default and platform/observability does not turn it
 # on, so nothing holds these objects when the operator goes first. If the gate was switched on by hand and the
-# finalizer is stuck, step 4 times out on the pods that remain and says so; this script does not remove that
+# finalizer is stuck, step 5 times out on the pods that remain and says so; this script does not remove that
 # finalizer. The only thing the observability stack leaves behind that Terraform does not manage is the
-# volumes of values-persistent.yaml, which step 5 deletes.
+# volumes of values-persistent.yaml, which step 6 deletes.
 #
 # Options:
 #   --context CONTEXT     kubectl context of the cluster to prepare; required
-#   --region REGION       AWS region for steps 12 to 14 (default: AWS_REGION, then AWS_DEFAULT_REGION)
+#   --region REGION       AWS region for steps 13 to 15 (default: AWS_REGION, then AWS_DEFAULT_REGION)
 #   --cluster-name NAME   only count load balancers and security groups tagged for this cluster (default: any
 #                         created by the controller in the region)
-#   --skip-aws            stop after step 11 (GKE, or no AWS credentials yet)
+#   --skip-aws            stop after step 12 (GKE, or no AWS credentials yet)
 #   --timeout SECONDS     time each step may take (default 600)
 #   --dry-run             print what would run, run no change, make no AWS call; read-only kubectl
 #                         queries are still used to name the resources
@@ -91,6 +96,10 @@ MQ_SELECTOR="app.kubernetes.io/name=rabbitmq-cluster-operator"
 MQ_FINALIZER="deletion.finalizers.rabbitmqclusters.rabbitmq.com"
 LB_TAG="elbv2.k8s.aws/cluster"
 PVC_TAG="kubernetes.io/created-for/pvc/name"
+# The kinds of policies: the classic ClusterPolicy and Policy (kyverno.io/v1) and the CEL-based ValidatingPolicy and ImageValidatingPolicy
+# (policies.kyverno.io/v1) that platform/security/policies uses. Only Policy is namespaced.
+KYVERNO_POLICY_CRDS="clusterpolicies.kyverno.io policies.kyverno.io validatingpolicies.policies.kyverno.io imagevalidatingpolicies.policies.kyverno.io"
+KYVERNO_WEBHOOK_KINDS="validatingwebhookconfigurations.admissionregistration.k8s.io,mutatingwebhookconfigurations.admissionregistration.k8s.io"
 
 usage() {
   sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
@@ -158,8 +167,8 @@ fi
 
 k() { kubectl --context "$CONTEXT" "$@"; }
 
-TOTAL=14
-[ "$SKIP_AWS" -eq 0 ] || TOTAL=11
+TOTAL=15
+[ "$SKIP_AWS" -eq 0 ] || TOTAL=12
 n=0
 DETAIL=""
 
@@ -225,7 +234,7 @@ apps_gone() {
     DETAIL="could not list Applications"
     return 1
   }
-  DETAIL="$(printf '%s\n' "$out" | grep -E '/(apps|data|observability)-' || true)"
+  DETAIL="$(printf '%s\n' "$out" | grep -E '/(apps|data|observability|policy)-' || true)"
   [ -z "$DETAIL" ]
 }
 
@@ -327,6 +336,22 @@ no_security_groups() {
 }
 
 crd_present() { k get crd "$1" -o name > /dev/null 2>&1; }
+
+# kyverno_webhooks: the validating and mutating webhook configurations whose names start with kyverno, one per line
+# (kind/name). Only those: the ones of cert-manager, the load balancer controller and the rest are never listed.
+kyverno_webhooks() {
+  local out
+  out="$(k get "$KYVERNO_WEBHOOK_KINDS" -o name 2> /dev/null)" || return 1
+  printf '%s\n' "$out" | grep -E '^[^/]+/kyverno' || true
+}
+
+no_kyverno_webhooks() {
+  DETAIL="$(kyverno_webhooks)" || {
+    DETAIL="could not list the webhook configurations"
+    return 1
+  }
+  [ -z "$DETAIL" ]
+}
 
 # delete_all KIND CRD: delete every object of KIND in the data namespace, by name, waiting for each.
 delete_all() {
@@ -440,13 +465,48 @@ fi
 step "Remove the cluster Secret labels, so the ApplicationSets stop recreating Applications"
 if k -n "$ARGO_NS" get secret "$CLUSTER_SECRET" -o name > /dev/null 2>&1; then
   # A trailing '-' deletes the label key. Absent labels are reported by kubectl and are not an error.
-  run k -n "$ARGO_NS" label secret "$CLUSTER_SECRET" platform.example/apps- platform.example/data- platform.example/observability-
+  run k -n "$ARGO_NS" label secret "$CLUSTER_SECRET" platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-
 else
   fail "Secret $ARGO_NS/$CLUSTER_SECRET not found in context '$CONTEXT'. Is this the Argo CD hub cluster?"
 fi
 
-step "Wait for the apps-*, data-* and observability-* Applications to be deleted"
-wait_for "no apps-*, data-* or observability-* Application remains" apps_gone
+step "Wait for the apps-*, data-*, observability-* and policy-* Applications to be deleted"
+wait_for "no apps-*, data-*, observability-* or policy-* Application remains" apps_gone
+
+step "Delete the Kyverno policies and webhook configurations (a webhook with no controller can block the deletions that follow)"
+for crd in $KYVERNO_POLICY_CRDS; do
+  if crd_present "$crd"; then
+    if [ "$crd" != policies.kyverno.io ]; then
+      policies="$(k get "$crd" -o name)" || fail "could not list $crd"
+    else
+      policies="$(k get "$crd" -A -o name)" || fail "could not list $crd"
+    fi
+    if [ -z "$policies" ]; then
+      echo "  no object of $crd"
+    else
+      printf '%s\n' "$policies" | sed 's/^/  policy: /'
+      if [ "$crd" != policies.kyverno.io ]; then
+        run k delete "$crd" --all --wait=true --timeout="${TIMEOUT}s"
+      else
+        run k delete "$crd" --all -A --wait=true --timeout="${TIMEOUT}s"
+      fi
+    fi
+  else
+    echo "  the $crd CRD is not installed: nothing to delete"
+  fi
+done
+webhooks="$(kyverno_webhooks)" || fail "could not list the webhook configurations"
+if [ -z "$webhooks" ]; then
+  echo "  no webhook configuration whose name starts with kyverno"
+else
+  printf '%s\n' "$webhooks" | sed 's/^/  webhook configuration: /'
+  while IFS= read -r webhook; do
+    run k delete "$webhook" --wait=true --timeout="${TIMEOUT}s"
+  done << EOF
+$webhooks
+EOF
+fi
+wait_for "no webhook configuration whose name starts with kyverno remains" no_kyverno_webhooks
 
 step "Wait for the $SHOP_NS namespace to empty"
 wait_for "the $SHOP_NS namespace has no workloads" shop_empty

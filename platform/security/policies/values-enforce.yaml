@@ -1,0 +1,9 @@
+---
+# Turns the enforceable policies on. Not used by default: add it after values.yaml in the valueFiles of the Application, once the
+# policy reports of the Audit run are clean. The signature policy stays in Audit: it needs the registry and the Sigstore services,
+# and has not run on a cluster, so a failure of the check itself must not stop a deployment.
+action: Enforce
+
+policies:
+  verifyImageSignatures:
+    action: Audit

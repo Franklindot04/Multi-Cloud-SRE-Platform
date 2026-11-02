@@ -1,0 +1,66 @@
+---
+# Kyverno, the policy engine (vendored, version-pinned official chart): the admission, background, cleanup and reports
+# controllers, with no policy yet. Wave 18: after the stack and its pipelines (waves 10 to 17) and before the services (wave 20 and
+# later), so that Kyverno is there when policies arrive. Only clusters labelled platform.example/policy=true get it (off by
+# default; scripts/bootstrap-argocd.sh --enable-policy). The chart's CRDs are larger than the 256 KiB that client-side apply
+# can store in an annotation (clusterpolicies.kyverno.io is about 675 KB), so the Application syncs with ServerSideApply=true.
+# Kyverno creates its webhook configurations itself, when there are policies; Argo CD does not manage them, so there is nothing to
+# ignore here. scripts/teardown-prep.sh removes them before the cluster goes.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: policy-kyverno
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "18"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/policy: "true"
+  template:
+    metadata:
+      name: 'policy-kyverno-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: policy-kyverno
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/security/kyverno
+        helm:
+          releaseName: kyverno
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: kyverno
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ServerSideApply=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/enforce-version: latest
+            pod-security.kubernetes.io/warn: restricted
+            pod-security.kubernetes.io/warn-version: latest
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/audit-version: latest
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

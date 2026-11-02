@@ -82,7 +82,22 @@ The observability charts (platform/observability) add checks on the rendered out
   network-policies LABEL
                       the rendered policies of a namespace or a release: every pod (Deployment, StatefulSet, Job) is
                       selected by a default deny for Ingress and Egress that lists no rule, every allow has a sync wave
-                      lower than the deny it goes with, and no rule is empty, without ports, or open to a whole range
+                      lower than the deny it goes with, and no rule is empty, without ports, or open to a whole range (the one exception: an
+                      egress policy with the annotation platform.example/internet-egress, which says why, and TCP 443 only)
+  kyverno LABEL APPSET
+                      the Kyverno render (with --include-crds) is safe and small: the four controllers have requests and
+                      limits and request under 600m CPU and 1Gi of memory with their replicas; the webhooks fail open
+                      (--forceFailurePolicyIgnore) and skip kube-system, kube-node-lease, argocd and kyverno; metrics are on
+                      port 8000; no webhook configuration and no Helm pre-delete hook is rendered; and the ApplicationSet (APPSET)
+                      syncs with ServerSideApply=true when a CRD is larger than 256 KiB, to the kyverno namespace at the
+                      restricted level, for clusters labelled platform.example/policy=true
+  policies LABEL MODE IMAGES_YAML VERIFY_SCRIPT
+                      the rendered admission policies (platform/security/policies; MODE audit or enforce): ValidatingPolicy and
+                      ImageValidatingPolicy of policies.kyverno.io/v1 only; every one scoped to shop, failing open, skipping the exempt
+                      label, matching pods and no subresource (the ephemeral debug container) with autogen for Deployments, Jobs and
+                      CronJobs; nothing Deny in audit mode, everything but the signature policy Deny in enforce mode; the registry of
+                      IMAGES_YAML; and the signature policy with the issuer, identity, transparency log, SBOM and provenance of
+                      VERIFY_SCRIPT and nothing looser
   policy-labels LABEL NAMESPACE...
                       read all the charts together (policies, services, data layer, stack, operators): every label a
                       NetworkPolicy selects or names pods by is carried by a pod, Service or monitor selector in the
@@ -94,6 +109,8 @@ The observability charts (platform/observability) add checks on the rendered out
 The per-chart checks read a multi-document YAML stream (the output of `helm template`) on stdin.
 
 Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned|loki|tempo|alertmanager|grafana-datasources|alloy|network-policies LABEL
+       helm template ... --include-crds | chart-contract-check.py kyverno LABEL APPLICATIONSET_FILE
+       helm template ... | chart-contract-check.py policies LABEL audit|enforce IMAGES_YAML VERIFY_SCRIPT
        helm template ... | chart-contract-check.py policy-labels LABEL NAMESPACE...
        helm template ... | chart-contract-check.py project-fit LABEL PROJECT_FILE DEFAULT_NAMESPACE
        helm template ... --include-crds | chart-contract-check.py crds LABEL APPLICATIONSET_FILE
@@ -256,6 +273,12 @@ CLUSTER_SCOPED = {
     "ValidatingWebhookConfiguration",
     "IngressClass",
     "ClusterIssuer",
+    "ClusterPolicy",
+    "ValidatingPolicy",
+    "ImageValidatingPolicy",
+    "MutatingPolicy",
+    "GeneratingPolicy",
+    "DeletingPolicy",
     "IngressClassParams",
 }
 # Volume types the restricted Pod Security level allows.
@@ -1236,6 +1259,9 @@ def check_project_fit(docs, label, project_file, default_namespace):
     namespaced_rules = spec.get("namespaceResourceWhitelist") or []
     problems = []
     for d in docs:
+        # Argo CD does not apply Helm test hooks, so they need no place in the project.
+        if "test" in str(annotations(d).get(HELM_HOOK, "")).split(","):
+            continue
         api = str(d.get("apiVersion", ""))
         group = api.split("/")[0] if "/" in api else ""
         kind = d["kind"]
@@ -1306,6 +1332,12 @@ def check_waves(apps_dir, readme):
         # The policies come after the workloads they cover.
         ("data-rabbitmq-credentials", "data-network-policies"),
         ("observability-alloy", "observability-network-policies"),
+        # The policy engine comes before the services, and its network policies after it.
+        ("observability-network-policies", "policy-kyverno"),
+        ("policy-kyverno", "apps-notifier"),
+        ("policy-kyverno", "policy-network-policies"),
+        ("policy-network-policies", "policy-policies"),
+        ("policy-kyverno", "policy-policies"),
     ]
     for first, second in before:
         a, b = wave(first), wave(second)
@@ -1314,7 +1346,7 @@ def check_waves(apps_dir, readme):
 
     # The README must say what the files say.
     for name, (w, path) in sorted(actual.items()):
-        if not name.startswith(("data-", "apps-", "observability-")):
+        if not name.startswith(("data-", "apps-", "observability-", "policy-")):
             continue
         if name not in documented:
             problems.append("{} ({}) is not in the wave table of {}".format(name, path, readme))
@@ -1323,7 +1355,7 @@ def check_waves(apps_dir, readme):
                 "{}: wave {} in {} but {} in the table of {}".format(name, w, path, documented[name], readme)
             )
     for name in documented:
-        if name.startswith(("data-", "apps-", "observability-")) and name not in actual:
+        if name.startswith(("data-", "apps-", "observability-", "policy-")) and name not in actual:
             problems.append("{} is in the wave table of {} but no ApplicationSet has that name".format(name, readme))
     return problems
 
@@ -1340,6 +1372,21 @@ def selects(selector, labels):
         else:
             return False
     return True
+
+
+def internet_egress_ok(policy, direction, rule):
+    """True for the one kind of policy that may open a /0 range: an egress policy that says why in the annotation
+    platform.example/internet-egress and allows TCP 443 and nothing else (public registry and Sigstore addresses)."""
+    reason = annotations(policy).get("platform.example/internet-egress", "")
+    ports = rule.get("ports") or []
+    return (
+        direction == "egress"
+        and bool(reason.strip())
+        and len(ports) == 1
+        and ports[0].get("port") == 443
+        and ports[0].get("protocol", "TCP") == "TCP"
+        and "endPort" not in ports[0]
+    )
 
 
 def check_network_policies(docs, label):
@@ -1387,9 +1434,7 @@ def check_network_policies(docs, label):
                     problems.append("{}: {} has an {} rule without a {}, which allows every address".format(label, name_of(d), direction, peer_key))
                 for peer in rule.get(peer_key) or []:
                     cidr = (peer.get("ipBlock") or {}).get("cidr", "")
-                    if cidr in ("0.0.0.0/0", "::/0"):
-                        problems.append("{}: {} allows {}".format(label, name_of(d), cidr))
-                    if cidr and cidr.endswith("/0"):
+                    if cidr.endswith("/0") and not internet_egress_ok(d, direction, rule):
                         problems.append("{}: {} allows the whole range {}".format(label, name_of(d), cidr))
 
     namespaces = {(d.get("metadata") or {}).get("namespace") for d in policies}
@@ -1482,6 +1527,237 @@ def check_policy_labels(docs, label, namespaces):
     return problems
 
 
+KYVERNO_CONTROLLERS = {
+    "kyverno-admission-controller": "admission",
+    "kyverno-background-controller": "background",
+    "kyverno-cleanup-controller": "cleanup",
+    "kyverno-reports-controller": "reports",
+}
+KYVERNO_EXCLUDED_NAMESPACES = {"kube-system", "kube-node-lease", "argocd", "kyverno"}
+# What client-side apply can store: the last-applied annotation is limited to 256 KiB.
+CLIENT_SIDE_APPLY_LIMIT = 262144
+
+
+def cpu_millicores(text):
+    """A CPU quantity in millicores: 100m is 100, 1 is 1000."""
+    text = str(text)
+    return float(text[:-1]) if text.endswith("m") else float(text) * 1000
+
+
+def memory_mebibytes(text):
+    """A memory quantity in MiB (binary and decimal suffixes)."""
+    text = str(text)
+    units = {"Ki": 1 / 1024, "Mi": 1, "Gi": 1024, "k": 1000 / 1048576, "M": 1000000 / 1048576, "G": 1000000000 / 1048576}
+    for suffix in ("Ki", "Mi", "Gi", "k", "M", "G"):
+        if text.endswith(suffix):
+            return float(text[: -len(suffix)]) * units[suffix]
+    return float(text) / 1048576
+
+
+def check_kyverno(docs, label, appset_file):
+    """The Kyverno install is safe and small: the four controllers have requests and limits and, with their replicas, request
+    less than 600m CPU and 1Gi of memory; every webhook fails open and skips kube-system, kube-node-lease, argocd and kyverno;
+    metrics are served on port 8000; the chart renders no Helm pre-delete hook (Argo CD does not run it; scripts/teardown-prep.sh
+    removes the webhooks) and no webhook configuration (Kyverno makes its own); and, because a CRD is larger than client-side apply
+    can store, the ApplicationSet syncs with ServerSideApply=true, in the namespace kyverno at the restricted level.
+    """
+    problems = []
+    deployments = {(d.get("metadata") or {}).get("name"): d for d in docs if d["kind"] == "Deployment"}
+    cpu = memory = 0.0
+    for name in KYVERNO_CONTROLLERS:
+        d = deployments.get(name)
+        if d is None:
+            problems.append("{}: the Deployment {} is not rendered".format(label, name))
+            continue
+        replicas = (d.get("spec") or {}).get("replicas") or 1
+        pod = ((d.get("spec") or {}).get("template") or {}).get("spec") or {}
+        containers = pod.get("containers") or []
+        for c in containers + (pod.get("initContainers") or []):
+            res = c.get("resources") or {}
+            for part in ("requests", "limits"):
+                for key in ("cpu", "memory"):
+                    if key not in (res.get(part) or {}):
+                        problems.append("{}: {} container {} has no {} {}".format(label, name, c["name"], part, key))
+        # The long-running containers add up; an init container ends before they start.
+        for c in containers:
+            req = (c.get("resources") or {}).get("requests") or {}
+            if "cpu" in req and "memory" in req:
+                cpu += replicas * cpu_millicores(req["cpu"])
+                memory += replicas * memory_mebibytes(req["memory"])
+        ports = {p.get("containerPort") for c in containers for p in c.get("ports") or []}
+        if 8000 not in ports:
+            problems.append("{}: {} does not serve metrics on port 8000".format(label, name))
+    if cpu >= 600:
+        problems.append("{}: the controllers request {:g}m CPU, which is not under 600m".format(label, cpu))
+    if memory >= 1024:
+        problems.append("{}: the controllers request {:g}Mi of memory, which is not under 1Gi".format(label, memory))
+
+    admission = deployments.get("kyverno-admission-controller")
+    if admission is not None:
+        args = [a for c in admission["spec"]["template"]["spec"]["containers"] for a in c.get("args") or []]
+        if "--forceFailurePolicyIgnore=true" not in args:
+            problems.append("{}: the admission controller does not force the webhook failure policy to Ignore (a dead Kyverno could block the cluster)".format(label))
+    config = next((d for d in docs if d["kind"] == "ConfigMap" and (d.get("metadata") or {}).get("name") == "kyverno"), None)
+    if config is None:
+        problems.append("{}: no ConfigMap kyverno with the webhook settings".format(label))
+    else:
+        webhooks = json.loads((config.get("data") or {}).get("webhooks") or "{}")
+        excluded = set()
+        for expr in (webhooks.get("namespaceSelector") or {}).get("matchExpressions") or []:
+            if expr.get("key") == "kubernetes.io/metadata.name" and expr.get("operator") == "NotIn":
+                excluded.update(expr.get("values") or [])
+        missing = KYVERNO_EXCLUDED_NAMESPACES - excluded
+        if missing:
+            problems.append("{}: the webhooks do not exclude the namespaces {}".format(label, ", ".join(sorted(missing))))
+    if not any(d["kind"] == "Service" and any(p.get("port") == 8000 for p in (d.get("spec") or {}).get("ports") or []) for d in docs):
+        problems.append("{}: no Service exposes the metrics port 8000".format(label))
+    for d in docs:
+        if d["kind"] in ("ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"):
+            problems.append("{}: {} is rendered; Kyverno creates its own webhook configurations".format(label, name_of(d)))
+        if "pre-delete" in str(annotations(d).get(HELM_HOOK, "")):
+            problems.append("{}: {} is a Helm pre-delete hook, which Argo CD does not run".format(label, name_of(d)))
+
+    crds = [d for d in docs if d["kind"] == "CustomResourceDefinition"]
+    appset = yaml.safe_load(open(appset_file, encoding="utf-8"))
+    sync = (((appset.get("spec") or {}).get("template") or {}).get("spec") or {}).get("syncPolicy") or {}
+    if not crds:
+        problems.append("{}: no CRD is rendered; render with --include-crds".format(label))
+    big = [d["metadata"]["name"] for d in crds if len(json.dumps(d)) > CLIENT_SIDE_APPLY_LIMIT]
+    if big and "ServerSideApply=true" not in (sync.get("syncOptions") or []):
+        problems.append(
+            "{}: {} is larger than client-side apply can store (256 KiB), so the ApplicationSet needs ServerSideApply=true".format(label, big[0])
+        )
+    labels = ((sync.get("managedNamespaceMetadata") or {}).get("labels")) or {}
+    if labels.get("pod-security.kubernetes.io/enforce") != "restricted":
+        problems.append("{}: the kyverno namespace is not created at the restricted Pod Security level".format(label))
+    if (((appset.get("spec") or {}).get("template") or {}).get("spec") or {}).get("destination", {}).get("namespace") != "kyverno":
+        problems.append("{}: the ApplicationSet does not deploy to the kyverno namespace".format(label))
+    match = (((appset.get("spec") or {}).get("generators") or [{}])[0].get("clusters") or {}).get("selector", {}).get("matchLabels", {})
+    if match.get("platform.example/policy") != "true":
+        problems.append("{}: the ApplicationSet does not select clusters by platform.example/policy=true".format(label))
+    return problems
+
+
+POLICY_NAMES = {
+    "require-image-digest",
+    "restrict-image-registries",
+    "require-resources",
+    "require-probes",
+    "require-app-name-label",
+    "verify-image-signatures",
+}
+SYSTEM_NAMESPACES = {"kube-system", "kube-node-lease", "argocd", "kyverno", "data", "observability"}
+
+
+def script_value(text, name):
+    m = re.search(r"^{}=\"([^\"]*)\"".format(name), text, re.M)
+    return m.group(1) if m else None
+
+
+def check_policies(docs, label, mode, images_file, verify_script):
+    """The admission policies of platform/security/policies, rendered with the default values (mode "audit": nothing is Deny) or with
+    values-enforce.yaml (mode "enforce": every policy but the signature one is Deny).
+
+    Every policy is a ValidatingPolicy or ImageValidatingPolicy of policies.kyverno.io/v1 (not the deprecated ClusterPolicy); is
+    scoped to the shop namespace only, with no system or platform namespace; fails open; is skipped for the exempt label; matches pods
+    and not their subresources (so the ephemeral debug container of the runbook is not stopped) and has autogen for Deployments,
+    Jobs and CronJobs, except the probe policy, which matches the controllers it checks; and the registry is the one of IMAGES_FILE.
+    The signature policy asks for what scripts/verify-image.sh asks for: keyless, the same issuer and identity, the transparency log,
+    the SBOM and the build provenance, for the registry above, and nothing looser.
+    """
+    problems = []
+    images = yaml.safe_load(open(images_file, encoding="utf-8"))
+    registry = images["image"]["registry"]
+    verify = open(verify_script, encoding="utf-8").read()
+    repository = re.search(r"SIGNER_REPOSITORY:-([^}]*)}", verify)
+    issuer = script_value(verify, "ISSUER")
+    identity_template = script_value(verify, "IDENTITY")
+    if not (repository and issuer and identity_template):
+        return ["{}: cannot read the issuer and identity from {}".format(label, verify_script)]
+    identity = identity_template.replace("${REPOSITORY}", repository.group(1))
+    script_registry = re.search(r"IMAGE_REGISTRY:-([^}]*)}", verify).group(1)
+    if script_registry != registry:
+        problems.append("{}: {} verifies {} and {} says {}".format(label, verify_script, script_registry, images_file, registry))
+
+    policies = {(d.get("metadata") or {}).get("name"): d for d in docs if d.get("apiVersion", "").startswith("policies.kyverno.io/")}
+    for d in docs:
+        if d["kind"] not in ("ValidatingPolicy", "ImageValidatingPolicy") or d["apiVersion"] != "policies.kyverno.io/v1":
+            problems.append("{}: {} ({}) is not a ValidatingPolicy or ImageValidatingPolicy of policies.kyverno.io/v1".format(label, name_of(d), d.get("apiVersion")))
+    for name in sorted(POLICY_NAMES - set(policies)):
+        problems.append("{}: the policy {} is not rendered".format(label, name))
+    for name, d in sorted(policies.items()):
+        spec = d.get("spec") or {}
+        where = "{}: {}".format(label, name)
+        actions = spec.get("validationActions") or []
+        expected = ["Deny"] if mode == "enforce" and name != "verify-image-signatures" else ["Audit"]
+        if actions != expected:
+            problems.append("{} has the action {} (expected {} in {} mode)".format(where, actions, expected, mode))
+        if spec.get("failurePolicy") != "Ignore":
+            problems.append("{} must fail open (failurePolicy Ignore)".format(where))
+        constraints = spec.get("matchConstraints") or {}
+        expressions = (constraints.get("namespaceSelector") or {}).get("matchExpressions") or []
+        namespaces = set()
+        for expr in expressions:
+            if expr.get("key") == "kubernetes.io/metadata.name" and expr.get("operator") == "In":
+                namespaces.update(expr.get("values") or [])
+        if namespaces != {"shop"}:
+            problems.append("{} must apply to the namespace shop only (it selects {})".format(where, sorted(namespaces) or "every namespace"))
+        if namespaces & SYSTEM_NAMESPACES:
+            problems.append("{} selects the system or platform namespaces {}".format(where, sorted(namespaces & SYSTEM_NAMESPACES)))
+        if "objectSelector" in constraints:
+            problems.append("{} has an objectSelector, which turns off the rules for pod controllers (autogen); use a matchCondition".format(where))
+        if not any("platform.example/policy-exempt" in (c.get("expression") or "") for c in spec.get("matchConditions") or []):
+            problems.append("{} does not skip the workloads that carry platform.example/policy-exempt".format(where))
+        resources = [r for rule in constraints.get("resourceRules") or [] for r in rule.get("resources") or []]
+        if name == "require-probes":
+            if sorted(resources) != ["daemonsets", "deployments", "statefulsets"]:
+                problems.append("{} must match deployments, statefulsets and daemonsets only (Jobs are exempt), not {}".format(where, resources))
+        else:
+            if resources != ["pods"]:
+                problems.append("{} must match pods and no subresource, so the ephemeral debug container is not stopped (it matches {})".format(where, resources))
+            controllers = (((spec.get("autogen") or {}).get("podControllers") or {}).get("controllers")) or []
+            missing = {"deployments", "jobs", "cronjobs"} - set(controllers)
+            if missing:
+                problems.append("{} has no autogen for {}".format(where, ", ".join(sorted(missing))))
+        text = json.dumps(spec)
+        if "ephemeralContainers" in text:
+            problems.append("{} looks at ephemeral containers, which the debug container of the runbook needs to be free of".format(where))
+        expression_text = " ".join((v.get("expression") or "") for v in spec.get("validations") or [])
+        if name == "restrict-image-registries" and registry + "/" not in expression_text:
+            problems.append("{} does not use the registry {} of {}".format(where, registry, images_file))
+
+    ivp = policies.get("verify-image-signatures")
+    if ivp is not None:
+        spec = ivp["spec"]
+        where = "{}: verify-image-signatures".format(label)
+        attestors = spec.get("attestors") or []
+        if len(attestors) != 1 or set((attestors[0].get("cosign") or {})) - {"keyless", "ctlog"} or "keyless" not in (attestors[0].get("cosign") or {}):
+            problems.append("{} must have one cosign attestor with keyless verification and the transparency log, nothing else".format(where))
+        else:
+            cosign = attestors[0]["cosign"]
+            identities = (cosign["keyless"] or {}).get("identities") or []
+            if len(identities) != 1 or identities[0].get("issuer") != issuer or identities[0].get("subject") != identity:
+                problems.append("{} must accept one identity: issuer {} and subject {} (as {})".format(where, issuer, identity, verify_script))
+            ctlog = cosign.get("ctlog") or {}
+            if not ctlog.get("url") or ctlog.get("insecureIgnoreTlog") or ctlog.get("insecureIgnoreSCT"):
+                problems.append("{} must require the transparency log entry (a ctlog url, and no insecureIgnoreTlog or insecureIgnoreSCT)".format(where))
+        types = {a.get("name"): ((a.get("intoto") or {}).get("type")) for a in spec.get("attestations") or []}
+        for name_, wanted in (("sbom", "https://spdx.dev/Document"), ("provenance", "https://slsa.dev/provenance/v1")):
+            if types.get(name_) != wanted:
+                problems.append("{} must require the {} attestation of type {} (as {})".format(where, name_, wanted, verify_script))
+        validations = " ".join((v.get("expression") or "") for v in spec.get("validations") or [])
+        for needle in ("verifyImageSignatures(", "verifyAttestationSignatures(image, attestations.sbom", "verifyAttestationSignatures(image, attestations.provenance"):
+            if needle not in validations:
+                problems.append("{} has no validation that calls {}".format(where, needle))
+        if validations.count(".all(e, e > 0)") < 3:
+            problems.append("{} must require a verified result (e > 0) for every image in each of its three validations".format(where))
+        if "verifyDigest" in json.dumps(spec) and not (spec.get("validationConfigurations") or {}).get("verifyDigest"):
+            problems.append("{} turns the digest check off".format(where))
+        if (spec.get("matchImageReferences") or [{}])[0].get("glob") != registry + "/*":
+            problems.append("{} must match the images of {}/*".format(where, registry))
+    return problems
+
+
 def main(argv):
     per_chart = {
         "hooks": check_hooks,
@@ -1506,6 +1782,10 @@ def main(argv):
         problems = check_slo_rules(load_stdin(), argv[2], argv[3:])
     elif len(argv) >= 4 and argv[1] == "policy-labels":
         problems = check_policy_labels(load_stdin(), argv[2], set(argv[3:]))
+    elif len(argv) == 6 and argv[1] == "policies":
+        problems = check_policies(load_stdin(), argv[2], argv[3], argv[4], argv[5])
+    elif len(argv) == 4 and argv[1] == "kyverno":
+        problems = check_kyverno(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "crds":
         problems = check_crds(load_stdin(), argv[2], argv[3])
     elif len(argv) == 5 and argv[1] == "project-fit":

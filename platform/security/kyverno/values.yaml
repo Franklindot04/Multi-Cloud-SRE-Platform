@@ -1,0 +1,89 @@
+---
+# Kyverno, the policy engine, from the official chart (vendored by version, see Chart.yaml). This change installs the
+# engine only: no policy is deployed here. Sized for a cluster of three Spot nodes that already runs the data layer and
+# the observability stack.
+kyverno:
+  # The chart installs its CRDs (22 of them, some larger than the 256 KiB that client-side apply can store in an annotation),
+  # so the Argo CD Application syncs with ServerSideApply=true (platform/argocd/apps/84-policy-kyverno.yaml).
+  crds:
+    install: true
+
+  config:
+    # Kyverno must not be able to block the system, Argo CD or itself. The chart adds the kyverno namespace to this list
+    # (excludeKyvernoNamespace is true by default). kube-system and kube-node-lease hold what the cluster runs on, and argocd
+    # is what deploys everything, including Kyverno.
+    webhooks:
+      namespaceSelector:
+        matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: NotIn
+            values:
+              - kube-system
+              - kube-node-lease
+              - argocd
+
+  features:
+    # A dead Kyverno must never block the cluster. Kyverno creates its webhook configurations at run time, with the
+    # failurePolicy of each policy; this switch sets every one of them to Ignore, so an admission request that Kyverno cannot
+    # answer (its pods are down, or slow) is allowed instead of rejected. That is the right setting for a dev cluster with
+    # one replica of each controller. Letting a policy fail closed is a decision for later, with the high availability
+    # profile (values-ha.yaml) and per policy; the validationFailureAction of the policies is decided with the policies.
+    forceFailurePolicyIgnore:
+      enabled: true
+
+  # The chart's own clean-up on delete is a Helm pre-delete hook (two Jobs that remove the webhook configurations and scale the
+  # controllers to zero). Argo CD does not run Helm pre-delete hooks, so the webhooks are removed by scripts/teardown-prep.sh
+  # before the cluster goes, and the hook is left out.
+  webhooksCleanup:
+    enabled: false
+
+  # Each controller has one replica here. The requests total 225m CPU and 320Mi of memory, the limits 1250m and 1152Mi.
+  admissionController:
+    replicas: 1
+    container:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    # The init container runs first and ends; it only needs a little. Its request is not added to the pod's.
+    initContainer:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 256Mi
+
+  backgroundController:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+
+  cleanupController:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 128Mi
+
+  reportsController:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi

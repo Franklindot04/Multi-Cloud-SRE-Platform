@@ -1,0 +1,30 @@
+---
+# What the platform-addons AppProject must refuse next to Kyverno: a workload in another namespace, and cluster-scoped
+# kinds that Kyverno's chart does not render (a storage class and a persistent volume), and the policy kinds that the project does not
+# allow: the deprecated ClusterPolicy and the other CEL-based kinds that are not used.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-admission-controller
+  namespace: shop
+spec: {}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: demo
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: demo
+---
+apiVersion: policies.kyverno.io/v1
+kind: MutatingPolicy
+metadata:
+  name: demo

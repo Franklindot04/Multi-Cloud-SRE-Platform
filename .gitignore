@@ -105,6 +105,7 @@ kubeconfig*
 platform/addons/*/charts/
 platform/data/*/charts/
 platform/observability/*/charts/
+platform/security/*/charts/
 platform/argocd/install/charts/
 *.tgz
 

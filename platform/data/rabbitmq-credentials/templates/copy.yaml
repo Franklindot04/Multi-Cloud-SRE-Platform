@@ -89,6 +89,10 @@ kind: Job
 metadata:
   name: rabbitmq-credentials-copy
   namespace: {{ .Values.appNamespace }}
+  labels:
+    # Left out of the Kyverno admission policies of the shop namespace (platform/security/policies): it runs a public curl image and
+    # belongs to the data layer. Nothing else carries this label.
+    platform.example/policy-exempt: "true"
   annotations:
     argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
@@ -99,6 +103,8 @@ spec:
   ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished }}
   template:
     metadata:
+      labels:
+        platform.example/policy-exempt: "true"
       annotations:
         # This pod needs its service account token to call the API; deploy-check allows that only with this marker.
         platform.example/api-access: "true"

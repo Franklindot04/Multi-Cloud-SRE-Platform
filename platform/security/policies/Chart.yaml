@@ -1,0 +1,7 @@
+apiVersion: v2
+name: policies
+description: Kyverno admission policies for the shop namespace (images, resources, probes and labels), in Audit by default
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws,gcp"

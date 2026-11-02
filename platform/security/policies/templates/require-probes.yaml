@@ -1,0 +1,24 @@
+{{- if .Values.policies.requireProbes.enabled }}
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-probes
+  annotations:
+    policies.kyverno.io/title: Require readiness and liveness probes
+    policies.kyverno.io/category: Reliability
+    policies.kyverno.io/description: >-
+      Every container of a Deployment, StatefulSet or DaemonSet has a readiness probe and a liveness probe. Jobs and CronJobs are
+      not checked: a probe has no meaning for a process that is expected to end. The policy matches the controllers, not the pods,
+      so the pods of a Job are not checked either.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  validationActions: [{{ include "policies.action" (dict "root" . "name" "requireProbes") }}]
+  failurePolicy: {{ .Values.failurePolicy }}
+  matchConditions:
+    {{- include "policies.notExempt" . | nindent 4 }}
+  matchConstraints:
+    {{- include "policies.matchControllers" . | nindent 4 }}
+  validations:
+    - expression: "object.spec.template.spec.containers.all(c, has(c.readinessProbe) && has(c.livenessProbe))"
+      message: every container needs a readiness probe and a liveness probe
+{{- end }}

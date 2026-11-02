@@ -43,6 +43,11 @@ Options:
                            nodes, and uses no volumes and no load balancer. Alertmanager has no receiver that
                            sends anywhere. Reach Grafana, Prometheus and Alertmanager by port-forward: see
                            platform/observability/README.md
+  --enable-policy          label the cluster so the Kyverno policy engine is deployed to the kyverno namespace,
+                           with default-deny network policies; no policy is deployed by it. Off by default.
+                           Requests 225m CPU and 320Mi of memory. Kyverno's webhooks fail open (a dead Kyverno does
+                           not block the cluster) and skip kube-system, kube-node-lease, argocd and kyverno: see
+                           platform/security/kyverno/README.md
   --enable-apps            label the cluster so the sample services (gateway, orders, payments, notifier) are
                            deployed from deploy/helm; off by default. Images must be published first: see
                            docs/runbooks/service-deployment.md
@@ -66,6 +71,7 @@ ENABLE_EXTERNAL_DNS=0
 ENABLE_DNS01=0
 ENABLE_DATA=0
 ENABLE_OBSERVABILITY=0
+ENABLE_POLICY=0
 ENABLE_APPS=0
 APPS_PROFILE="memory"
 DATA_PROFILE="standard"
@@ -118,6 +124,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --enable-observability)
       ENABLE_OBSERVABILITY=1
+      shift
+      ;;
+    --enable-policy)
+      ENABLE_POLICY=1
       shift
       ;;
     --enable-apps)
@@ -350,6 +360,7 @@ build_cluster_secret() {
     --arg data "$(bool_word "$ENABLE_DATA")" \
     --arg data_profile "$DATA_PROFILE" \
     --arg observability "$(bool_word "$ENABLE_OBSERVABILITY")" \
+    --arg policy "$(bool_word "$ENABLE_POLICY")" \
     --arg apps "$(bool_word "$ENABLE_APPS")" \
     --arg apps_profile "$APPS_PROFILE" \
     --arg cluster_name "$CLUSTER_NAME" \
@@ -379,6 +390,7 @@ build_cluster_secret() {
           "platform.example/data": $data,
           "platform.example/data-profile": $data_profile,
           "platform.example/observability": $observability,
+          "platform.example/policy": $policy,
           "platform.example/apps": $apps,
           "platform.example/apps-profile": $apps_profile
         },
@@ -408,6 +420,9 @@ build_cluster_secret() {
 
 if [ "$ENABLE_DATA" -eq 1 ]; then
   info "data layer enabled (profile: $DATA_PROFILE): its volumes are not managed by Terraform; see docs/runbooks/data-layer.md for teardown"
+fi
+if [ "$ENABLE_POLICY" -eq 1 ]; then
+  info "policy engine enabled: Kyverno (admission, background, cleanup and reports controllers, no policies) in the kyverno namespace, requests 225m CPU and 320Mi of memory; its webhooks fail open and skip kube-system, kube-node-lease, argocd and kyverno; the network policies need the VPC and Service ranges from the cluster Secret; see platform/security/kyverno/README.md"
 fi
 if [ "$ENABLE_OBSERVABILITY" -eq 1 ]; then
   info "observability enabled: Prometheus, Alertmanager, Grafana, Loki and Tempo keep their data in emptyDir (lost when a pod is rescheduled), there is no ingress, alerts are recorded in Alertmanager and sent nowhere, and the stack requests about 0.5 vCPU and 1.5 GiB of memory (515m and 1560Mi); see platform/observability/README.md"

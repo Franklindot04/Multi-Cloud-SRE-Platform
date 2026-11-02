@@ -7,7 +7,7 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
-  description: Cluster baseline add-ons deployed from platform/addons
+  description: Cluster baseline add-ons from platform/addons and the policy engine from platform/security
   sourceRepos:
     - https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
   # Any registered cluster, but only the namespaces the add-ons use.
@@ -18,6 +18,11 @@ spec:
       namespace: external-dns
     - server: "*"
       namespace: kube-system
+    # Kyverno (platform/security/kyverno) and its network policies. The cluster-scoped kinds it renders (CRDs, ClusterRoles and
+    # ClusterRoleBindings) are in the list below already. Kyverno creates its webhook configurations itself, at run time, and
+    # Argo CD does not manage them.
+    - server: "*"
+      namespace: kyverno
   # Cluster-scoped kinds the add-on charts create. Anything else is rejected.
   clusterResourceWhitelist:
     - group: ""
@@ -42,6 +47,12 @@ spec:
       kind: IngressClassParams
     - group: cert-manager.io
       kind: ClusterIssuer
+    # The Kyverno admission policies (platform/security/policies): the two cluster-scoped kinds of policies.kyverno.io/v1 that it
+    # uses, and no others. The classic ClusterPolicy is deprecated in this Kyverno version and is not allowed.
+    - group: policies.kyverno.io
+      kind: ValidatingPolicy
+    - group: policies.kyverno.io
+      kind: ImageValidatingPolicy
   namespaceResourceWhitelist:
     - group: "*"
       kind: "*"
