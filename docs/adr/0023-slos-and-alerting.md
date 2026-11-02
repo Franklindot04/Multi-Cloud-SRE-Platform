@@ -132,14 +132,13 @@ Run on a laptop: `helm lint --strict` and `helm template` of the monitors chart 
 
 Run on a laptop for Alertmanager: the stack renders with Alertmanager under the `restricted` check (one replica, requests and limits, no volume, no ingress, Prometheus wired to it, a Secret with the configuration); the configuration passes `amtool check-config` of the Alertmanager image the stack deploys; `amtool config routes test` sends a page alert to `page`, a ticket alert to `ticket` and alerts with another severity or none to `default`; an Alertmanager started from that image with that configuration (read-only root filesystem, no capabilities, non-root) was sent six alerts through its API, and a page alert hid the ticket alert of the same SLO and service, `ServiceTargetDown` hid the burn-rate alert of the same service, and the other alerts went to their receivers; the `alertmanager` contract check refuses eighteen broken configurations in the script tests; the datasource check covers the Alertmanager data source; the SLO dashboard passes the dashboard checks (valid JSON, unique uid and title, the data source variable, every query built from a service metric, a recording rule or `ALERTS`); and the links and anchors of the runbook resolve. The sizing was recomputed from the rendered charts.
 
-Not run, because it needs a cluster:
+Seen on a cluster on 2026-11-02 (EKS with Kubernetes 1.37, torn down afterwards; [evidence](../observability-evidence.md)): Prometheus loaded the `PrometheusRule` through the operator, and 57 SLO and alert rules were loaded; the recording rules gave values on the real metrics, so the `service` label and the latency histogram bucket matched (the SLOs dashboard showed gateway availability and notification delivery at 100% and gateway latency at 96.9% against its 95% target, 38.5% of the budget left, burn rate 0.604); Prometheus discovered Alertmanager; Alertmanager ran under `restricted`; the Grafana data source for Alertmanager passed its test (with the Prometheus, Loki and Tempo ones) and the SLOs dashboard rendered; the Argo CD Applications were Synced and Healthy, the ones that carry the rules and Alertmanager among them. The dashboard's own banner says that Prometheus keeps two days, so the 30d figures on it covered at most two days.
 
-- Prometheus loading the `PrometheusRule` through the operator, and the rules evaluating against the real metrics. In particular the `service` label of the series is assumed to be the one the services expose (the Sample services dashboard uses it the same way and showed data on the recorded cluster), and `le="0.5"` is assumed to be written that way by the Go client.
-- An alert firing and its state in the Prometheus UI, and in Alertmanager and on the dashboard.
-- The Alertmanager pod running under `restricted` on a cluster, with the container settings the operator adds, Prometheus listing it as active, and the Grafana data source and the SLO dashboard rendering.
-- The Argo CD sync of the changed AppProject and of the Secret.
-- The cost of the 3-day and 30-day rules on a Prometheus with two days of data.
-- The synchronisation of the Application with the new resource (wave 13, after the CRDs).
+Not run:
+
+- An alert firing, and its state in the Prometheus UI, in Alertmanager and on the dashboard. Nothing fired on 2026-11-02, and Alertmanager has no receivers, so an alert would be recorded there and sent nowhere.
+- The changed AppProject and the Alertmanager Secret were not looked at on their own; the Applications that use them were Synced and Healthy.
+- The cost of the 3-day and 30-day rules, and what the 3-day and 30-day windows show once they fill: Prometheus keeps two days, so on 2026-11-02 they were partial.
 
 ## Alternatives considered
 

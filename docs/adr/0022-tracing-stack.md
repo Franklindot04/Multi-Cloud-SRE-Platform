@@ -58,7 +58,7 @@ Checks
 - **Single replica.** Tempo runs once. While it restarts, the collector's exporter queues and retries; whether traces sent meanwhile are replayed or lost was not observed.
 - **The collector sends to Tempo without TLS or authentication,** and Tempo accepts any client that the namespace's network policies let through, which is the collector, Grafana and Prometheus (on EKS; other clouds have no policies yet).
 - **A deprecated chart is in the tree.** See above for why and for the way out.
-- The trace ID in a log line links to a trace only if the trace exists in Tempo, and no trace does until a service sends spans.
+- The trace ID in a log line links to a trace only if the trace exists in Tempo. On 2026-11-02 the request lines for `/readyz` and `/metrics` carried a `trace_id` and their Trace button showed "Could not retrieve trace": Tempo had no trace for them. We saw that the services do not produce a trace for those routes; we did not check why.
 
 ## Production path
 
@@ -84,8 +84,8 @@ The gateway and the notifier create spans with the OpenTelemetry Go SDK, orders 
 
 ## What this does not cover
 
-- **The whole path has not been seen.** Each service is tested on its own with spans kept in memory. The payments image was also run on a laptop under the restricted container settings (read-only root filesystem, non-root user, dropped capabilities, 640 MiB) against a throwaway collector, which received its spans, with the service name, namespace and version and the parent from an incoming `traceparent`. A trace through all four services, and the links in Grafana, have not been seen.
-- **No traces in Grafana.** Nothing was seen in Grafana: the data source, the derived field and the trace-to-logs link have been checked as configuration and not clicked.
+- **The whole path was seen on a cluster once, on 2026-11-02, and not before.** Before that each service had been tested on its own with spans kept in memory, and the payments image had also been run on a laptop under the restricted container settings (read-only root filesystem, non-root user, dropped capabilities, 640 MiB) against a throwaway collector, which received its spans, with the service name, namespace and version and the parent from an incoming `traceparent`. On the cluster, one order created through the gateway made one trace with 15 spans across the four services, with both hops through RabbitMQ in the same trace (the trace context in the messages works through a real broker). That is one order in one session; sampling, load and failures were not exercised.
+- **Seen in Grafana on 2026-11-02:** the Tempo data source passed its test, the trace opened in Explore, the `Trace` button of the derived field on a notifier log line opened that line's trace, and the `Related logs` link from the trace found its log lines in Loki ([evidence](../observability-evidence.md)). What was not seen: a trace for the request routes that have none (above).
 - **No sampling, no tail-based processing, no span metrics, no service graph.**
 - **No trace-based alerts**, no exemplars from metrics to traces, no ingress and no authentication in front of Tempo.
 - **No Jaeger, Zipkin or OpenCensus clients.** Only OTLP is received.
@@ -96,14 +96,13 @@ Checked on a laptop: the Tempo chart with `helm lint --strict`, `helm template` 
 
 Run locally with the images the charts deploy, with no cluster: the Tempo image started with the rendered configuration and the restricted container settings, the collector image started with the rendered traces pipeline, and one trace sent to the collector and found in Tempo by its ID, with both of its spans.
 
-Not exercised, because it needs a cluster or a service that sends traces:
+Seen on a cluster on 2026-11-02 (EKS with Kubernetes 1.37, torn down afterwards; [evidence](../observability-evidence.md)): Tempo running under `restricted` in the namespace and its target up in Prometheus (all 34 targets were up); Grafana loading the Tempo and Loki data sources and their tests passing; the `Trace` link appearing on a log line and the trace-to-logs link finding the lines; a trace through the gateway, orders, payments and the notifier into Tempo, with the RabbitMQ hops, and the Applications Synced and Healthy. The teardown with Tempo deployed also ran on 2026-11-02: `scripts/teardown-prep.sh` (14 steps) and `scripts/teardown-argocd.sh` (9 steps) ran on the cluster with the whole observability stack deployed, Tempo included, and every step finished ok; the namespaces were removed, no volume or claim was left, and `terraform destroy` afterwards removed all 54 resources, with the AWS checks empty.
 
-- Tempo starting under `restricted` in the namespace, and its target showing as up in Prometheus;
-- Grafana loading the Tempo data source and the changed Loki data source, `Save & test` succeeding, the `Trace` link appearing on a log line and the trace-to-logs link finding the lines;
-- a trace from a service on a cluster: the gateway, orders, payments and the notifier send traces in unit tests with an in-memory exporter; only payments was also run, as its image on a laptop, against a throwaway collector; none has been run against Tempo or RabbitMQ; the trace context in the messages orders publishes is covered by unit tests with a fake exchange, not by a broker;
+Not exercised:
+
+- the services sending traces under load or when the Collector or Tempo is down: the unit tests use an in-memory exporter, and the cluster run was one order;
 - the sync order of waves 11 and 12, and the collector's behaviour while Tempo is not yet ready;
 - what happens to traces across a restart of Tempo or the collector;
-- the teardown with Tempo deployed;
 - the capacity figures.
 
 ## Alternatives considered

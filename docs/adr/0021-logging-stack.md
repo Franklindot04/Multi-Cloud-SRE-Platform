@@ -71,7 +71,7 @@ None of this is meant to be left as it is for a production cluster:
 ## What this does not cover
 
 - **Only part of it is recorded on a cluster.** See below, and [the screenshots](../observability-evidence.md).
-- **No trace correlation:** no derived fields, no link from a log line to a trace, and the services still do not send OpenTelemetry data ([ADR-0020](0020-metrics-stack.md)). Request IDs and trace IDs are in the lines, searchable with a text filter.
+- **No trace correlation when this was written:** no derived fields, no link from a log line to a trace, and the services did not send OpenTelemetry data ([ADR-0020](0020-metrics-stack.md)). [ADR-0022](0022-tracing-stack.md) added them, and on 2026-11-02 the `Trace` button on a log line opened its trace on a cluster. Request IDs and trace IDs are in the lines, searchable with a text filter.
 - **No log-based alerts,** no recording rules from logs, no ruler. (Alertmanager came with [ADR-0023](0023-slos-and-alerting.md), for alerts on metrics.)
 - **No long-term or cross-cluster storage, no replication, no backup.**
 - **Only the `shop` and `data` namespaces,** and only pod logs: no Kubernetes events, no audit logs, no node logs.
