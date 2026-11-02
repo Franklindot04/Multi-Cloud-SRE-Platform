@@ -1,9 +1,9 @@
 ---
 # Default-deny network policies for the data namespace and the allow rules of PostgreSQL, Valkey and RabbitMQ. Wave 9: after
-# the data layer (waves 5 to 8). Only EKS clusters get it: the chart opens TCP 443 to the VPC range for the pods that call
-# the API server, and the range comes from the cluster annotation platform.example/vpc-cidr (written by
-# scripts/bootstrap-argocd.sh), never from Git. Inside the Application the allow rules are applied (sync wave -2) before the
-# deny (wave -1), so a deny never lands without them.
+# the data layer (waves 5 to 8). Only EKS clusters get it. The VPC CNI network policy agent matches egress against Service
+# addresses, so the chart allows the Service range (DNS, the API server, the PostgreSQL Service) on the ports it needs. The range
+# comes from the cluster annotation platform.example/service-cidr (written by scripts/bootstrap-argocd.sh), never from Git.
+# Inside the Application the allow rules are applied (sync wave -2) before the deny (wave -1), so a deny never lands without them.
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -39,8 +39,8 @@ spec:
           valueFiles:
             - values.yaml
           parameters:
-            - name: vpcCidr
-              value: '{{ index .metadata.annotations "platform.example/vpc-cidr" }}'
+            - name: serviceCidr
+              value: '{{ index .metadata.annotations "platform.example/service-cidr" }}'
               forceString: true
       destination:
         server: '{{ .server }}'

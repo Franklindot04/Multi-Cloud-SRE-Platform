@@ -839,6 +839,9 @@ check "a plain dry run exits 0" test "$rc" -eq 0
 check "observability is off by default" grep -q '"platform.example/observability": "false"' "$work/bout"
 check "and nothing says it is enabled" test "$(grep -c 'observability enabled' "$work/bout")" = 0
 check "the dry run called no cluster, cloud or Terraform tool" test ! -e "$stubs/calls.log"
+check "the cluster secret carries the VPC range for the network policies" grep -q '"platform.example/vpc-cidr": "<vpc_cidr_block>"' "$work/bout"
+check "and the Service range, from the Terraform output service_cidr_block" grep -q '"platform.example/service-cidr": "<service_cidr_block>"' "$work/bout"
+check "the script reads both outputs and checks the Service range's format" test "$(grep -c -e 'tf_value service_cidr_block' -e 'require_match service_cidr_block' -e 'Terraform output service_cidr_block is empty' scripts/bootstrap-argocd.sh)" = 3
 
 run_bootstrap --enable-observability
 check "the flag exits 0 on its own" test "$rc" -eq 0
@@ -1671,6 +1674,34 @@ case("a rule with an empty from list allows every peer", True, fl({"from": [], "
 case("an empty rule allows everything", True, fl({}), lb, db, 1234)
 case("an empty rule list allows nothing", False, model([{"podSelector": {}, "policyTypes": ["Ingress"], "ingress": []}]), web, db)
 
+# connections through a Service: the egress side sees the ClusterIP, the ingress side the pod
+def case_via(name, expected, m, src, dst, via, port=80):
+    m.cluster_ips[dst.key] = flows.ipaddress.ip_address("203.0.113.9")
+    allowed, _ = m.evaluate(src, dst, port, "TCP", via)
+    results.append(("ok" if allowed == expected else "bad") + " " + name)
+
+
+def egress_to(peers, port=80):
+    return {"podSelector": {"matchLabels": {"app": "web"}}, "policyTypes": ["Egress"], "egress": [{"to": peers, "ports": [{"protocol": "TCP", "port": port}]}]}
+
+
+db_peer = {"podSelector": {"matchLabels": {"app": "db"}}}
+svc_peer = {"ipBlock": {"cidr": "203.0.113.0/24"}}
+case_via("an egress rule that names the pods does not let a connection through their Service", False, model([egress_to([db_peer])]), web, db, "service")
+case_via("and lets a connection to the pod address through", True, model([egress_to([db_peer])]), web, db, "pod")
+case_via("an egress rule for the Service range lets a connection through the Service", True, model([egress_to([svc_peer])]), web, db, "service")
+case_via("and not a connection to the pod address, which is outside that range", False, model([egress_to([svc_peer])]), web, db, "pod")
+case_via("the Service range on another port is no use", False, model([egress_to([svc_peer], 443)]), web, db, "service")
+case_via("both peers cover both ways", True, model([egress_to([db_peer, svc_peer])]), web, db, "service")
+case_via("both peers cover both ways (pod address)", True, model([egress_to([db_peer, svc_peer])]), web, db, "pod")
+only_web = {"podSelector": {"matchLabels": {"app": "db"}}, "policyTypes": ["Ingress"], "ingress": [{"from": [{"podSelector": {"matchLabels": {"app": "web"}}}]}]}
+case_via("through a Service the ingress of the destination is matched against the source pod (allowed)", True, model([egress_to([svc_peer]), only_web]), web, db, "service")
+case_via("through a Service the ingress of the destination is matched against the source pod (refused)", False, model([egress_to([svc_peer]), only_web]), pod("a", "cache", "10.0.0.3", app="cache"), db, "service")
+open_egress = model([only_web, {"podSelector": {"matchLabels": {"app": "cache"}}, "policyTypes": ["Egress"], "egress": [{"to": [svc_peer]}]}])
+case_via("an open egress to the Service range does not open a destination that refuses the source", False, open_egress, pod("a", "cache", "10.0.0.3", app="cache"), db, "service")
+case_via("an address that is not a pod is refused by the ingress of the destination", False, model([only_web]), lb, db, "service")
+case_via("an ipBlock for the Service range also reaches a destination that is not a pod", True, model([egress_to([svc_peer])]), web, addr("api", "203.0.113.1"), "pod")
+
 # unsupported input stops the check
 try:
     pp([{"protocol": "TCP", "port": "http"}]).evaluate(web, db, 80, "TCP")
@@ -1700,7 +1731,7 @@ else
   rm -rf "$npm"
   mkdir -p "$npm"
   for svc in gateway orders payments notifier; do
-    helm template "$svc" deploy/helm/service --namespace shop -f deploy/helm/values/images.yaml -f "deploy/helm/values/$svc.yaml" -f "deploy/helm/values/$svc-data.yaml" > "$npm/shop-$svc.yaml" 2> /dev/null || true
+    helm template "$svc" deploy/helm/service --namespace shop -f deploy/helm/values/images.yaml -f "deploy/helm/values/$svc.yaml" -f "deploy/helm/values/$svc-data.yaml" --set networkPolicy.serviceCidr=203.0.113.0/24 > "$npm/shop-$svc.yaml" 2> /dev/null || true
   done
   helm template data-network-policies platform/data/network-policies --namespace data -f platform/data/network-policies/ci/aws-params.yaml > "$npm/data.yaml" 2> /dev/null || true
   helm template observability-network-policies platform/observability/network-policies --namespace observability -f platform/observability/network-policies/ci/aws-params.yaml > "$npm/observability.yaml" 2> /dev/null || true
@@ -1748,8 +1779,8 @@ def expect(label, change, *fragments):
 
 problems = run(lambda docs: None)
 results.append(("ok " if not problems else "bad ") + "the rendered policies satisfy every flow of the matrix" + ("" if not problems else ": " + problems[0]))
-expect("removing the allow from orders to payments breaks an allowed flow", drop("orders-allow-to-payments"), "flow orders -> payments:8082/TCP should be allowed but is blocked", "egress of shop/orders")
-expect("removing the ingress allow of PostgreSQL breaks an allowed flow", drop("postgres-allow-from-services"), "flow orders -> postgres:5432/TCP should be allowed but is blocked", "ingress of data/platform-pg-1")
+expect("removing the allow from orders to payments breaks an allowed flow", drop("orders-allow-to-payments"), "flow orders -> payments:8082/TCP through the Service should be allowed but is blocked", "egress of shop/orders")
+expect("removing the ingress allow of PostgreSQL breaks an allowed flow", drop("postgres-allow-from-services"), "flow orders -> postgres:5432/TCP through the Service should be allowed but is blocked", "ingress of data/platform-pg-1")
 expect("removing the DNS allow of the namespace breaks every DNS flow", drop("allow-dns", "observability"), "should be allowed but is blocked", "egress of observability/")
 expect("removing the Prometheus scrape allow of a service breaks the scrape", drop("gateway-allow-prometheus-scrape"), "flow prometheus -> gateway:8080/TCP should be allowed but is blocked", "ingress of shop/gateway")
 
@@ -1774,7 +1805,7 @@ def change_port(docs):
     policy(docs, "orders-allow-to-payments")["spec"]["egress"][0]["ports"][0]["port"] = 8083
 
 
-expect("changing the port of an allow breaks the allowed flow", change_port, "flow orders -> payments:8082/TCP should be allowed but is blocked")
+expect("changing the port of an allow breaks the allowed flow", change_port, "flow orders -> payments:8082/TCP through the Service should be allowed but is blocked")
 
 
 def wrong_namespace(docs):
@@ -1789,6 +1820,60 @@ def everyone_to_internet(docs):
 
 
 expect("a rule open to every address breaks the denied flows to the internet", everyone_to_internet, "flow postgres -> internet:443/TCP should be denied but is allowed")
+
+def without_service_peer(name, namespace=None):
+    def change(docs):
+        for rule in policy(docs, name, namespace)["spec"]["egress"]:
+            rule["to"] = [peer for peer in rule["to"] if "ipBlock" not in peer]
+    return change
+
+
+expect(
+    "egress to a Service by pod selector only breaks the flow through the Service (shop)",
+    without_service_peer("orders-allow-to-payments"),
+    "flow orders -> payments:8082/TCP through the Service should be allowed but is blocked",
+    "egress of shop/orders blocked",
+)
+expect(
+    "egress to a Service by pod selector only breaks the flow through the Service (observability)",
+    without_service_peer("grafana-allow-to-loki", "observability"),
+    "flow grafana -> loki:3100/TCP through the Service should be allowed but is blocked",
+)
+expect("DNS by pod selector only breaks name resolution through the DNS Service", without_service_peer("allow-dns", "data"), "flow postgres -> coredns:53/UDP through the Service should be allowed but is blocked")
+expect("DNS by pod selector only breaks name resolution in the shop", without_service_peer("orders-allow-dns"), "flow orders -> coredns:53/UDP through the Service should be allowed but is blocked")
+
+
+def old_api_rule(docs):
+    policy(docs, "allow-kube-api-postgres", "data")["spec"]["egress"][0]["to"][0]["ipBlock"]["cidr"] = matrix["vpcCidr"]
+
+
+expect("the old API rule (443 to the VPC range) no longer reaches the API server", old_api_rule, "flow postgres -> api-server:443/TCP should be allowed but is blocked")
+
+
+def old_api_rule_observability(docs):
+    policy(docs, "allow-kube-api-grafana", "observability")["spec"]["egress"][0]["to"][0]["ipBlock"]["cidr"] = matrix["vpcCidr"]
+
+
+expect("and the same in the observability namespace", old_api_rule_observability, "flow grafana -> api-server:443/TCP should be allowed but is blocked")
+
+
+def open_valkey_ports(docs):
+    del policy(docs, "valkey-allow-from-services")["spec"]["ingress"][0]["ports"]
+
+
+expect(
+    "an ingress rule without ports lets a flow through the Service range that the destination should refuse",
+    open_valkey_ports,
+    "flow orders -> valkey:5432/TCP through the Service should be denied but is allowed",
+    "ingress of data/platform-valkey allowed by valkey-allow-from-services",
+)
+
+
+def whole_service_range(docs):
+    policy(docs, "orders-allow-dns")["spec"]["egress"][0].pop("ports")
+
+
+expect("an egress rule to the Service range on every port opens what the destinations must refuse", whole_service_range, "should be denied but is allowed")
 for line in results:
     print(line)
 NPMUTPY
@@ -1799,6 +1884,24 @@ NPMUTPY
       *) bad "mutation cases: $line" ;;
     esac
   done < "$npm/results.out"
+
+  # The charts render the Service range into every egress rule, and refuse to render without it.
+  svc_render() {
+    helm template orders deploy/helm/service --namespace shop -f deploy/helm/values/images.yaml -f deploy/helm/values/orders.yaml \
+      -f deploy/helm/values/orders-data.yaml "$@"
+  }
+  if svc_render > "$npm/nocidr.out" 2>&1; then bad "the service chart rendered without the Service range"; else ok "the service chart refuses to render without the Service range"; fi
+  check "and says which value is missing" grep -q 'networkPolicy.serviceCidr must be set' "$npm/nocidr.out"
+  svc_render --set networkPolicy.serviceCidr=203.0.113.0/24 > "$npm/withcidr.out" 2> /dev/null || true
+  check "with the Service range every egress rule of orders has it (DNS, Collector, payments, PostgreSQL, Valkey, RabbitMQ)" test "$(grep -c 'cidr: 203.0.113.0/24' "$npm/withcidr.out")" = 6
+  svc_render --set networkPolicy.matchServiceAddresses=false > "$npm/nomatch.out" 2> /dev/null || true
+  check "and without matching Service addresses the chart needs no range and renders none" test "$(grep -c 'kind: NetworkPolicy' "$npm/nomatch.out")" -gt 0 -a "$(grep -c 'ipBlock' "$npm/nomatch.out")" = 0
+  if helm template check platform/data/network-policies > "$npm/data-nocidr.out" 2>&1; then bad "the data policies rendered without the Service range"; else ok "the data policy chart refuses to render without the Service range"; fi
+  check "and says which value is missing (data)" grep -q 'serviceCidr must be set' "$npm/data-nocidr.out"
+  if helm template check platform/observability/network-policies --set vpcCidr=192.0.2.0/24 > "$npm/obs-nocidr.out" 2>&1; then bad "the observability policies rendered without the Service range"; else ok "the observability policy chart refuses to render without the Service range"; fi
+  check "and says which value is missing (observability)" grep -q 'serviceCidr must be set' "$npm/obs-nocidr.out"
+  if helm template check platform/observability/network-policies --set serviceCidr=203.0.113.0/24 > "$npm/obs-novpc.out" 2>&1; then bad "the observability policies rendered without the VPC range"; else ok "and without the VPC range, which Prometheus needs for the kubelets and the API server addresses"; fi
+  check "the data policies keep the API rule on the Service range, not the VPC range" grep -q 'cidr: 203.0.113.0/24' "$npm/data.yaml"
 fi
 
 echo

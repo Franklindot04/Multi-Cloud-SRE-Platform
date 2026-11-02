@@ -64,7 +64,8 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `region` | load balancer controller, external-dns, Route 53 issuer region |
 | `account-id` | recorded for reference and verified by the bootstrap script |
 | `vpc-id` | load balancer controller VPC |
-| `vpc-cidr` | address range of the VPC, for the network policies of the `data` and `observability` namespaces (API server and kubelet access) |
+| `vpc-cidr` | address range of the VPC, for the network policies of the `observability` namespace (the kubelets and the API server endpoints Prometheus scrapes) |
+| `service-cidr` | address range of the cluster's Services, for the network policies of all three namespaces (the VPC CNI matches egress against Service addresses) |
 | `lbc-role-arn`, `external-dns-role-arn`, `cert-manager-role-arn` | IRSA role annotations on the service accounts (AWS) |
 | `external-dns-sa-email`, `cert-manager-sa-email` | Workload Identity annotations (GCP) |
 | `project-id` | external-dns and Cloud DNS issuer project (GCP) |

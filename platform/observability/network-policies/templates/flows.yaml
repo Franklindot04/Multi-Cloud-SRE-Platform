@@ -21,6 +21,10 @@ spec:
         - podSelector:
             matchLabels:
               {{- toYaml $to | nindent 14 }}
+        {{- if $flow.service }}
+        - ipBlock:
+            cidr: {{ include "np.serviceCidr" $ }}
+        {{- end }}
       ports:
         {{- range $port := $flow.ports }}
         - protocol: TCP

@@ -13,6 +13,11 @@ output "cluster_endpoint" {
   value       = aws_eks_cluster.this.endpoint
 }
 
+output "service_cidr_block" {
+  description = "Address range of the cluster's Services (the ClusterIPs). The VPC CNI network policy agent matches egress rules against these addresses, so the network policies need it."
+  value       = one(aws_eks_cluster.this.kubernetes_network_config[*].service_ipv4_cidr)
+}
+
 output "cluster_certificate_authority_data" {
   description = "Base64-encoded certificate authority data of the cluster."
   value       = aws_eks_cluster.this.certificate_authority[0].data

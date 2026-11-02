@@ -11,7 +11,7 @@
 #      NetworkPolicy semantics (scripts/network-policy-flows.py): every connection the services and the platform need is
 #      allowed, and the connections that must stay closed are denied, for the data and the memory profile of the services.
 #      This proves the policies mean what we intend; whether the VPC CNI policy agent behaves the same is for a cluster
-#   4. the policy charts refuse to render without the VPC range, which Argo CD supplies from the cluster
+#   4. the policy charts refuse to render without the address ranges, which Argo CD supplies from the cluster
 #
 # Helm and the vendored chart tarballs are needed (they are fetched from the lock files, as in scripts/observability-check.sh).
 # Nothing is installed in a cluster.
@@ -58,9 +58,11 @@ done
 
 echo "==> policies of each namespace"
 values=deploy/helm/values
+# The Service range that Argo CD supplies from the cluster secret, as the policy charts' ci fixtures have it (a documentation range).
+service_cidr=203.0.113.0/24
 for svc in gateway orders payments notifier; do
   helm template "$svc" deploy/helm/service --namespace shop -f "$values/images.yaml" -f "$values/$svc.yaml" -f "$values/$svc-data.yaml" \
-    > "$work/shop-$svc.yaml" || status=1
+    --set networkPolicy.serviceCidr="$service_cidr" > "$work/shop-$svc.yaml" || status=1
   "$py" "$check" network-policies "shop/$svc" < "$work/shop-$svc.yaml" || status=1
 done
 cidr_args=(-f platform/data/network-policies/ci/aws-params.yaml)
@@ -96,7 +98,7 @@ helm template data-cnpg-operator "$data/cloudnative-pg" --namespace cnpg-system 
 echo "==> flows"
 for svc in gateway orders payments notifier; do
   helm template "$svc" deploy/helm/service --namespace shop -f "$values/images.yaml" -f "$values/$svc.yaml" -f "$values/$svc-memory.yaml" \
-    > "$work/shop-memory-$svc.yaml" || status=1
+    --set networkPolicy.serviceCidr="$service_cidr" > "$work/shop-memory-$svc.yaml" || status=1
 done
 flows="scripts/tests/fixtures/network-policies/flows.yaml"
 others=("data:$work/data-policies.yaml" "observability:$work/observability-policies.yaml" "observability:$work/stack.yaml"
@@ -111,13 +113,27 @@ cp "$data/rabbitmq-operator/cluster-operator.yml" "$work/rabbitmq-operator.yaml"
   "shop:$work/shop-memory-gateway.yaml" "shop:$work/shop-memory-orders.yaml" "shop:$work/shop-memory-payments.yaml" "shop:$work/shop-memory-notifier.yaml" \
   "${others[@]}" || status=1
 
-echo "==> the policy charts need the VPC range"
+echo "==> the policy charts need the address ranges"
+# The Service range is required by every policy chart (a deny must not land without the rule for DNS and the API), and the
+# observability chart also needs the VPC range (the kubelets and the API server addresses Prometheus reaches by address).
 for chart in platform/data/network-policies platform/observability/network-policies; do
   if helm template check "$chart" > /dev/null 2>&1; then
-    echo "    FAIL $chart rendered without vpcCidr"
+    echo "    FAIL $chart rendered without its address ranges"
     status=1
   fi
 done
+if helm template check platform/data/network-policies --set vpcCidr=192.0.2.0/24 > /dev/null 2>&1; then
+  echo "    FAIL platform/data/network-policies rendered without serviceCidr"
+  status=1
+fi
+if helm template check platform/observability/network-policies --set serviceCidr="$service_cidr" > /dev/null 2>&1; then
+  echo "    FAIL platform/observability/network-policies rendered without vpcCidr"
+  status=1
+fi
+if helm template check platform/observability/network-policies --set vpcCidr=192.0.2.0/24 > /dev/null 2>&1; then
+  echo "    FAIL platform/observability/network-policies rendered without serviceCidr"
+  status=1
+fi
 
 echo "==> the policy charts can be switched off"
 for chart in platform/data/network-policies platform/observability/network-policies; do

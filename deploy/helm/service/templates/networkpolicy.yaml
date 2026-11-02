@@ -6,11 +6,18 @@ Deployment (wave 0), so a deny never lands without the allows that go with it.
 Nothing here lets traffic in from outside the cluster. kubectl port-forward does not use the pod network (the stream
 goes through the API server and the kubelet into the pod), and neither do the kubelet's probes, so neither needs a rule.
 Pods in this chart never call the Kubernetes API.
+
+Egress to a Service: the network policy agent of the VPC CNI matches egress against the ClusterIP the pod connects to, not
+against the pod behind it. Every egress rule therefore has two peers, the pods (for traffic that goes to a pod address) and
+the Service address range, both on the same port. The destination's ingress policy, matched against the pod, still decides
+who may connect.
 */ -}}
 {{- if .Values.networkPolicy.enabled }}
 {{- $np := .Values.networkPolicy -}}
 {{- $name := include "service.name" . -}}
 {{- $port := int .Values.port -}}
+{{- $serviceCidr := "" -}}
+{{- if $np.matchServiceAddresses }}{{ $serviceCidr = required "networkPolicy.serviceCidr must be set: Argo CD passes it from the cluster annotation platform.example/service-cidr" $np.serviceCidr }}{{ end -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -50,6 +57,10 @@ spec:
           podSelector:
             matchLabels:
               {{- toYaml $np.dns.podLabels | nindent 14 }}
+        {{- if $np.matchServiceAddresses }}
+        - ipBlock:
+            cidr: {{ $serviceCidr }}
+        {{- end }}
       ports:
         - protocol: UDP
           port: 53
@@ -105,6 +116,10 @@ spec:
           podSelector:
             matchLabels:
               {{- toYaml $np.collectorTarget.podLabels | nindent 14 }}
+        {{- if $np.matchServiceAddresses }}
+        - ipBlock:
+            cidr: {{ $serviceCidr }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ $np.collectorTarget.port }}
@@ -157,6 +172,10 @@ spec:
             matchLabels:
               app.kubernetes.io/name: {{ $target }}
               app.kubernetes.io/part-of: sre-sample
+        {{- if $np.matchServiceAddresses }}
+        - ipBlock:
+            cidr: {{ $serviceCidr }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ required (printf "networkPolicy.services has no port for %s" $target) (get $np.services $target) }}
@@ -186,6 +205,10 @@ spec:
           podSelector:
             matchLabels:
               {{- toYaml $dest.podLabels | nindent 14 }}
+        {{- if $np.matchServiceAddresses }}
+        - ipBlock:
+            cidr: {{ $serviceCidr }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ $dest.port }}

@@ -37,6 +37,11 @@ spec:
             - ../values/images.yaml
             - ../values/orders.yaml
             - '../values/orders-{{ default "memory" (index .metadata.labels "platform.example/apps-profile") }}.yaml'
+          parameters:
+            # The address range of the cluster's Services, for the egress rules of the network policies.
+            - name: networkPolicy.serviceCidr
+              value: '{{ index .metadata.annotations "platform.example/service-cidr" }}'
+              forceString: true
       destination:
         server: '{{ .server }}'
         namespace: shop

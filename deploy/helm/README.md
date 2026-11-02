@@ -40,6 +40,8 @@ The release name is the service name: the chart names the Service, Deployment an
 
 Each release renders network policies for its own pods (the Deployment and the migration Job), on by default (`networkPolicy.enabled`). They are enforced where the cluster's network plugin enforces them: the VPC CNI on EKS with `enable_network_policy` (see the [AWS EKS runbook](../../docs/runbooks/aws-eks.md#network-policy-enforcement)) and Dataplane V2 on GKE. Without enforcement they have no effect. The allow rules have sync wave -2, the default deny -1 and the Deployment 0, so a deny never lands before its allows. The policies are per service, not per namespace, because the four releases share the namespace and a namespace-wide object would be owned by four Applications. A pod in `shop` that this chart does not create is not covered.
 
+**Status.** The first version of these policies ran on a real cluster on 2026-11-02. It could not use a Service from a pod selector, because the policy agent of the VPC CNI matches egress against the Service address. This version, which adds the Service range to every egress rule, has not been applied to a cluster yet (see [ADR-0024](../../docs/adr/0024-network-policies.md#what-has-been-exercised)).
+
 | Service | Ingress from | Egress to |
 | --- | --- | --- |
 | gateway | nobody (see below) | orders 8081, payments 8082 |
@@ -47,6 +49,8 @@ Each release renders network policies for its own pods (the Deployment and the m
 | payments | gateway, orders | data profile: PostgreSQL 5432 |
 | notifier | memory profile: orders | data profile: RabbitMQ 5672 |
 | every service | Prometheus on the service port | DNS (`kube-dns`, UDP and TCP 53) and the OpenTelemetry Collector (4317) |
+
+Every egress rule has a second peer, the Service range, on the same port, because a connection to a Service goes to its ClusterIP and the agent matches that address, not the pod behind it. The pod peer stays for connections that go straight to a pod address. The destination's ingress rule, matched against the pod, still says who may connect. The range is `networkPolicy.serviceCidr`: Argo CD passes it to each service from the cluster annotation `platform.example/service-cidr` (written by `scripts/bootstrap-argocd.sh` from the Terraform output `service_cidr_block`; `172.20.0.0/16` is the EKS default, as an example), it is not committed, and the chart refuses to render without it. `networkPolicy.matchServiceAddresses: false` leaves these peers out and needs no range, for a network plugin that matches after the address is translated (GKE Dataplane V2 is expected to be one; that has not been tried).
 
 The gateway calls the payments service too (`GET /payments/{id}` and its readiness check), so it has both destinations. The notifier makes no outgoing connection other than RabbitMQ and the Collector. **Nothing outside the cluster is allowed in.** `kubectl port-forward` does not use the pod network (the stream goes through the API server and the kubelet into the pod's own network namespace), and the kubelet's probes are not blocked by policy, so neither needs a rule. When the ingress is enabled the load balancer sends traffic straight to the pod IPs from the VPC, so `networkPolicy.ingressCidrs` must list its source range (the chart refuses to render without it), for example with a Helm parameter in the gateway's ApplicationSet or in your own values file (nothing is committed for it, and it is off until the ingress is). The services never call the Kubernetes API (no token is mounted), so they need no rule for it.
 

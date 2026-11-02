@@ -33,6 +33,9 @@ spec:
   egress:
     - to:
         {{- include "np.peer" (dict "namespace" .Values.dns.namespace "labels" .Values.dns.podLabels) | nindent 8 }}
+        # The cluster DNS is a Service: the agent sees its ClusterIP.
+        - ipBlock:
+            cidr: {{ include "np.serviceCidr" . }}
       ports:
         - protocol: UDP
           port: 53
@@ -48,8 +51,9 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 spec:
-  # The API server of EKS is a set of network interfaces in the VPC subnets that a pod selector cannot name. The narrowest
-  # rule that works is TCP 443 to the VPC range, given only to the pods that call the API, not to the namespace.
+  # The API server is reached through the Service "kubernetes", and the agent matches egress against that ClusterIP, not
+  # against the network interfaces behind it. The rule is TCP 443 to the Service range, given only to the pods that call the
+  # API, not to the namespace.
   podSelector:
     matchLabels:
       {{- toYaml $target.matchLabels | nindent 6 }}
@@ -58,7 +62,7 @@ spec:
   egress:
     - to:
         - ipBlock:
-            cidr: {{ include "np.vpcCidr" $ }}
+            cidr: {{ include "np.serviceCidr" $ }}
       ports:
         - protocol: TCP
           port: 443

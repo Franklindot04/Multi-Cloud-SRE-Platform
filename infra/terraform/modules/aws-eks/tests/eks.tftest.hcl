@@ -97,6 +97,17 @@ run "defaults" {
   }
 }
 
+run "service_cidr_is_an_output" {
+  command = plan
+
+  # The mocked provider does not fill the cluster's network configuration, so the value itself cannot be asserted here;
+  # the output must exist and be read from kubernetes_network_config.
+  assert {
+    condition     = can(output.service_cidr_block)
+    error_message = "The Service address range of the cluster must be an output, for the network policies."
+  }
+}
+
 run "network_policy_enabled_by_default" {
   command = plan
 

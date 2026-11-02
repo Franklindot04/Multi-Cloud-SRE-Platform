@@ -21,6 +21,6 @@
 {{- end }}
 {{- end -}}
 
-{{- define "np.vpcCidr" -}}
-{{- required "vpcCidr must be set: Argo CD passes it from the cluster annotation platform.example/vpc-cidr" .Values.vpcCidr -}}
+{{- define "np.serviceCidr" -}}
+{{- required "serviceCidr must be set: Argo CD passes it from the cluster annotation platform.example/service-cidr" .Values.serviceCidr -}}
 {{- end -}}
