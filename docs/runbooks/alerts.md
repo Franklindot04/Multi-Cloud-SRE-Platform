@@ -75,7 +75,7 @@ Which status? In Prometheus: `sum by (status) (rate(http_requests_total{service=
 
 **Likely causes on this platform.**
 
-- A Spot node was replaced and a single-instance PostgreSQL is down until its pod runs somewhere else. Orders is not ready; the gateway returns 502. Check `kubectl --context <CTX> -n data get cluster.postgresql.cnpg.io platform-pg` and `kubectl --context <CTX> -n data get pods`.
+- A Spot node was replaced and PostgreSQL is down until its pod runs somewhere else (with the second instance, until the replica is promoted; not yet seen on a cluster). Orders is not ready; the gateway returns 502. Check `kubectl --context <CTX> -n data get cluster.postgresql.cnpg.io platform-pg` and `kubectl --context <CTX> -n data get pods`.
 - The orders or payments pods were restarted or are `Pending` after a node loss: `kubectl --context <CTX> -n shop get pods`.
 - A bad rollout. `kubectl --context <CTX> -n argocd get applications | grep apps-` and the revision of the last sync.
 - RabbitMQ unreachable (notifier): see [notifier-broker-disconnected](#notifier-broker-disconnected).
@@ -127,7 +127,7 @@ Which status? In Prometheus: `sum by (status) (rate(http_requests_total{service=
 
 **Confirm it.** `slo:sli_error:ratio_rate3d{slo="<slo>"}` and `ratio_rate6h` above the error budget `slo:error_budget:ratio{slo="<slo>"}`. On the dashboard, `Error budget remaining` is dropping.
 
-**Likely causes on this platform.** The target may be too tight for what the platform does: single-instance PostgreSQL and Spot nodes mean a few minutes of failures after every node replacement. Otherwise a low-grade bug or a dependency timing out now and then.
+**Likely causes on this platform.** The target may be too tight for what the platform does: PostgreSQL with one primary and Spot nodes mean a few minutes of failures after a node replacement (the replica is meant to shorten that; not yet seen on a cluster). Otherwise a low-grade bug or a dependency timing out now and then.
 
 **Do first.** Look at the SLI over time: are there a few clear spikes (node replacements, rollouts) or a constant trickle? Spikes: decide if the cost is acceptable and, if so, change the objective in a reviewed change rather than silencing the alert. Trickle: find it in the logs by route and status.
 
@@ -205,6 +205,105 @@ Lines `outbox publish failed, will retry` with `retry_in_s` say the relay is bac
 **Escalate** if the lag keeps growing after the broker is healthy.
 
 **Recovered when.** `outbox_oldest_unpublished_age_seconds` drops to 0, `outbox_unpublished_events` falls, and the alert clears after the next evaluation.
+
+## Alerts for scaling and capacity
+
+These four are tickets: nothing is failing for users yet, but the platform is closer to a limit, or less able to survive a node loss, than it should be. They are defined in [`scaling-rules.yaml`](../../platform/observability/monitors/templates/scaling-rules.yaml) and tested in [`scaling-rules.test.yaml`](../../platform/observability/monitors/tests/scaling-rules.test.yaml). The numbers in the service chart are in the [chart README](../../deploy/helm/README.md#replicas-budgets-and-autoscaling).
+
+### hpa-at-max-replicas
+
+**What it means.** An autoscaler in `shop` (the gateway or orders) has wanted its maximum number of replicas for 15 minutes (`kube_horizontalpodautoscaler_status_desired_replicas` is at `kube_horizontalpodautoscaler_spec_max_replicas`). The label `horizontalpodautoscaler` says which. The maximum is 4 in the data profile.
+
+**User impact.** None yet if latency is fine. The service cannot add pods, so more load means slower or failing requests, and the SLO alerts will follow.
+
+**Confirm it.**
+
+```bash
+kubectl --context <CTX> -n shop get hpa
+kubectl --context <CTX> -n shop describe hpa <name>
+kubectl --context <CTX> -n shop top pods
+```
+
+`describe` shows the current and target CPU utilisation, the events and whether the autoscaler is able to scale (`AbleToScale`, `ScalingActive`). The **Sample services** dashboard shows the request rate. The utilisation is measured against the CPU request (20m for the gateway, 50m for orders), so a small absolute load already counts.
+
+**Likely causes on this platform.** A real increase in traffic; a retry storm or a loop upstream (look at the request rate of the caller); a slow dependency that keeps requests open longer (PostgreSQL, payments); a request that is too low for the work the pod does, which makes the utilisation high at a low load.
+
+**Do first.** Decide whether the load is real. If it is and the cluster has room (the **Cluster capacity** dashboard), raise `autoscaling.maxReplicas` in `deploy/helm/values/<service>-data.yaml` through a pull request. If it is a fault upstream, fix that. If pods are Pending, see [pods-pending](#pods-pending): the autoscaler may want more than it gets.
+
+**Escalate** if the SLO alerts for the service are also firing.
+
+**Recovered when.** The desired replicas fall below the maximum. The autoscaler waits five minutes before it scales down.
+
+### pod-disruption-budget-blocked
+
+**What it means.** A disruption budget in `shop` has allowed no disruption for 30 minutes (`kube_poddisruptionbudget_status_pod_disruptions_allowed` is 0). A service has a budget only when it runs more than one replica, and with all its pods healthy the budget allows one (`maxUnavailable: 1`). Zero means a pod is already unavailable.
+
+**User impact.** The service runs on fewer pods than it should. The next voluntary disruption (a node drain, a Spot replacement, a rolling update of the nodes) is refused or, if it is not, takes the service down.
+
+**Confirm it.**
+
+```bash
+kubectl --context <CTX> -n shop get pdb
+kubectl --context <CTX> -n shop get pods -o wide
+kubectl --context <CTX> -n shop describe pod <pod that is not ready>
+```
+
+**Likely causes on this platform.** A pod is not ready (a failing readiness probe, a crash loop, a dependency that is down: the orders pod is not ready without PostgreSQL); a pod is Pending (see [pods-pending](#pods-pending)); the autoscaler is scaling down or up and the new pods have not started.
+
+**Do first.** Find the pod that is not ready and fix that. Do not delete the budget to make a drain pass: it is the budget doing its job. It is not rendered for a service on a single replica (the notifier, and the others in the memory profile), so an alert for one of those is a sign that the chart has been changed.
+
+**Escalate** if a node drain is waiting on it.
+
+**Recovered when.** All pods of the service are ready and the budget allows one disruption again.
+
+### pods-pending
+
+**What it means.** A pod in `shop` or `data` has been in the phase `Pending` for 10 minutes (`kube_pod_status_phase`). The label `pod` says which. The scheduler has not placed it, or its image has not been pulled.
+
+**User impact.** Depends on the pod. A scale-out that does not happen, a PostgreSQL replica that is missing (then also [postgres-instances-not-ready](#postgres-instances-not-ready)), a Job that blocks a sync.
+
+**Confirm it.**
+
+```bash
+kubectl --context <CTX> -n <namespace> describe pod <pod>
+kubectl --context <CTX> get nodes
+kubectl --context <CTX> describe nodes | grep -A8 'Allocated resources'
+```
+
+The events at the end of `describe pod` say why: `Insufficient cpu` or `Insufficient memory`, `node(s) had volume node affinity conflict` (the volume of a PostgreSQL instance is in another zone), `didn't match pod anti-affinity rules` (only with the required type used by the high availability profile), `ImagePullBackOff` or `ErrImagePull` (the image or its pull secret).
+
+**Likely causes on this platform.** The cluster is full: three small Spot nodes hold the data layer, the observability stack, Kyverno and the services. A Spot node was reclaimed and its pods wait for room. The pod has a higher priority than others and cannot preempt them, or it can: pods in `shop` rank below the data layer and above the observability stack, so a Pending service pod can push out observability pods but never the database.
+
+**Do first.** For a capacity cause, look at the **Cluster capacity** dashboard and either wait for the replacement node or lower what is requested (a smaller maximum for an autoscaler). For a volume in another zone, the instance has to start in the zone of its volume; if that zone has no node, add one there. For an image, check the tag and digest in `deploy/helm/values/images.yaml` against the registry.
+
+**Escalate** if a database pod is Pending for more than 30 minutes.
+
+**Recovered when.** The pod is Running.
+
+### postgres-instances-not-ready
+
+**What it means.** Fewer PostgreSQL pods are ready than the cluster has volumes for, for 10 minutes. The standard profile runs two instances (`platform-pg-1` and `platform-pg-2`: a primary and an asynchronous replica); a cluster of one instance is down when its pod is not ready. CloudNativePG exports no metric for the number of instances the Cluster asks for, so the rule counts ready pods (`kube_pod_status_ready`) against the volume claims named like the pods (`kube_persistentvolumeclaim_info`): a claim stays when its pod is gone.
+
+**User impact.** With one of two instances down there is no replica to fail over to. If the primary is the one that is down, writes stop until it or the replica is back: orders cannot be created, and the gateway returns errors (see [service-target-down](#service-target-down) and the SLO alerts). With both down the database is down.
+
+**Confirm it.**
+
+```bash
+kubectl --context <CTX> -n data get cluster.postgresql.cnpg.io platform-pg
+kubectl --context <CTX> -n data get pods -l cnpg.io/cluster=platform-pg -o wide
+kubectl --context <CTX> -n data describe pod <pod that is not ready>
+kubectl --context <CTX> -n data logs <pod> -c postgres --tail=50
+```
+
+The Cluster status shows the primary, the ready instances and the phase (for example `Failing over`, `Switchover in progress`, `Waiting for the instances to become active`). The **Data layer** dashboard shows the PostgreSQL metrics.
+
+**Likely causes on this platform.** A Spot node was reclaimed and the pod, or its volume, waits for another node (see [pods-pending](#pods-pending)); a rolling update or a switchover that is slow; the replica is rebuilding after a failover (the operator clones it from the primary, which takes longer with more data); the two instances were on the same node and both went with it (the dev profile prefers separate nodes and does not require them).
+
+**Do first.** Let the operator work: it restores the replica by itself and promotes it if the primary is gone. Watch the Cluster status. If a pod is Pending, fix the cause there. Do not delete volume claims to make a pod start: a claim is the instance's data. Replication is asynchronous, so after a failover the new primary can be missing the last transactions of the old one; if that matters, tell the owners of the services before they write again.
+
+**Escalate** if the database has no primary for 15 minutes, or if the status says the cluster cannot recover a replica.
+
+**Recovered when.** `kubectl -n data get cluster.postgresql.cnpg.io platform-pg` shows `Cluster in healthy state` with all instances ready.
 
 ## After an incident
 

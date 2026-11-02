@@ -55,6 +55,8 @@ The `platform/clouds` annotation in each `Chart.yaml` lists the clouds an add-on
 | --- | --- | --- |
 | aws-load-balancer-controller, metrics-server | `kube-system` | `system-cluster-critical` |
 | cert-manager, external-dns | `cert-manager`, `external-dns` | `platform-addons-critical` |
+| Kyverno, the data layer (PostgreSQL, RabbitMQ, Valkey, CloudNativePG) | `kyverno`, `data`, `cnpg-system` | `platform-addons-critical` |
+| the observability stack | `observability` | `platform-observability` |
 
 The built-in `system-*` classes are reserved for `kube-system`, so add-ons in their own namespaces use `platform-addons-critical`, defined by [priority-classes](priority-classes).
 

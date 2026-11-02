@@ -1,7 +1,14 @@
 ---
 # Data profile: PostgreSQL, Valkey and RabbitMQ in the data namespace. The Secrets are the ones created by
 # platform/data (orders-db and cache-auth by the secrets chart, rabbitmq-auth by the rabbitmq-credentials chart).
-replicas: 2
+# Safe with several replicas: the outbox relay claims its batch with FOR UPDATE SKIP LOCKED, so two replicas never publish the same
+# row at the same time (apps/orders/tests/integration/test_live.py, test_two_relays_never_publish_the_same_event); an order moves from
+# pending only with UPDATE ... WHERE status = 'pending', and a request is replayed by its Idempotency-Key, which PostgreSQL enforces
+# with a unique key. Delivery is at least once and not ordered across replicas, and the notifier does not depend on the order.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
 env:
   STORAGE: postgres
   CACHE: valkey

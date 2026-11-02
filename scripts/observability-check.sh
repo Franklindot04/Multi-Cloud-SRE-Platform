@@ -25,6 +25,7 @@
 #          logs only through the Kubernetes API from the shop and data namespaces, turns no log field into a label and
 #          cannot read Secrets; both meet the restricted level, render no claim, hostPath volume or Ingress by default,
 #          and values-persistent.yaml of Loki really switches its volume on
+#        - every pod of the stack, its operator and its hook Job use the class platform-observability, which ranks below the services
 #        - Tempo is single tenant with local storage, at most 72h of retention and only the OTLP receivers, with no
 #          metrics generator; it meets the restricted level, renders no claim by default, and its values-persistent.yaml
 #          really switches its volume on
@@ -241,6 +242,7 @@ else
   contract project-fit "otel-collector" "$work/collector.yaml" "$project" "$namespace"
 
   contract project-fit "observability-monitors" "$work/monitors.yaml" "$project" "$namespace"
+  contract scaling-rules "observability-monitors" "$work/monitors.yaml" docs/runbooks/alerts.md
   contract project-fit "observability-network-policies" "$work/network-policies.yaml" "$project" "$namespace"
   contract network-policies "observability-network-policies" "$work/network-policies.yaml"
   contract hooks "observability-network-policies" "$work/network-policies.yaml"
@@ -273,6 +275,18 @@ else
   contracts=$((contracts + 1))
   for check in restricted ephemeral alloy; do contract "$check" "alloy" "$work/alloy.yaml"; done
   contract project-fit "alloy" "$work/alloy.yaml" "$project" "$namespace"
+
+  # Every pod of the stack ranks below the services (platform-apps) with the class platform-observability: the services scale out
+  # without waiting for the stack, and the stack is what goes when a node is short of room.
+  contract priority "kube-prometheus-stack" "$work/stack.yaml" platform-observability
+  contract priority "kube-prometheus-stack + values-persistent.yaml" "$work/stack-persistent.yaml" platform-observability
+  contract priority "observability-secrets" "$work/secrets.yaml" platform-observability
+  contract priority "otel-collector" "$work/collector.yaml" platform-observability
+  contract priority "loki" "$work/loki.yaml" platform-observability
+  contract priority "loki + values-persistent.yaml" "$work/loki-persistent.yaml" platform-observability
+  contract priority "alloy" "$work/alloy.yaml" platform-observability
+  contract priority "tempo" "$work/tempo.yaml" platform-observability
+  contract priority "tempo + values-persistent.yaml" "$work/tempo-persistent.yaml" platform-observability
 
   render observability-dashboards "$root/dashboards" > "$work/dashboards.yaml" || status=1
   contract project-fit "observability-dashboards" "$work/dashboards.yaml" "$project" "$namespace"
@@ -466,6 +480,32 @@ for d in yaml.safe_load_all(sys.stdin):
       echo "    the SLO unit tests pass (promtool $(docker run --rm --entrypoint /bin/promtool "$prom_image" --version 2> /dev/null | sed -n 's/^promtool, version \([^ ]*\).*/\1/p'))"
     else
       echo "    FAIL the SLO unit tests"
+      cat "$work/promtool-test.out"
+      status=1
+    fi
+  fi
+  # The scaling rules (autoscalers, disruption budgets, pending pods, PostgreSQL instances): the same, for the PrometheusRule "scaling".
+  if [ -n "$prom_image" ]; then
+    mkdir -p "$work/scaling"
+    "$contract_py" -c 'import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d.get("kind") == "PrometheusRule" and d["metadata"]["name"] == "scaling":
+        yaml.safe_dump({"groups": d["spec"]["groups"]}, sys.stdout, sort_keys=False, width=250)' < "$work/monitors.yaml" > "$work/scaling/scaling-rules.yaml"
+    cp "$root/monitors/tests/scaling-rules.test.yaml" "$work/scaling/"
+    promtool="docker run --rm --entrypoint /bin/promtool -v $work/scaling:/scaling -w /scaling $prom_image"
+    # shellcheck disable=SC2086 # the command is a fixed word list
+    if $promtool check rules --lint-fatal scaling-rules.yaml > "$work/promtool-check.out" 2>&1; then
+      echo "    promtool check rules: $(sed -n 's/^ *SUCCESS: *//p' "$work/promtool-check.out" | head -1) in the scaling rules"
+    else
+      echo "    FAIL promtool check rules on the scaling rules"
+      cat "$work/promtool-check.out"
+      status=1
+    fi
+    # shellcheck disable=SC2086
+    if $promtool test rules scaling-rules.test.yaml > "$work/promtool-test.out" 2>&1; then
+      echo "    the scaling unit tests pass"
+    else
+      echo "    FAIL the scaling unit tests"
       cat "$work/promtool-test.out"
       status=1
     fi

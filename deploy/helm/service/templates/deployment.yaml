@@ -1,4 +1,5 @@
 {{- $name := include "service.name" . -}}
+{{- include "service.validateScaling" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,7 +7,10 @@ metadata:
   labels:
     {{- include "service.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicas }}
+  {{- /* With an autoscaler the field is left out, so the autoscaler's count is not reset by a sync. */}}
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ default 1 .Values.replicas }}
+  {{- end }}
   revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate
@@ -50,10 +54,13 @@ spec:
         {{- range $key := list "kubernetes.io/hostname" "topology.kubernetes.io/zone" }}
         - maxSkew: {{ $.Values.topologySpread.maxSkew }}
           topologyKey: {{ $key }}
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: {{ $.Values.topologySpread.whenUnsatisfiable }}
           labelSelector:
             matchLabels:
               {{- include "service.selectorLabels" $ | nindent 14 }}
+          # Pods of the old and the new ReplicaSet of a rollout are spread on their own.
+          matchLabelKeys:
+            - pod-template-hash
         {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}

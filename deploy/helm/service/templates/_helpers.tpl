@@ -30,6 +30,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- add .Values.shutdown.preStopSeconds .Values.shutdown.drainSeconds .Values.shutdown.timeoutSeconds .Values.shutdown.bufferSeconds -}}
 {{- end -}}
 
+{{- /* The replicas the service starts with: the autoscaler's minimum, or the fixed count. The budget is rendered when it is above one. */ -}}
+{{- define "service.minReplicas" -}}
+{{- if .Values.autoscaling.enabled -}}{{ .Values.autoscaling.minReplicas }}{{- else -}}{{ default 1 .Values.replicas }}{{- end -}}
+{{- end -}}
+
+{{- /* Refuses values that would make the autoscaler and the Deployment fight, or that do not mean what they say. */ -}}
+{{- define "service.validateScaling" -}}
+{{- if and .Values.autoscaling.enabled (not (kindIs "invalid" .Values.replicas)) -}}
+{{- fail "replicas must not be set when autoscaling.enabled is true: the autoscaler owns the replica count, and a value in the Deployment would be reset on every sync" -}}
+{{- end -}}
+{{- if and .Values.autoscaling.enabled (lt (int .Values.autoscaling.maxReplicas) (int .Values.autoscaling.minReplicas)) -}}
+{{- fail "autoscaling.maxReplicas must not be lower than autoscaling.minReplicas" -}}
+{{- end -}}
+{{- if and .Values.autoscaling.enabled (lt (int .Values.autoscaling.minReplicas) 1) -}}
+{{- fail "autoscaling.minReplicas must be at least 1" -}}
+{{- end -}}
+{{- if not (has .Values.topologySpread.whenUnsatisfiable (list "ScheduleAnyway" "DoNotSchedule")) -}}
+{{- fail "topologySpread.whenUnsatisfiable must be ScheduleAnyway or DoNotSchedule" -}}
+{{- end -}}
+{{- end -}}
+
 {{- /* Pod-level security context, restricted Pod Security level. */ -}}
 {{- define "service.podSecurityContext" -}}
 runAsNonRoot: true

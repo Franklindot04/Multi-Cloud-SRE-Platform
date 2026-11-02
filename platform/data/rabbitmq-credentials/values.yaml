@@ -3,6 +3,9 @@
 # RabbitMQ broker (sync wave 8) and can only read that one source Secret and write that one target Secret.
 image: curlimages/curl:8.23.0
 
+# The Job gates the services, so it ranks with the data layer, above them.
+priorityClassName: platform-addons-critical
+
 dataNamespace: data
 appNamespace: shop
 

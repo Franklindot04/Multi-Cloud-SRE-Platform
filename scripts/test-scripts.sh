@@ -180,6 +180,10 @@ check "the Cluster is deleted before the RabbitmqCluster" test "$(line_of 'delet
 check "the surviving StatefulSet is deleted after the RabbitmqCluster" test "$(line_of 'delete rabbitmqcluster')" -lt "$(line_of 'delete statefulset')"
 check "claims are deleted after the StatefulSet" test "$(line_of 'delete statefulset')" -lt "$(line_of 'delete persistentvolumeclaim/platform-valkey')"
 check "platform-valkey is deleted" grep -q 'delete persistentvolumeclaim/platform-valkey' "$state/kubectl.log"
+check "the claim of each of the two PostgreSQL instances is deleted, by name" test "$(grep -c -e '-n data delete persistentvolumeclaim/platform-pg-[12] ' "$state/kubectl.log")" = 2
+check "three claims in all, one deletion each" test "$(grep -c -e '-n data delete persistentvolumeclaim/' "$state/kubectl.log")" = 3
+check "the output lists the claims of both instances" test "$(grep -c -e '  claim: persistentvolumeclaim/platform-pg-[12]$' "$work/tdout")" = 2
+check "the pods of both instances are waited for before the claims are deleted" test "$(line_of '-n data get pods')" -lt "$(line_of '-n data delete persistentvolumeclaim/platform-pg-1')"
 check "kubectl get pv is checked after the claims are deleted" test "$(line_of 'get pv')" -gt "$(line_of 'delete persistentvolumeclaim/platform-valkey')"
 check "the AWS checks run after kubectl get pv: volumes, load balancers, security groups" test "$(sed -n 's/^--region eu-north-1 \([a-z0-9]*\) \([a-z-]*\).*/\2/p' "$state/aws.log" | tr '\n' ' ')" = "describe-volumes get-resources describe-security-groups "
 check "the volume query uses the pvc name tag" grep -q 'Name=tag-key,Values=kubernetes.io/created-for/pvc/name' "$state/aws.log"
@@ -332,6 +336,19 @@ run_teardown --context test-cluster --region eu-north-1 --timeout 2
 check "a leftover EBS volume fails the run" test "$rc" -eq 1
 check "and the volume is named" grep -q 'vol-0123456789abcdef0' "$work/tdout"
 check "the security group check does not run after that" test "$(grep -c 'describe-security-groups' "$state/aws.log")" = 0
+
+new_cluster
+printf 'vol-0123456789abcdef0\nvol-0123456789abcdef1\n' > "$state/aws-volumes"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "two leftover volumes (one for each PostgreSQL instance) fail the run" test "$rc" -eq 1
+check "and both are named" test "$(grep -c -e 'vol-0123456789abcdef0' -e 'vol-0123456789abcdef1' "$work/tdout")" -ge 1 -a "$(grep -c 'vol-0123456789abcdef1' "$work/tdout")" -ge 1
+
+new_cluster
+touch "$state/stuck-pg2-claim"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "the claim of the replica that is not removed fails the run" test "$rc" -eq 1
+check "and the claim is named" grep -q 'persistentvolumeclaim/platform-pg-2' "$work/tdout"
+check "the AWS checks do not run after that" test ! -e "$state/aws.log"
 
 new_cluster
 printf 'arn:aws:elasticloadbalancing:eu-north-1:000000000000:loadbalancer/app/example/abc\n' > "$state/aws-load-balancers"
@@ -2324,6 +2341,314 @@ APPY
   check "a registry in images.yaml that is not the one of the policies is named" grep -q 'does not use the registry ghcr.io/other of' "$work/cout"
   contract "$ap/good-audit.yaml" policies t audit deploy/helm/values/images.yaml "$ap/verify-other-issuer.sh"
   check "an issuer in verify-image.sh that is not the one of the policy is named" grep -q 'must accept one identity: issuer https://accounts.example.test' "$work/cout"
+fi
+
+echo "chart-contract-check.py (replicas, budgets, spread and autoscaler)"
+
+if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
+  echo "  skip  needs helm and a Python with PyYAML"
+else
+  sc="$work/scaling"
+  rm -rf "$sc"
+  mkdir -p "$sc"
+  # sc_render SERVICE PROFILE [HELM ARGS]: the real chart with the real values files.
+  sc_render() {
+    local svc="$1" profile="$2"
+    shift 2
+    helm template "$svc" deploy/helm/service --namespace shop -f deploy/helm/values/images.yaml -f "deploy/helm/values/$svc.yaml" \
+      -f "deploy/helm/values/$svc-$profile.yaml" --set networkPolicy.serviceCidr=203.0.113.0/24 "$@"
+  }
+  for pair in gateway:memory gateway:data orders:memory orders:data payments:memory payments:data notifier:memory notifier:data; do
+    sc_render "${pair%%:*}" "${pair##*:}" > "$sc/${pair%%:*}-${pair##*:}.yaml" 2> /dev/null || true
+  done
+  contract "$sc/orders-data.yaml" scaling t hpa
+  check "orders in the data profile: an autoscaler, no replicas in the Deployment, a budget, the spread, the grace period" test "$rc" -eq 0
+  contract "$sc/gateway-data.yaml" scaling t hpa
+  check "and the gateway in the data profile" test "$rc" -eq 0
+  contract "$sc/gateway-memory.yaml" scaling t replicas=2
+  check "the gateway in the memory profile: two fixed replicas and a budget, no autoscaler" test "$rc" -eq 0
+  contract "$sc/payments-data.yaml" scaling t replicas=2
+  check "payments in the data profile: two fixed replicas and a budget" test "$rc" -eq 0
+  for pair in orders:memory payments:memory notifier:memory notifier:data; do
+    contract "$sc/${pair%%:*}-${pair##*:}.yaml" scaling t replicas=1
+    check "${pair%%:*} in the $(printf '%s' "${pair##*:}") profile: one replica, no budget, no autoscaler" test "$rc" -eq 0
+  done
+  check "a service on one replica renders no PodDisruptionBudget" test "$(cat "$sc/notifier-data.yaml" "$sc/orders-memory.yaml" "$sc/payments-memory.yaml" | grep -c 'kind: PodDisruptionBudget')" = 0
+  check "and the memory profile renders no autoscaler" test "$(cat "$sc"/*-memory.yaml | grep -c 'kind: HorizontalPodAutoscaler')" = 0
+  check "with an autoscaler the Deployment has no replicas field" test "$(grep -c '^  replicas:' "$sc/orders-data.yaml" "$sc/gateway-data.yaml" | grep -vc ':0$')" = 0
+
+  # What a service renders is compared with what it is allowed to do: the notifier keeps its state in memory.
+  contract "$sc/notifier-data.yaml" scaling t hpa
+  check "the notifier is not expected to scale (an autoscaler is expected and missing)" test "$rc" -eq 1
+  if sc_render notifier data --set autoscaling.enabled=true > /dev/null 2>&1; then bad "the notifier rendered an autoscaler next to its fixed replicas"; else ok "an autoscaler switched on for the notifier does not render while its values file fixes the replicas"; fi
+  sc_render notifier data --set autoscaling.enabled=true --set replicas=null > "$sc/notifier-hpa.yaml" 2> /dev/null || true
+  contract "$sc/notifier-hpa.yaml" scaling t replicas=1
+  check "and if both are changed, the check refuses an autoscaler for the notifier" test "$rc" -eq 1
+  check "and named" grep -q 'an autoscaler on a service that is fixed at 1 replica(s)' "$work/cout"
+  sc_render notifier data --set replicas=2 > "$sc/notifier-2.yaml" 2> /dev/null || true
+  contract "$sc/notifier-2.yaml" scaling t replicas=1
+  check "so is a second replica of the notifier" grep -q 'replicas is 2, expected 1' "$work/cout"
+  sc_render orders memory --set replicas=2 > "$sc/orders-memory-2.yaml" 2> /dev/null || true
+  contract "$sc/orders-memory-2.yaml" scaling t replicas=1
+  check "and a second replica of orders in the memory profile, which would see only half of the orders" grep -q 'replicas is 2, expected 1' "$work/cout"
+  contract "$sc/orders-memory-2.yaml" scaling t replicas=2
+  check "a second replica comes with its budget, so only the expectation of the service stops it" test "$rc" -eq 0
+
+  cat > "$sc/mutate.py" << 'SCPY'
+import copy
+import sys
+
+import yaml
+
+src, dst, how = sys.argv[1:4]
+docs = [d for d in yaml.safe_load_all(open(src, encoding="utf-8")) if d]
+
+
+def one(kind):
+    return next(d for d in docs if d["kind"] == kind)
+
+
+dep = one("Deployment")
+pod = dep["spec"]["template"]["spec"]
+if how == "replicas-with-hpa":
+    dep["spec"]["replicas"] = 2
+elif how == "no-hpa":
+    docs = [d for d in docs if d["kind"] != "HorizontalPodAutoscaler"]
+elif how == "cpu-80":
+    one("HorizontalPodAutoscaler")["spec"]["metrics"][0]["resource"]["target"]["averageUtilization"] = 80
+elif how == "memory-metric":
+    one("HorizontalPodAutoscaler")["spec"]["metrics"][0]["resource"]["name"] = "memory"
+elif how == "window-60":
+    one("HorizontalPodAutoscaler")["spec"]["behavior"]["scaleDown"]["stabilizationWindowSeconds"] = 60
+elif how == "min-1":
+    one("HorizontalPodAutoscaler")["spec"]["minReplicas"] = 1
+elif how == "max-equals-min":
+    h = one("HorizontalPodAutoscaler")["spec"]
+    h["maxReplicas"] = h["minReplicas"]
+elif how == "other-target":
+    one("HorizontalPodAutoscaler")["spec"]["scaleTargetRef"]["name"] = "other"
+elif how == "no-pdb":
+    docs = [d for d in docs if d["kind"] != "PodDisruptionBudget"]
+elif how == "pdb-two":
+    one("PodDisruptionBudget")["spec"]["maxUnavailable"] = 2
+elif how == "pdb-min-available":
+    s = one("PodDisruptionBudget")["spec"]
+    del s["maxUnavailable"]
+    s["minAvailable"] = 1
+elif how == "pdb-selector":
+    one("PodDisruptionBudget")["spec"]["selector"]["matchLabels"] = {"app.kubernetes.io/name": "other"}
+elif how == "add-pdb":
+    pdb = {"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": {"name": "x"},
+           "spec": {"maxUnavailable": 1, "selector": {"matchLabels": dep["spec"]["selector"]["matchLabels"]}}}
+    docs.append(pdb)
+elif how == "no-zone":
+    pod["topologySpreadConstraints"] = [c for c in pod["topologySpreadConstraints"] if c["topologyKey"] != "topology.kubernetes.io/zone"]
+elif how == "no-node":
+    pod["topologySpreadConstraints"] = [c for c in pod["topologySpreadConstraints"] if c["topologyKey"] != "kubernetes.io/hostname"]
+elif how == "no-spread":
+    del pod["topologySpreadConstraints"]
+elif how == "spread-selector":
+    pod["topologySpreadConstraints"][0]["labelSelector"]["matchLabels"] = {"app.kubernetes.io/name": "other"}
+elif how == "spread-mode":
+    pod["topologySpreadConstraints"][0]["whenUnsatisfiable"] = "Never"
+elif how == "spread-mixed":
+    pod["topologySpreadConstraints"][0]["whenUnsatisfiable"] = "DoNotSchedule"
+    pod["topologySpreadConstraints"][1]["whenUnsatisfiable"] = "ScheduleAnyway"
+elif how == "unavailable-1":
+    dep["spec"]["strategy"]["rollingUpdate"]["maxUnavailable"] = 1
+elif how == "recreate":
+    dep["spec"]["strategy"] = {"type": "Recreate"}
+elif how == "grace-20":
+    pod["terminationGracePeriodSeconds"] = 20
+elif how == "no-prestop":
+    del pod["containers"][0]["lifecycle"]
+else:
+    sys.exit("unknown mutation " + how)
+yaml.safe_dump_all(docs, open(dst, "w", encoding="utf-8"), sort_keys=False)
+SCPY
+  # sc_fails FILE EXPECT MUTATION MESSAGE DESCRIPTION
+  sc_fails() {
+    "$contract_py" "$sc/mutate.py" "$1" "$sc/mutated.yaml" "$3" || { bad "$5 (mutation $3 failed)"; return; }
+    contract "$sc/mutated.yaml" scaling t "$2"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$4" "$work/cout"; then ok "$5"; else bad "$5 (exit $rc)"; fi
+  }
+  sc_fails "$sc/orders-data.yaml" hpa replicas-with-hpa "next to an autoscaler; they would fight over the count" "replicas in the Deployment next to an autoscaler is named"
+  sc_fails "$sc/orders-data.yaml" hpa no-hpa "expected an autoscaler" "a missing autoscaler is named"
+  sc_fails "$sc/orders-data.yaml" hpa cpu-80 "a target of 70 percent" "a CPU target other than 70 percent is refused"
+  sc_fails "$sc/orders-data.yaml" hpa memory-metric "a target of 70 percent" "an autoscaler on memory is refused"
+  sc_fails "$sc/orders-data.yaml" hpa window-60 "the scale-down stabilisation window is 60" "a short scale-down window is named"
+  sc_fails "$sc/orders-data.yaml" hpa min-1 "the autoscaler minimum is 1" "an autoscaler that can go down to one pod is named"
+  sc_fails "$sc/orders-data.yaml" hpa max-equals-min "the autoscaler maximum must be above its minimum" "an autoscaler that cannot scale is named"
+  sc_fails "$sc/orders-data.yaml" hpa other-target "does not target the Deployment orders" "an autoscaler for another Deployment is named"
+  sc_fails "$sc/orders-data.yaml" hpa no-pdb "2 replicas at the start and 0 PodDisruptionBudgets" "a service with two replicas and no budget is named"
+  sc_fails "$sc/gateway-memory.yaml" replicas=2 no-pdb "2 replicas at the start and 0 PodDisruptionBudgets" "and for fixed replicas"
+  sc_fails "$sc/orders-data.yaml" hpa pdb-two "the budget must be maxUnavailable: 1" "a budget that allows two pods down is refused"
+  sc_fails "$sc/orders-data.yaml" hpa pdb-min-available "the budget must be maxUnavailable: 1" "a minAvailable budget is refused"
+  sc_fails "$sc/orders-data.yaml" hpa pdb-selector "the budget does not select the pods of the Deployment" "a budget that selects other pods is named"
+  sc_fails "$sc/notifier-data.yaml" replicas=1 add-pdb "a PodDisruptionBudget on a single replica would block every node drain" "a budget on a single replica is named"
+  sc_fails "$sc/orders-data.yaml" hpa no-zone "no topology spread constraint over topology.kubernetes.io/zone" "a missing spread over zones is named"
+  sc_fails "$sc/orders-data.yaml" hpa no-node "no topology spread constraint over kubernetes.io/hostname" "a missing spread over nodes is named"
+  sc_fails "$sc/orders-data.yaml" hpa no-spread "no topology spread constraint over kubernetes.io/hostname" "no spread at all is named"
+  sc_fails "$sc/orders-data.yaml" hpa spread-selector "does not select the pods of the Deployment" "a spread that selects other pods is named"
+  sc_fails "$sc/orders-data.yaml" hpa spread-mode "has no valid whenUnsatisfiable" "a spread mode Kubernetes does not know is named"
+  sc_fails "$sc/orders-data.yaml" hpa spread-mixed "disagree on whenUnsatisfiable" "a hard rule for nodes and a soft one for zones is named"
+  sc_fails "$sc/orders-data.yaml" hpa unavailable-1 "maxUnavailable 0" "a rollout that lowers capacity is refused"
+  sc_fails "$sc/orders-data.yaml" hpa recreate "maxUnavailable 0" "a Recreate rollout is refused"
+  sc_fails "$sc/orders-data.yaml" hpa grace-20 "the grace period 20 is shorter than the preStop sleep, the drain and the shutdown time (30s)" "a grace period shorter than the drain is named"
+  sc_fails "$sc/orders-data.yaml" hpa no-prestop "no preStop sleep" "a missing preStop sleep is named"
+
+  # The chart itself refuses what would fight or mean nothing.
+  if sc_render orders data --set replicas=2 > "$sc/refused.out" 2>&1; then bad "the chart rendered replicas next to the autoscaler"; else ok "the chart refuses replicas next to the autoscaler"; fi
+  check "and says what to do" grep -q 'replicas must not be set when autoscaling.enabled is true' "$sc/refused.out"
+  if sc_render orders data --set autoscaling.maxReplicas=1 > /dev/null 2>&1; then bad "the chart rendered a maximum below the minimum"; else ok "the chart refuses a maximum below the minimum"; fi
+  if sc_render orders data --set topologySpread.whenUnsatisfiable=Sometimes > "$sc/refused.out" 2>&1; then bad "the chart rendered an unknown spread mode"; else ok "the chart refuses an unknown spread mode"; fi
+  check "and says which values are allowed" grep -q 'ScheduleAnyway or DoNotSchedule' "$sc/refused.out"
+  sc_render orders data --set topologySpread.whenUnsatisfiable=DoNotSchedule > "$sc/hard.yaml" 2> /dev/null || true
+  check "a production profile can make the spread a hard rule, for nodes and for zones" test "$(grep -c 'whenUnsatisfiable: DoNotSchedule' "$sc/hard.yaml")" = 2
+  contract "$sc/hard.yaml" scaling t hpa
+  check "and the render still passes" test "$rc" -eq 0
+  sc_render orders data --set podDisruptionBudget.enabled=false > "$sc/nopdb.yaml" 2> /dev/null || true
+  check "the budget can be switched off" test "$(grep -c 'kind: PodDisruptionBudget' "$sc/nopdb.yaml")" = 0
+  sc_render orders data --set autoscaling.enabled=false --set replicas=3 > "$sc/fixed3.yaml" 2> /dev/null || true
+  check "without the autoscaler the Deployment sets the count and the budget stays" test "$(grep -c '^  replicas: 3' "$sc/fixed3.yaml")" = 1 -a "$(grep -c 'kind: PodDisruptionBudget' "$sc/fixed3.yaml")" = 1
+  check "the platform-apps project allows the autoscaler" grep -q 'kind: HorizontalPodAutoscaler' platform/argocd/bootstrap/appproject-platform-apps.yaml
+fi
+
+echo "chart-contract-check.py (PostgreSQL instances, priority classes, scaling alerts)"
+
+if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
+  echo "  skip  needs helm and a Python with PyYAML"
+else
+  pm="$work/pm"
+  rm -rf "$pm"
+  mkdir -p "$pm"
+  pgc=platform/data/postgres
+  helm template postgres "$pgc" --namespace data -f "$pgc/values.yaml" -f "$pgc/values-standard.yaml" > "$pm/pg2.yaml" 2> /dev/null || true
+  helm template postgres "$pgc" --namespace data -f "$pgc/values.yaml" -f "$pgc/values-standard.yaml" --set cluster.instances=1 > "$pm/pg1.yaml" 2> /dev/null || true
+  helm template postgres "$pgc" --namespace data -f "$pgc/values.yaml" -f "$pgc/values-standard.yaml" -f "$pgc/values-ha.yaml" > "$pm/pg3.yaml" 2> /dev/null || true
+  helm template pc platform/addons/priority-classes > "$pm/classes.yaml" 2> /dev/null || true
+  helm template m platform/observability/monitors --namespace observability > "$pm/monitors.yaml" 2> /dev/null || true
+
+  contract "$pm/pg2.yaml" postgres-ha t 2
+  check "the standard profile renders two instances, off one node, asynchronous, updated by switchover, with the operator's budgets" test "$rc" -eq 0
+  contract "$pm/pg1.yaml" postgres-ha t 1
+  check "cluster.instances=1 goes back to one instance with no budget" test "$rc" -eq 0
+  contract "$pm/pg3.yaml" postgres-ha t 3
+  check "the high availability profile renders three" test "$rc" -eq 0
+  check "and requires the instances to be on different nodes" test "$(grep -c 'podAntiAffinityType: required' "$pm/pg3.yaml")" = 1
+  check "the standard profile only prefers it, so two nodes lost do not leave a pod Pending" test "$(grep -c 'podAntiAffinityType: preferred' "$pm/pg2.yaml")" = 1
+  check "the standard profile does not order the zones as a rule" grep -q 'whenUnsatisfiable: ScheduleAnyway' "$pm/pg2.yaml"
+  check "the chart renders no PodDisruptionBudget of its own" test "$(cat "$pm"/pg*.yaml | grep -c 'kind: PodDisruptionBudget')" = 0
+  contract "$pm/pg1.yaml" postgres-ha t 2
+  check "a render with one instance is not accepted as two" grep -q 'instances is 1, expected 2' "$work/cout"
+
+  cat > "$pm/mutate.py" << 'PMPY'
+import sys
+
+import yaml
+
+src, dst, how = sys.argv[1:4]
+docs = [d for d in yaml.safe_load_all(open(src, encoding="utf-8")) if d]
+
+
+def one(kind):
+    return next(d for d in docs if d["kind"] == kind)
+
+
+def rules(documents):
+    return [r for d in documents if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "scaling"
+            for g in d["spec"]["groups"] for r in g["rules"]]
+
+
+if how == "add-pdb":
+    docs.append({"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": {"name": "x"}, "spec": {"maxUnavailable": 1}})
+elif how == "pdb-off":
+    one("Cluster")["spec"]["enablePDB"] = False
+elif how == "pdb-on":
+    one("Cluster")["spec"]["enablePDB"] = True
+elif how == "no-affinity":
+    del one("Cluster")["spec"]["affinity"]
+elif how == "no-zone":
+    del one("Cluster")["spec"]["topologySpreadConstraints"]
+elif how == "sync":
+    one("Cluster")["spec"]["minSyncReplicas"] = 1
+    one("Cluster")["spec"]["maxSyncReplicas"] = 1
+elif how == "restart":
+    one("Cluster")["spec"]["primaryUpdateMethod"] = "restart"
+elif how == "supervised":
+    one("Cluster")["spec"]["primaryUpdateStrategy"] = "supervised"
+elif how == "delay-3600":
+    one("Cluster")["spec"]["switchoverDelay"] = 3600
+elif how == "no-class":
+    del one("Cluster")["spec"]["priorityClassName"]
+elif how == "wrong-class":
+    one("Cluster")["spec"]["priorityClassName"] = "platform-apps"
+elif how == "swap-classes":
+    a = next(d for d in docs if d["metadata"]["name"] == "platform-apps")
+    b = next(d for d in docs if d["metadata"]["name"] == "platform-observability")
+    a["value"], b["value"] = b["value"], a["value"]
+elif how == "default-class":
+    next(d for d in docs if d["metadata"]["name"] == "platform-observability")["globalDefault"] = True
+elif how == "drop-class":
+    docs = [d for d in docs if d["metadata"]["name"] != "platform-observability"]
+elif how == "page":
+    next(r for r in rules(docs) if r["alert"] == "PodsPending")["labels"]["severity"] = "page"
+elif how == "short-for":
+    next(r for r in rules(docs) if r["alert"] == "HpaAtMaxReplicas")["for"] = "5m"
+elif how == "bad-anchor":
+    next(r for r in rules(docs) if r["alert"] == "PodsPending")["annotations"]["runbook_url"] = "https://example.test/docs/runbooks/alerts.md#nowhere"
+elif how == "other-metric":
+    next(r for r in rules(docs) if r["alert"] == "PodsPending")["expr"] = 'kube_pod_info{namespace="shop"} == 1'
+elif how == "drop-alert":
+    for d in docs:
+        if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "scaling":
+            for g in d["spec"]["groups"]:
+                g["rules"] = [r for r in g["rules"] if r["alert"] != "PodDisruptionBudgetBlocked"]
+else:
+    sys.exit("unknown mutation " + how)
+yaml.safe_dump_all(docs, open(dst, "w", encoding="utf-8"), sort_keys=False)
+PMPY
+  # pm_fails FILE MUTATION MESSAGE DESCRIPTION CHECK ARGS...: the mutated file must fail the check with the message
+  pm_fails() {
+    local file="$1" how="$2" message="$3" description="$4"
+    shift 4
+    "$contract_py" "$pm/mutate.py" "$file" "$pm/mutated.yaml" "$how" || { bad "$description (mutation $how failed)"; return; }
+    contract "$pm/mutated.yaml" "$@"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$message" "$work/cout"; then ok "$description"; else bad "$description (exit $rc)"; fi
+  }
+  pm_fails "$pm/pg2.yaml" add-pdb "the chart renders a PodDisruptionBudget" "a budget of our own next to the operator's is named" postgres-ha t 2
+  pm_fails "$pm/pg2.yaml" pdb-off "with 2 instances enablePDB must be true" "two instances without the operator's budgets are named" postgres-ha t 2
+  pm_fails "$pm/pg1.yaml" pdb-on "a single instance must have enablePDB: false" "a budget on a single instance is named" postgres-ha t 1
+  pm_fails "$pm/pg2.yaml" no-affinity "the instances must avoid sharing a node" "instances that may share a node are named" postgres-ha t 2
+  pm_fails "$pm/pg2.yaml" no-zone "the instances need one spread over topology.kubernetes.io/zone" "no zone spread is named" postgres-ha t 2
+  pm_fails "$pm/pg2.yaml" sync "synchronous replication is on" "synchronous replicas are named (the profile is asynchronous)" postgres-ha t 2
+  pm_fails "$pm/pg2.yaml" restart "primaryUpdateMethod must be switchover" "an in-place restart of the primary is named" postgres-ha t 2
+  pm_fails "$pm/pg2.yaml" supervised "primaryUpdateStrategy must be unsupervised" "a manual primary update is named" postgres-ha t 2
+  pm_fails "$pm/pg2.yaml" delay-3600 "switchoverDelay 3600 must be set, and at most 900 seconds" "the operator's default hour for a switchover is named" postgres-ha t 2
+  pm_fails "$pm/pg2.yaml" no-class "the Cluster must use platform-addons-critical" "a database without its priority class is named" postgres-ha t 2
+
+  contract "$pm/pg2.yaml" priority t platform-addons-critical
+  check "the PostgreSQL Cluster and its gate Job have the class of the data layer" test "$rc" -eq 0
+  pm_fails "$pm/pg2.yaml" no-class "Cluster/platform-pg has priorityClassName None, expected platform-addons-critical" "a Cluster with no class is named" priority t platform-addons-critical
+  pm_fails "$pm/pg2.yaml" wrong-class "Cluster/platform-pg has priorityClassName 'platform-apps'" "a database on the class of the services is named" priority t platform-addons-critical
+  contract "$pm/pg2.yaml" priority t platform-addons-critical Job/not-there
+  check "an exception that is not in the render is named, so the list does not go stale" grep -q 'the exception Job/not-there is not in the render' "$work/cout"
+  contract "$pm/monitors.yaml" priority t platform-addons-critical
+  check "a render with no pod in it is not accepted as passing" grep -q 'no pod or pod-creating resource found' "$work/cout"
+
+  contract "$pm/classes.yaml" priority-classes t
+  check "the priority classes are in order: add-ons, services, observability" test "$rc" -eq 0
+  pm_fails "$pm/classes.yaml" swap-classes "the values must fall in the order" "the stack ranked above the services is named" priority-classes t
+  pm_fails "$pm/classes.yaml" default-class "is the global default" "a class that becomes the default is named" priority-classes t
+  pm_fails "$pm/classes.yaml" drop-class "PriorityClass platform-observability is missing" "a missing class is named" priority-classes t
+
+  contract "$pm/monitors.yaml" scaling-rules t docs/runbooks/alerts.md
+  check "the four scaling alerts are tickets, wait long enough, use known metrics and link to headings of the runbook" test "$rc" -eq 0
+  pm_fails "$pm/monitors.yaml" page "PodsPending must have severity ticket" "a scaling alert that pages is named" scaling-rules t docs/runbooks/alerts.md
+  pm_fails "$pm/monitors.yaml" short-for "HpaAtMaxReplicas waits 5m and must wait at least 15m" "a duration below the minimum is named" scaling-rules t docs/runbooks/alerts.md
+  pm_fails "$pm/monitors.yaml" bad-anchor "points at #nowhere, which is not a heading of the alerts runbook" "a runbook link to a heading that does not exist is named" scaling-rules t docs/runbooks/alerts.md
+  pm_fails "$pm/monitors.yaml" other-metric "PodsPending uses the metrics ['kube_pod_info']" "a metric that was not checked is named" scaling-rules t docs/runbooks/alerts.md
+  pm_fails "$pm/monitors.yaml" drop-alert "the alert PodDisruptionBudgetBlocked is missing" "a missing alert is named" scaling-rules t docs/runbooks/alerts.md
 fi
 
 echo

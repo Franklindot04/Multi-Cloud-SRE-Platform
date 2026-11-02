@@ -24,7 +24,8 @@ alloy:
   controller:
     type: deployment
     replicas: 1
-    # No priority class, on purpose: when a node is short of room the logging stack goes before the services.
+    # Below the services: when a node is short of room the logging stack goes before them.
+    priorityClassName: platform-observability
     volumes:
       extra:
         - name: alloy-data

@@ -70,6 +70,9 @@ spec:
   template:
     spec:
       serviceAccountName: {{ .Values.cluster.name }}-secrets-gate
+      {{- with .Values.gate.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       restartPolicy: OnFailure
       securityContext:
         runAsNonRoot: true

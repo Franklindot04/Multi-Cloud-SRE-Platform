@@ -22,7 +22,7 @@ Deployment
 Storage and sizing
 
 - **No persistent volumes by default.** Prometheus and Grafana use `emptyDir`. Retention is two days, with a 1 GB size cap so a cardinality mistake cannot fill a node's disk. Metrics and anything created in the Grafana UI are lost when a pod is rescheduled, which on Spot nodes will happen; dashboards and the data source come from Git, so nothing that matters is only in the UI. Persistence is an overlay, `values-persistent.yaml`, that is off by default, documented and rendered by the checks.
-- **Small requests.** About 0.29 vCPU and 0.95 GiB of memory for the whole stack including the collector, and no priority class: the stack must never preempt the services, so when a node is short of room the stack goes first.
+- **Small requests.** About 0.29 vCPU and 0.95 GiB of memory for the whole stack including the collector, and the priority class `platform-observability`, added in the resilience change ([ADR-0026](0026-resilience-and-autoscaling.md); not yet run on a cluster): the stack ranks below the services, so it never preempts them, and when a node is short of room the stack goes first.
 - **No ingress.** Grafana and Prometheus are reached with `kubectl port-forward`.
 
 What is switched off, and why

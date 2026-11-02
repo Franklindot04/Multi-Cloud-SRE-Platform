@@ -11,6 +11,9 @@ image:
 
 replicas: 1
 
+# Below the services (platform/addons/priority-classes): when a node is short of room the stack goes first.
+priorityClassName: platform-observability
+
 # The image runs as this user and group (its Dockerfile sets USER 10001).
 runAsUser: 10001
 

@@ -1,5 +1,8 @@
 ---
 # Data profile: PostgreSQL in the data namespace, credentials from the payments-db Secret.
+# Safe with several replicas (PostgreSQL's unique idempotency key decides, with ON CONFLICT DO NOTHING), and fixed at two on purpose: a
+# JVM uses a burst of CPU while it starts and warms up, which would read as load against a request of 100m, so a CPU autoscaler is not
+# switched on until there is load data to size it from.
 replicas: 2
 env:
   STORAGE: postgres

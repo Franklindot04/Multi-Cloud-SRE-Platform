@@ -1,4 +1,6 @@
 ---
-# The standard profile is the shared values.yaml (one instance); this file keeps profile selection uniform.
-cluster:
-  instances: 1
+# The standard profile is the shared values.yaml (two instances: a primary and an asynchronous replica); this file keeps profile
+# selection uniform. To run a single instance, uncomment the line below (or pass --set cluster.instances=1).
+cluster: {}
+# cluster:
+#   instances: 1

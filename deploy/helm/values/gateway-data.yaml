@@ -1,4 +1,11 @@
 ---
-# Data profile: the gateway has no data layer, so nothing differs.
+# Data profile: the gateway has no data layer of its own. It keeps no state (every request is forwarded to orders or payments),
+# so extra replicas are safe, and the number follows the CPU. The utilisation is measured against the request of 20m, so 70 percent
+# is 14m per pod.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  # Four pods add 40m CPU and 64Mi of memory to the requests of two, a small part of what the dev cluster has left.
+  maxReplicas: 4
 env:
   LOG_LEVEL: info

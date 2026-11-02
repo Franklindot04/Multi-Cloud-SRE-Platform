@@ -17,6 +17,9 @@ spec:
         # A changed configuration restarts the pod; the collector reads its file once at start.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       # The collector never calls the Kubernetes API.
       automountServiceAccountToken: false
       securityContext:

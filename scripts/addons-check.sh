@@ -127,6 +127,14 @@ for chart_file in "$root"/*/Chart.yaml; do
   done
 done
 
+if [ "${ADDONS_UPDATE:-0}" != "1" ] && [ -f "$root/priority-classes/Chart.yaml" ]; then
+  # The priority classes keep their order: add-ons, data layer and controllers above the services, the services above the stack.
+  contract_py="$(./scripts/python-with-yaml.sh)" || contract_py=""
+  if [ -n "$contract_py" ] && command -v helm > /dev/null 2>&1; then
+    helm template priority-classes "$root/priority-classes" | "$contract_py" scripts/chart-contract-check.py priority-classes priority-classes || status=1
+  fi
+fi
+
 if [ "${ADDONS_UPDATE:-0}" != "1" ]; then
   if command -v yamllint > /dev/null 2>&1; then
     echo "==> yamllint $root"

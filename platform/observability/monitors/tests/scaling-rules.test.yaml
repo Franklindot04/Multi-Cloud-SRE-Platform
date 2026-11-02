@@ -1,0 +1,229 @@
+---
+# Unit tests for the alerts on autoscalers, disruption budgets, pending pods and PostgreSQL instances
+# (templates/scaling-rules.yaml, docs/runbooks/alerts.md).
+#
+# scripts/observability-check.sh renders the monitors chart, writes the rules of the PrometheusRule "scaling" to
+# scaling-rules.yaml next to a copy of this file, and runs `promtool test rules` with the promtool of the Prometheus image
+# the stack deploys, as for slo-rules.test.yaml.
+#
+# Every series has one sample a minute and the rules are evaluated every minute. An alert is pending from the first
+# evaluation that sees the condition and fires once the condition has held for the `for` time, so a condition that starts at
+# minute 0 is pending at 14m and firing at 16m for a 15m alert. Each scenario also has a case that must stay quiet.
+rule_files:
+  - scaling-rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # --- HpaAtMaxReplicas (15m) ---
+  # orders wants 4 of at most 4 from minute 0, the gateway wants 2 of 4, and an autoscaler outside the shop namespace is at its
+  # maximum too. Only orders alerts. A third autoscaler (payments) is at its maximum for 10 minutes and then falls back.
+  - interval: 1m
+    input_series:
+      - series: 'kube_horizontalpodautoscaler_status_desired_replicas{namespace="shop",horizontalpodautoscaler="orders"}'
+        values: '4x40'
+      - series: 'kube_horizontalpodautoscaler_spec_max_replicas{namespace="shop",horizontalpodautoscaler="orders"}'
+        values: '4x40'
+      - series: 'kube_horizontalpodautoscaler_status_desired_replicas{namespace="shop",horizontalpodautoscaler="gateway"}'
+        values: '2x40'
+      - series: 'kube_horizontalpodautoscaler_spec_max_replicas{namespace="shop",horizontalpodautoscaler="gateway"}'
+        values: '4x40'
+      - series: 'kube_horizontalpodautoscaler_status_desired_replicas{namespace="other",horizontalpodautoscaler="x"}'
+        values: '3x40'
+      - series: 'kube_horizontalpodautoscaler_spec_max_replicas{namespace="other",horizontalpodautoscaler="x"}'
+        values: '3x40'
+      - series: 'kube_horizontalpodautoscaler_status_desired_replicas{namespace="shop",horizontalpodautoscaler="payments"}'
+        values: '4x10 2x30'
+      - series: 'kube_horizontalpodautoscaler_spec_max_replicas{namespace="shop",horizontalpodautoscaler="payments"}'
+        values: '4x40'
+    alert_rule_test:
+      - alertname: HpaAtMaxReplicas
+        eval_time: 14m
+        exp_alerts: []
+      - alertname: HpaAtMaxReplicas
+        eval_time: 16m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              horizontalpodautoscaler: orders
+            exp_annotations:
+              summary: "orders has been at its maximum number of replicas for 15m"
+              description: >-
+                The autoscaler orders in shop has wanted its maximum number of
+                replicas (4 wanted) for 15m. It cannot add pods, so more load means slower or failing requests.
+              runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#hpa-at-max-replicas
+      - alertname: HpaAtMaxReplicas
+        eval_time: 35m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              horizontalpodautoscaler: orders
+            exp_annotations:
+              summary: "orders has been at its maximum number of replicas for 15m"
+              description: >-
+                The autoscaler orders in shop has wanted its maximum number of
+                replicas (4 wanted) for 15m. It cannot add pods, so more load means slower or failing requests.
+              runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#hpa-at-max-replicas
+
+  # --- PodDisruptionBudgetBlocked (30m) ---
+  # The orders budget allows no disruption from minute 0, the gateway budget allows one, the payments budget allows none for 20
+  # minutes and then one, and the budget of the database's primary (in data) allows none all the time and is never looked at.
+  - interval: 1m
+    input_series:
+      - series: 'kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace="shop",poddisruptionbudget="orders"}'
+        values: '0x60'
+      - series: 'kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace="shop",poddisruptionbudget="gateway"}'
+        values: '1x60'
+      - series: 'kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace="shop",poddisruptionbudget="payments"}'
+        values: '0x20 1x40'
+      - series: 'kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace="data",poddisruptionbudget="platform-pg-primary"}'
+        values: '0x60'
+    alert_rule_test:
+      - alertname: PodDisruptionBudgetBlocked
+        eval_time: 29m
+        exp_alerts: []
+      - alertname: PodDisruptionBudgetBlocked
+        eval_time: 31m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              poddisruptionbudget: orders
+            exp_annotations:
+              summary: "orders has allowed no disruption for 30m"
+              description: >-
+                The budget orders in shop allows no voluntary disruption, so a node
+                drain cannot move its pods. Fewer pods are healthy than the budget needs.
+              runbook_url: "https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md\
+                #pod-disruption-budget-blocked"
+
+  # --- PodsPending (10m) ---
+  # orders-a stays Pending from minute 0. orders-b is Pending for 5 minutes and then Running. A pod in kube-system is Pending too
+  # and a pod in data is Pending from minute 20.
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_status_phase{namespace="shop",pod="orders-a",phase="Pending"}'
+        values: '1x40'
+      - series: 'kube_pod_status_phase{namespace="shop",pod="orders-a",phase="Running"}'
+        values: '0x40'
+      - series: 'kube_pod_status_phase{namespace="shop",pod="orders-b",phase="Pending"}'
+        values: '1x5 0x35'
+      - series: 'kube_pod_status_phase{namespace="shop",pod="orders-b",phase="Running"}'
+        values: '0x5 1x35'
+      - series: 'kube_pod_status_phase{namespace="kube-system",pod="dns-a",phase="Pending"}'
+        values: '1x40'
+      - series: 'kube_pod_status_phase{namespace="data",pod="platform-pg-2",phase="Pending"}'
+        values: '0x20 1x20'
+    alert_rule_test:
+      - alertname: PodsPending
+        eval_time: 9m
+        exp_alerts: []
+      - alertname: PodsPending
+        eval_time: 12m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              pod: orders-a
+              phase: Pending
+            exp_annotations:
+              summary: "orders-a in shop has been Pending for 10m"
+              description: >-
+                The pod orders-a in shop has not started for 10m. It
+                cannot be scheduled (not enough CPU or memory, a volume in another zone, a node that is gone) or its image cannot be pulled.
+              runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#pods-pending
+      - alertname: PodsPending
+        eval_time: 35m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              pod: orders-a
+              phase: Pending
+            exp_annotations:
+              summary: "orders-a in shop has been Pending for 10m"
+              description: >-
+                The pod orders-a in shop has not started for 10m. It
+                cannot be scheduled (not enough CPU or memory, a volume in another zone, a node that is gone) or its image cannot be pulled.
+              runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#pods-pending
+          - exp_labels:
+              severity: ticket
+              namespace: data
+              pod: platform-pg-2
+              phase: Pending
+            exp_annotations:
+              summary: "platform-pg-2 in data has been Pending for 10m"
+              description: >-
+                The pod platform-pg-2 in data has not started for 10m. It
+                cannot be scheduled (not enough CPU or memory, a volume in another zone, a node that is gone) or its image cannot be pulled.
+              runbook_url: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md#pods-pending
+
+  # --- PostgresInstancesNotReady (10m), two instances: the claims platform-pg-1 and platform-pg-2 exist all the time ---
+  # Both pods are ready until minute 10. Then platform-pg-2 is not ready for 5 minutes (a rolling update) and recovers: no alert.
+  # From minute 32 it is not ready for good: the alert fires 10 minutes after. The join Job's pod and the gate Job's pod have longer
+  # names and are not counted, ready or not.
+  - interval: 1m
+    input_series:
+      - series: 'kube_persistentvolumeclaim_info{namespace="data",persistentvolumeclaim="platform-pg-1"}'
+        values: '1x60'
+      - series: 'kube_persistentvolumeclaim_info{namespace="data",persistentvolumeclaim="platform-pg-2"}'
+        values: '1x60'
+      - series: 'kube_persistentvolumeclaim_info{namespace="data",persistentvolumeclaim="platform-valkey"}'
+        values: '1x60'
+      - series: 'kube_pod_status_ready{namespace="data",pod="platform-pg-1",condition="true"}'
+        values: '1x60'
+      - series: 'kube_pod_status_ready{namespace="data",pod="platform-pg-2",condition="true"}'
+        values: '1x10 0x5 1x15 0x30'
+      - series: 'kube_pod_status_ready{namespace="data",pod="platform-pg-2-join-abcde",condition="true"}'
+        values: '1x60'
+      - series: 'kube_pod_status_ready{namespace="data",pod="platform-valkey-0",condition="true"}'
+        values: '1x60'
+    alert_rule_test:
+      - alertname: PostgresInstancesNotReady
+        eval_time: 20m
+        exp_alerts: []
+      - alertname: PostgresInstancesNotReady
+        eval_time: 35m
+        exp_alerts: []
+      - alertname: PostgresInstancesNotReady
+        eval_time: 46m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              service: postgres
+            exp_annotations:
+              summary: Fewer PostgreSQL instances are ready than the cluster has
+              description: >-
+                1 instance(s) of the PostgreSQL cluster platform-pg are ready, fewer than it has volumes for. With two instances a
+                failover has no replica to go to while one is down; with one instance the database is down.
+              runbook_url: "https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md\
+                #postgres-instances-not-ready"
+
+  # --- the same, with no pod at all, and with one healthy instance ---
+  # platform-pg-1 is a single instance, ready until minute 20 and then gone (no series): the claim stays, the alert fires after 10
+  # minutes.
+  - interval: 1m
+    input_series:
+      - series: 'kube_persistentvolumeclaim_info{namespace="data",persistentvolumeclaim="platform-pg-1"}'
+        values: '1x60'
+      - series: 'kube_pod_status_ready{namespace="data",pod="platform-pg-1",condition="true"}'
+        values: '1x20'
+    alert_rule_test:
+      - alertname: PostgresInstancesNotReady
+        eval_time: 19m
+        exp_alerts: []
+      - alertname: PostgresInstancesNotReady
+        eval_time: 35m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              service: postgres
+            exp_annotations:
+              summary: Fewer PostgreSQL instances are ready than the cluster has
+              description: >-
+                0 instance(s) of the PostgreSQL cluster platform-pg are ready, fewer than it has volumes for. With two instances a
+                failover has no replica to go to while one is down; with one instance the database is down.
+              runbook_url: "https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/alerts.md\
+                #postgres-instances-not-ready"

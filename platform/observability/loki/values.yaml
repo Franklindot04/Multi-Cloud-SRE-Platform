@@ -104,7 +104,8 @@ loki:
     extraVolumeMounts:
       - name: loki-data
         mountPath: /var/loki
-    # No priority class, on purpose: when a node is short of room the logging stack goes before the services.
+    # Below the services: when a node is short of room the logging stack goes before them.
+    priorityClassName: platform-observability
     resources:
       requests:
         cpu: 100m

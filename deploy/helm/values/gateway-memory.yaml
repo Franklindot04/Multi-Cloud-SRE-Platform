@@ -1,4 +1,6 @@
 ---
-# Memory profile: the gateway has no data layer, so nothing differs.
+# Memory profile: the gateway has no data layer, so only the replica count is set. Fixed at two, with no autoscaler: this is the
+# profile for a cluster without the data layer (and for local use), and it keeps the footprint small and predictable.
+replicas: 2
 env:
   LOG_LEVEL: info

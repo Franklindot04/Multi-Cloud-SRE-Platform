@@ -29,3 +29,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0023](0023-slos-and-alerting.md) | SLOs and burn-rate alerting | Accepted |
 | [0024](0024-network-policies.md) | Network policies | Accepted |
 | [0025](0025-admission-policies.md) | Admission policies | Accepted |
+| [0026](0026-resilience-and-autoscaling.md) | Resilience and autoscaling | Accepted |
