@@ -3090,7 +3090,10 @@ else
   op="platform/security/external-secrets"
   st="platform/security/external-secrets-store"
   np="platform/security/external-secrets-network-policies"
-  helm template external-secrets "$op" --namespace external-secrets -f "$op/values.yaml" -f "$op/ci/aws-params.yaml" --include-crds > "$es/operator.yaml" 2> /dev/null || true
+  # The operator chart is a wrapper whose dependency is downloaded (helm dependency build), which this job does not do, as for the Kyverno
+  # chart. So the tests use a committed render of it, and scripts/external-secrets-check.sh, which builds the chart, fails if the render
+  # is out of date and runs the same contracts on the real chart.
+  cp "$fixtures/secrets/eso-operator.yaml" "$es/operator.yaml"
   helm template external-secrets-store "$st" --namespace external-secrets -f "$st/values.yaml" -f "$st/ci/aws-params.yaml" > "$es/store.yaml" 2> /dev/null || true
   helm template eso-network-policies "$np" --namespace external-secrets -f "$np/values.yaml" -f "$np/ci/aws-params.yaml" > "$es/policies.yaml" 2> /dev/null || true
 
@@ -3102,7 +3105,20 @@ else
   check "the operator's service account is the one the store names, with the role annotation" test "$(grep -c -e 'serviceAccountName: external-secrets$' "$es/operator.yaml")" = 1 -a "$(grep -c 'eks.amazonaws.com/role-arn: ' "$es/operator.yaml")" = 1
   check "the validating webhooks fail open" test "$(grep -c 'failurePolicy: Ignore' "$es/operator.yaml")" = 3 -a "$(grep -c 'failurePolicy: Fail' "$es/operator.yaml")" = 0
   check "the operator requests under 200m CPU and 300Mi of memory (100m and 228Mi)" test "$(grep -c -e 'cpu: 50m' -e 'cpu: 25m' -e 'memory: 100Mi' -e 'memory: 64Mi' "$es/operator.yaml")" -ge 6
-  check "the biggest CRDs need server-side apply (larger than 256 KiB)" test "$(awk '/^kind: CustomResourceDefinition/{c=1} /^---/{c=0} {if(c)n++} END{print n+0}' "$es/operator.yaml")" -gt 1000
+  # An oversized CRD (the real ones are about 740 KB): the real ApplicationSet syncs server-side, so it passes.
+  "$contract_py" - "$es/operator.yaml" "$es/operator-big.yaml" << 'ESOPY'
+import sys
+
+import yaml
+
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if d]
+big = next(d for d in docs if d["kind"] == "CustomResourceDefinition")
+big["metadata"]["name"] = "clustersecretstores.external-secrets.io"
+big["metadata"]["annotations"] = {"description": "x" * 300000}
+yaml.safe_dump_all(docs + [big], open(sys.argv[2], "w", encoding="utf-8"), sort_keys=False)
+ESOPY
+  contract "$es/operator-big.yaml" external-secrets t "$eso_apps/87-eso-operator.yaml"
+  check "a CRD larger than 256 KiB passes with the real ApplicationSet, which syncs server-side" test "$rc" -eq 0
 
   cat > "$es/mutate.py" << 'ESOPY'
 import copy
@@ -3234,7 +3250,7 @@ write("appset-no-role.yaml", lambda d: tpl(d)["source"]["helm"].update({"paramet
 write("appset-no-ignore.yaml", lambda d: tpl(d).pop("ignoreDifferences"))
 write("appset-no-respect.yaml", lambda d: tpl(d)["syncPolicy"]["syncOptions"].remove("RespectIgnoreDifferences=true"))
 ESOPY
-  contract "$es/operator.yaml" external-secrets t "$es/appset-no-ssa.yaml"
+  contract "$es/operator-big.yaml" external-secrets t "$es/appset-no-ssa.yaml"
   check "an ApplicationSet without ServerSideApply is named, because the CRDs are larger than client-side apply can store" test "$rc" -eq 1 -a "$(grep -c 'is larger than client-side apply can store (256 KiB), so the ApplicationSet needs ServerSideApply=true' "$work/cout")" = 1
   contract "$es/operator.yaml" external-secrets t "$es/appset-baseline.yaml"
   check "a namespace created below the restricted level is named" grep -q 'not created at the restricted Pod Security level' "$work/cout"
@@ -3250,9 +3266,15 @@ ESOPY
   check "ignored differences that the sync does not respect are named" grep -q 'RespectIgnoreDifferences=true' "$work/cout"
 
   # The charts refuse to render without what the cluster Secret supplies.
-  if helm template check "$op" --namespace external-secrets -f "$op/values.yaml" > "$es/norole.out" 2>&1; then bad "the operator chart rendered without a role"; else ok "the operator chart refuses to render without the role"; fi
-  check "and says which value and where it comes from" grep -q 'roleArn must be set: Argo CD passes it from the cluster annotation platform.example/external-secrets-role-arn' "$es/norole.out"
-  if helm template check "$op" --namespace external-secrets -f "$op/values.yaml" --set roleArn= > /dev/null 2>&1; then bad "the operator chart rendered with an empty role"; else ok "an empty role fails the render too"; fi
+  # These need the chart itself, with its downloaded dependency. Without it they are skipped, loudly; scripts/external-secrets-check.sh builds the
+  # chart and runs the same refusals.
+  if ls "$op"/charts/external-secrets-*.tgz > /dev/null 2>&1; then
+    if helm template check "$op" --namespace external-secrets -f "$op/values.yaml" > "$es/norole.out" 2>&1; then bad "the operator chart rendered without a role"; else ok "the operator chart refuses to render without the role"; fi
+    check "and says which value and where it comes from" grep -q 'roleArn must be set: Argo CD passes it from the cluster annotation platform.example/external-secrets-role-arn' "$es/norole.out"
+    if helm template check "$op" --namespace external-secrets -f "$op/values.yaml" --set roleArn= > /dev/null 2>&1; then bad "the operator chart rendered with an empty role"; else ok "an empty role fails the render too"; fi
+  else
+    echo "  skip  the operator chart is not built (helm dependency build $op): its refusal to render without a role is checked by scripts/external-secrets-check.sh"
+  fi
   if helm template check "$st" --set parameterPrefix=/multi-cloud-sre/dev > "$es/noregion.out" 2>&1; then bad "the store rendered without a region"; else ok "the store chart refuses to render without the region"; fi
   check "and says so" grep -q 'region must be set' "$es/noregion.out"
   if helm template check "$st" --set region=eu-north-1 > "$es/noprefix.out" 2>&1; then bad "the store rendered without the parameter path"; else ok "and without the parameter path"; fi

@@ -92,6 +92,28 @@ contract network-policies "external-secrets-network-policies" "$work/policies.ya
 contract hooks "external-secrets-network-policies" "$work/policies.yaml"
 echo "    ran $contracts contract check(s)"
 
+echo "==> the render that scripts/test-scripts.sh uses"
+# The tests of the check scripts run on a committed render of the operator chart (they do not build the downloaded dependency). It has
+# to be the real render, without the CRDs and the stand-in for one of them.
+helm template external-secrets "$operator" --namespace external-secrets -f "$operator/values.yaml" -f "$operator/ci/aws-params.yaml" --include-crds > "$work/real-operator.yaml" || status=1
+if ! "$py" - "$work/real-operator.yaml" scripts/tests/fixtures/secrets/eso-operator.yaml << 'PYEND'; then
+import sys
+
+import yaml
+
+
+def without_crds(path):
+    return [d for d in yaml.safe_load_all(open(path, encoding="utf-8")) if d and d["kind"] != "CustomResourceDefinition"]
+
+
+if without_crds(sys.argv[1]) != without_crds(sys.argv[2]):
+    print("    FAIL scripts/tests/fixtures/secrets/eso-operator.yaml is not the render of platform/security/external-secrets any more: render it again (helm template with values.yaml and ci/aws-params.yaml), drop the CRDs but one stand-in, and replace the file")
+    sys.exit(1)
+print("    the committed render of the operator is the real one")
+PYEND
+  status=1
+fi
+
 echo "==> the charts refuse to render without what the cluster Secret supplies"
 refuses() {
   # refuses CHART MESSAGE [HELM ARGS...]: the render must fail and say MESSAGE.
