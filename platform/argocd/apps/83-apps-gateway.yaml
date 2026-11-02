@@ -38,7 +38,21 @@ spec:
             - ../values/gateway.yaml
             - '../values/gateway-{{ default "memory" (index .metadata.labels "platform.example/apps-profile") }}.yaml'
             - '../values/cloud-{{ index .metadata.labels "platform.example/cloud" }}.yaml'
+            - ../values/gateway-rollout.yaml
           parameters:
+            # A canary Rollout in place of the Deployment, only on a cluster that has the Argo Rollouts controller (the label set by
+            # --enable-progressive-delivery) and only in the data profile. Without the label the chart renders the Deployment, as
+            # before. The value is a bool for Helm, so it is not passed as a string (no forceString).
+            - name: rollout.enabled
+              value: >-
+                {{ if and (eq (default "memory" (index .metadata.labels "platform.example/apps-profile")) "data")
+                (eq (index .metadata.labels "platform.example/progressive-delivery") "true") }}true{{ else }}false{{ end }}
+            # The AnalysisTemplate reads Prometheus, so it needs the observability layer as well; without it the canary has pauses only.
+            - name: rollout.analysis.enabled
+              value: >-
+                {{ if and (eq (default "memory" (index .metadata.labels "platform.example/apps-profile")) "data")
+                (eq (index .metadata.labels "platform.example/progressive-delivery") "true")
+                (eq (index .metadata.labels "platform.example/observability") "true") }}true{{ else }}false{{ end }}
             # The address range of the cluster's Services, for the egress rules of the network policies.
             - name: networkPolicy.serviceCidr
               value: '{{ index .metadata.annotations "platform.example/service-cidr" }}'

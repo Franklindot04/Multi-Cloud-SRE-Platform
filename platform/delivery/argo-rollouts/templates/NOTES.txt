@@ -1,0 +1,3 @@
+Argo Rollouts is installed as the controller only: no dashboard, no notifications, no Rollout and no AnalysisTemplate.
+The controller runs {{ index .Values "argo-rollouts" "controller" "replicas" }} replica(s) and serves metrics on port 8090.
+Check it with: kubectl -n {{ .Release.Namespace }} get pods

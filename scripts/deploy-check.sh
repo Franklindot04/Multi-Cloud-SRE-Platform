@@ -23,7 +23,12 @@
 #      gateway) stays at one replica
 #   7. everything rendered is allowed by the platform-apps AppProject (kinds and namespace), so a new kind is not found out by a
 #      failed sync
-#   8. yamllint on the non-template files, and shellcheck through scripts/shellcheck.sh
+#   8. the Rollout mode of the gateway (rollout.enabled, as Argo CD renders it on a cluster with the Argo Rollouts controller), with and
+#      without the analysis: the same checks as a Deployment, and scripts/chart-contract-check.py rollout against the Deployment render
+#      of the same inputs (the same pod template, selector, replicas and objects; the autoscaler on the Rollout; a progress deadline that
+#      aborts; steps; no traffic router; an analysis with a failure condition, limits, the canary pods only, a minimum request count, a
+#      no-data value and thresholds at the SLO objectives minus a margin). The PromQL of the analysis is tested by observability-check.sh
+#   9. yamllint on the non-template files, and shellcheck through scripts/shellcheck.sh
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
 #
@@ -187,6 +192,34 @@ else
       count=$((count + 1))
     done
 
+    # The gateway as an Argo Rollout (rollout.enabled), as Argo CD renders it on a cluster with the controller: with the analysis and
+    # without it (no Prometheus), in the data profile (autoscaler) and in the memory profile (fixed replicas). Each render must pass the
+    # checks of a Deployment and the rollout contract against the Deployment render of the same inputs.
+    for profile in data memory; do
+      for mode in analysis no-analysis; do
+        [ "$profile/$mode" != "memory/analysis" ] || continue
+        label="gateway/$profile/$cloud/rollout-$mode"
+        base=(-f "$values/images.yaml" -f "$values/gateway.yaml" -f "$values/gateway-$profile.yaml" -f "$values/cloud-$cloud.yaml" -f "$values/gateway-rollout.yaml")
+        roll=(--set rollout.enabled=true)
+        [ "$mode" != analysis ] || roll+=(--set rollout.analysis.enabled=true)
+        if helm template gateway "$chart" --namespace shop "${base[@]}" "${service_cidr[@]}" > "$work/deployment.yaml" 2> "$work/render.err" \
+          && helm template gateway "$chart" --namespace shop "${base[@]}" "${service_cidr[@]}" "${roll[@]}" > "$work/render.yaml" 2>> "$work/render.err"; then
+          validate "$label" "$cloud" "$work/render.yaml"
+          if [ -n "$py" ]; then
+            "$py" scripts/chart-contract-check.py network-policies "$label" < "$work/render.yaml" || status=1
+            "$py" scripts/chart-contract-check.py scaling "$label" "$(scaling_expect gateway "$profile")" < "$work/render.yaml" || status=1
+            "$py" scripts/chart-contract-check.py project-fit "$label" platform/argocd/bootstrap/appproject-platform-apps.yaml shop < "$work/render.yaml" || status=1
+            "$py" scripts/chart-contract-check.py rollout "$label" "$work/deployment.yaml" "$mode" platform/observability/monitors/values.yaml < "$work/render.yaml" || status=1
+          fi
+        else
+          echo "    FAIL [$label] helm template"
+          cat "$work/render.err"
+          status=1
+        fi
+        count=$((count + 1))
+      done
+    done
+
     if helm template data-rabbitmq-credentials "$creds_chart" --namespace shop > "$work/render.yaml" 2> "$work/render.err"; then
       validate "rabbitmq-credentials/$cloud" "$cloud" "$work/render.yaml"
       # The copy is a hook Job: the chart must also render something ordinary, or Argo CD never syncs it.
@@ -237,6 +270,23 @@ else
   scaling_refused "replicas set next to the autoscaler" --set replicas=3
   scaling_refused "an autoscaler maximum below its minimum" --set autoscaling.maxReplicas=1
   scaling_refused "an unknown spread mode" --set topologySpread.whenUnsatisfiable=Sometimes
+  # A rollout without steps, and an analysis that does not name the series it reads, fail to render instead of rendering a canary that
+  # is promoted at once or that measures nothing.
+  rollout_refused() {
+    local what="$1"
+    shift
+    if helm template gateway "$chart" -f "$values/images.yaml" -f "$values/gateway.yaml" -f "$values/gateway-data.yaml" "${service_cidr[@]}" \
+      --set rollout.enabled=true "$@" > /dev/null 2>&1; then
+      echo "    FAIL the chart rendered a Rollout with $what"
+      status=1
+    fi
+  }
+  rollout_refused "no steps" --set 'rollout.steps=null'
+  rollout_refused "no progress deadline" --set rollout.progressDeadlineSeconds=0
+  rollout_refused "an analysis that does not name its service" --set rollout.analysis.enabled=true
+  rollout_refused "an analysis without a minimum request count" --set rollout.analysis.enabled=true --set rollout.analysis.service=gateway --set rollout.analysis.minRequests=0
+  rollout_refused "a threshold above 1" --set rollout.analysis.enabled=true --set rollout.analysis.service=gateway --set rollout.analysis.successRatio=1.5
+  rollout_refused "maxUnavailable above the budget" --set rollout.maxUnavailable=2
   # A production profile can make the spread a hard rule, and the render must still pass the checks.
   if helm template gateway "$chart" -f "$values/images.yaml" -f "$values/gateway.yaml" -f "$values/gateway-data.yaml" "${service_cidr[@]}" \
     --set topologySpread.whenUnsatisfiable=DoNotSchedule > "$work/render.yaml" 2> "$work/render.err"; then

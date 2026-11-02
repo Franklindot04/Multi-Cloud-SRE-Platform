@@ -145,6 +145,15 @@ externalSecrets:
     app.kubernetes.io/instance: external-secrets
   metricsPort: 8080
 
+# Argo Rollouts (platform/delivery/argo-rollouts): Prometheus scrapes the metrics port of the controller, by pod address, and the
+# controller reaches the query port of Prometheus (for the analysis of the gateway canary).
+argoRollouts:
+  namespace: argo-rollouts
+  podLabels:
+    app.kubernetes.io/name: argo-rollouts
+  metricsPort: 8090
+  prometheusPort: 9090
+
 # CoreDNS exposes metrics on this port; Prometheus scrapes it through the Service the stack creates in kube-system.
 coredns:
   port: 9153

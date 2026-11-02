@@ -5,7 +5,7 @@
 
 ## Context
 
-The sample application keeps orders and payments in memory behind repository interfaces ([ADR-0013](0013-sample-application-design.md)). The next change wires the services to real PostgreSQL, a cache and a message broker. The platform runs on two small non-production clusters (two Spot nodes of 2 vCPU and 8 GiB on EKS), delivers everything through Argo CD ([ADR-0012](0012-argocd-hub-and-gitops-structure.md)), and avoids committing any identifier or credential to a public repository. This decision defines the data components and how they are deployed; the services are not changed here.
+The sample application keeps orders and payments in memory behind repository interfaces ([ADR-0013](0013-sample-application-design.md)). [ADR-0015](0015-service-data-integration.md) wires the services to real PostgreSQL, a cache and a message broker. The platform runs on two small non-production clusters (two Spot nodes of 2 vCPU and 8 GiB on EKS), delivers everything through Argo CD ([ADR-0012](0012-argocd-hub-and-gitops-structure.md)), and avoids committing any identifier or credential to a public repository. This decision defines the data components and how they are deployed; the services are not changed here.
 
 ## Decision
 

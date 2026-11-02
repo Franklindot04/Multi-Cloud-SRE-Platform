@@ -58,6 +58,14 @@ Options:
                            platform.example/external-secrets-role-arn and platform.example/secrets-prefix. The
                            secret values are written separately by scripts/seed-secrets.sh. Requests 100m CPU and
                            228Mi of memory: see platform/security/external-secrets/README.md
+  --enable-progressive-delivery
+                           label the cluster so the Argo Rollouts controller is deployed to the argo-rollouts namespace,
+                           with default-deny network policies; the controller deploys no Rollout itself. With
+                           --enable-apps and --apps-profile data the gateway becomes a canary Rollout in place of its
+                           Deployment (with an analysis of the canary on Prometheus when --enable-observability is also
+                           set). Off by default. Requests 50m CPU and 64Mi of memory (one replica; values-ha.yaml has
+                           two). The network policies need the Service range from the cluster Secret: see
+                           platform/delivery/argo-rollouts/README.md and deploy/helm/README.md
   --enable-apps            label the cluster so the sample services (gateway, orders, payments, notifier) are
                            deployed from deploy/helm; off by default. Images must be published first: see
                            docs/runbooks/service-deployment.md
@@ -83,6 +91,7 @@ ENABLE_DATA=0
 ENABLE_OBSERVABILITY=0
 ENABLE_POLICY=0
 ENABLE_EXTERNAL_SECRETS=0
+ENABLE_PROGRESSIVE_DELIVERY=0
 ENABLE_APPS=0
 APPS_PROFILE="memory"
 DATA_PROFILE="standard"
@@ -139,6 +148,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --enable-external-secrets)
       ENABLE_EXTERNAL_SECRETS=1
+      shift
+      ;;
+    --enable-progressive-delivery)
+      ENABLE_PROGRESSIVE_DELIVERY=1
       shift
       ;;
     --enable-policy)
@@ -391,6 +404,7 @@ build_cluster_secret() {
     --arg observability "$(bool_word "$ENABLE_OBSERVABILITY")" \
     --arg policy "$(bool_word "$ENABLE_POLICY")" \
     --arg external_secrets "$(bool_word "$ENABLE_EXTERNAL_SECRETS")" \
+    --arg progressive_delivery "$(bool_word "$ENABLE_PROGRESSIVE_DELIVERY")" \
     --arg eso_role "$EXTERNAL_SECRETS_ROLE_ARN" \
     --arg secrets_prefix "$SECRETS_PREFIX" \
     --arg apps "$(bool_word "$ENABLE_APPS")" \
@@ -424,6 +438,7 @@ build_cluster_secret() {
           "platform.example/observability": $observability,
           "platform.example/policy": $policy,
           "platform.example/external-secrets": $external_secrets,
+          "platform.example/progressive-delivery": $progressive_delivery,
           "platform.example/apps": $apps,
           "platform.example/apps-profile": $apps_profile
         },
@@ -458,6 +473,9 @@ if [ "$ENABLE_DATA" -eq 1 ]; then
 fi
 if [ "$ENABLE_POLICY" -eq 1 ]; then
   info "policy engine enabled: Kyverno (admission, background, cleanup and reports controllers, no policies) in the kyverno namespace, requests 225m CPU and 320Mi of memory; its webhooks fail open and skip kube-system, kube-node-lease, argocd and kyverno; the network policies need the VPC and Service ranges from the cluster Secret; see platform/security/kyverno/README.md"
+fi
+if [ "$ENABLE_PROGRESSIVE_DELIVERY" -eq 1 ]; then
+  info "progressive delivery enabled: the Argo Rollouts controller (one replica, requests 50m CPU and 64Mi of memory, no dashboard, no notifications) in the argo-rollouts namespace; the controller deploys no Rollout itself (with --enable-apps and --apps-profile data the gateway becomes a canary Rollout, with its analysis when observability is enabled too); the network policies need the Service range from the cluster Secret; see platform/delivery/argo-rollouts/README.md"
 fi
 if [ "$ENABLE_EXTERNAL_SECRETS" -eq 1 ]; then
   info "external secrets enabled: the External Secrets Operator (controller, webhook and certificate controller, requests 100m CPU and 228Mi of memory) in the external-secrets namespace, and the ClusterSecretStore aws-parameter-store for the parameters under $SECRETS_PREFIX in $REGION; it signs in with its IAM role and holds no credential; its validating webhooks fail open; no ExternalSecret is deployed by it, and the values are written by scripts/seed-secrets.sh; see platform/security/external-secrets/README.md"

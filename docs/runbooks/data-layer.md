@@ -205,7 +205,7 @@ Nothing else is ever changed. An object stuck on any other finalizer is left alo
 1. **Remove the cluster Secret labels.** Delete the label keys; this is what stops the ApplicationSets from recreating Applications. Deleting an Application by hand does not work for as long as the labels select the cluster, and the Applications' finalizers delete what they own:
 
    ```bash
-   kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets-
+   kubectl --context <EKS_CONTEXT> -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets- platform.example/progressive-delivery-
    kubectl --context <EKS_CONTEXT> -n argocd get applications | grep -E 'apps-|data-|observability-|policy-|eso-'     # wait until none remain
    ```
 

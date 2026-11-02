@@ -20,7 +20,8 @@
 #   3. the Kyverno ServiceMonitor of the monitors chart selects the Services the chart creates
 #   4. the Kyverno CLI, at the version of the chart's app, from the image the chart's own hook Job uses, pinned here by digest and run
 #      with Docker (skipped with a message when Docker is not running):
-#      - kyverno test: platform/security/policies/tests, a resource that passes and one for each way to fail, for every policy
+#      - kyverno test: platform/security/policies/tests, a resource that passes and one for each way to fail, for every policy,
+#        including Argo Rollouts (the probe policy matches the Rollout; the pod policies are tested on the pods it creates)
 #      - the tests can fail: the registry policy is changed to allow everything, and the tests must notice
 #      - the reality check: the service chart under every profile and the RabbitMQ credentials chart are rendered and must pass the
 #        policies that apply to them, so the policies cannot block our own workloads
@@ -209,6 +210,15 @@ PYEND
         entries+=("$svc-$profile-$cloud=$file")
       done
     done
+  done
+  # The gateway as an Argo Rollout, as Argo CD renders it on a cluster with the controller (the data profile): the pods are the same, and
+  # the probe policy has to cover the Rollout itself.
+  for cloud in aws gcp; do
+    file="$work/render-gateway-rollout-$cloud.yaml"
+    helm template gateway deploy/helm/service --namespace shop -f "$values/images.yaml" -f "$values/gateway.yaml" -f "$values/gateway-data.yaml" \
+      -f "$values/cloud-$cloud.yaml" -f "$values/gateway-rollout.yaml" --set rollout.enabled=true --set rollout.analysis.enabled=true \
+      --set networkPolicy.serviceCidr=203.0.113.0/24 > "$file" || status=1
+    entries+=("gateway-rollout-$cloud=$file")
   done
   helm template data-rabbitmq-credentials platform/data/rabbitmq-credentials --namespace shop > "$work/render-credentials.yaml" || status=1
   entries+=("rabbitmq-credentials=$work/render-credentials.yaml")

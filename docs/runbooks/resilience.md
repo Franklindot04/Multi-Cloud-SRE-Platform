@@ -212,7 +212,7 @@ Nothing new is needed. `scripts/teardown-prep.sh` deletes every claim in the `da
 - **The notifier runs one replica.** Its duplicate detection and its store of notifications are in memory, per pod. It has no budget, so a drain takes it down until it starts elsewhere. It stays at one until that state is shared.
 - **Orders in the memory profile is one pod** and keeps its orders in the pod. The memory profile has no autoscaler.
 - **Payments is fixed at two.** It is safe with more; it is not scaled until there is load data.
-- **RabbitMQ and Valkey are single instances.** A node loss stops them until their pods run elsewhere. RabbitMQ would need three nodes and quorum queues, a later change.
+- **RabbitMQ and Valkey are single instances.** A node loss stops them until their pods run elsewhere. RabbitMQ would need three nodes and quorum queues, which is future work.
 - **Replication is asynchronous.** After a failover the most recent committed transactions can be missing on the new primary. The size of that is not known. The replica is not a backup, and no backups are configured.
 - **The autoscaler thresholds are small.** A gateway pod scales out at about 14m of average CPU and an orders pod at about 35m, because the target is a share of the request. This needs real load data.
 - **The node-loss capacity is tight** (see [capacity](#capacity)).

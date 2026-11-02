@@ -1,0 +1,306 @@
+---
+# Unit tests for the alerts on canary rollouts (templates/delivery-rules.yaml, docs/runbooks/progressive-delivery.md).
+#
+# scripts/observability-check.sh renders the monitors chart, writes the rules of the PrometheusRule "delivery" to delivery-rules.yaml next
+# to a copy of this file, and runs `promtool test rules` with the promtool of the Prometheus image the stack deploys, as for the SLO and
+# scaling rules.
+#
+# Every series has one sample a minute and the rules are evaluated every minute. An alert is pending from the first evaluation that sees
+# the condition and fires once the condition has held for the `for` time, so a condition that starts at minute 0 is pending at
+# (for - 1)m and firing at (for + 1)m. Each scenario also has a case that must stay quiet. The series are what the controller exports
+# (controller/metrics in its source): rollout_info and analysis_run_info have the value 1 and the phase as a label.
+rule_files:
+  - delivery-rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # --- RolloutAborted (5m) ---
+  # The gateway rollout is aborted from minute 0 and stays so. A rollout in another namespace is aborted too, and a third one is aborted
+  # for one minute only (a series that is gone is still seen for five minutes, which is less than the
+  # 5m of the alert). Only the gateway alerts.
+  - interval: 1m
+    input_series:
+      - series: 'rollout_info{namespace="shop",name="gateway",strategy="canary",phase="Abort"}'
+        values: '1x40'
+      - series: 'rollout_info{namespace="other",name="x",strategy="canary",phase="Abort"}'
+        values: '1x40'
+      - series: 'rollout_info{namespace="shop",name="short",strategy="canary",phase="Abort"}'
+        values: '1 _x39'
+    alert_rule_test:
+      - alertname: RolloutAborted
+        eval_time: 4m
+        exp_alerts: []
+      - alertname: RolloutAborted
+        eval_time: 6m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              name: gateway
+              strategy: canary
+              phase: Abort
+            exp_annotations:
+              summary: "The rollout gateway was aborted and has been for 5m"
+              description: >-
+                The Rollout gateway in shop was aborted: the canary was scaled down and the stable
+                pods are serving. The new revision is not live. See why in the analysis runs and the events.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#rollout-aborted
+      - alertname: RolloutAborted
+        eval_time: 30m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              name: gateway
+              strategy: canary
+              phase: Abort
+            exp_annotations:
+              summary: "The rollout gateway was aborted and has been for 5m"
+              description: >-
+                The Rollout gateway in shop was aborted: the canary was scaled down and the stable
+                pods are serving. The new revision is not live. See why in the analysis runs and the events.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#rollout-aborted
+
+  # --- RolloutDegraded (10m) ---
+  # The gateway is in the phase Timeout from minute 0. A second rollout is Progressing, which is normal, and a third is Timeout for 5
+  # minutes and then Completed.
+  - interval: 1m
+    input_series:
+      - series: 'rollout_info{namespace="shop",name="gateway",strategy="canary",phase="Timeout"}'
+        values: '1x40'
+      - series: 'rollout_info{namespace="shop",name="busy",strategy="canary",phase="Progressing"}'
+        values: '1x40'
+      - series: 'rollout_info{namespace="shop",name="brief",strategy="canary",phase="Timeout"}'
+        values: '1x5 _x35'
+    alert_rule_test:
+      - alertname: RolloutDegraded
+        eval_time: 9m
+        exp_alerts: []
+      - alertname: RolloutDegraded
+        eval_time: 11m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              name: gateway
+              strategy: canary
+              phase: Timeout
+            exp_annotations:
+              summary: "The rollout gateway is in the phase Timeout"
+              description: >-
+                The Rollout gateway in shop is Timeout (Argo CD shows it
+                as Degraded): it passed its progress deadline, hit an error, or its spec is not valid. Pods may be stuck.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#rollout-degraded
+
+  # --- RolloutPausedTooLong (30m) ---
+  # The gateway is paused from minute 0 and nothing moves it on. A second rollout is paused for 8 minutes, as a pause step does, and
+  # then Progressing.
+  - interval: 1m
+    input_series:
+      - series: 'rollout_info{namespace="shop",name="gateway",strategy="canary",phase="Paused"}'
+        values: '1x60'
+      - series: 'rollout_info{namespace="shop",name="stepping",strategy="canary",phase="Paused"}'
+        values: '1x8 _x52'
+    alert_rule_test:
+      - alertname: RolloutPausedTooLong
+        eval_time: 29m
+        exp_alerts: []
+      - alertname: RolloutPausedTooLong
+        eval_time: 31m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              name: gateway
+              strategy: canary
+              phase: Paused
+            exp_annotations:
+              summary: "The rollout gateway has been paused for 30m"
+              description: >-
+                The Rollout gateway in shop is paused and nothing will move it on by itself. The
+                usual reason is an inconclusive analysis: the canary got too little traffic to be judged.
+                Someone has to promote or abort it.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#rollout-paused-too-long
+
+  # --- AnalysisRunFailed (5m) ---
+  # One run failed and is kept, another succeeded, and a failed run in another namespace is not ours.
+  - interval: 1m
+    input_series:
+      - series: 'analysis_run_info{namespace="shop",name="gateway-6d4cf56db6-2-gateway-canary",phase="Failed"}'
+        values: '1x40'
+      - series: 'analysis_run_info{namespace="shop",name="gateway-5c9b7f8d44-1-gateway-canary",phase="Successful"}'
+        values: '1x40'
+      - series: 'analysis_run_info{namespace="other",name="x",phase="Failed"}'
+        values: '1x40'
+    alert_rule_test:
+      - alertname: AnalysisRunFailed
+        eval_time: 4m
+        exp_alerts: []
+      - alertname: AnalysisRunFailed
+        eval_time: 6m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              name: gateway-6d4cf56db6-2-gateway-canary
+              phase: Failed
+            exp_annotations:
+              summary: "The analysis run gateway-6d4cf56db6-2-gateway-canary failed"
+              description: >-
+                The analysis run gateway-6d4cf56db6-2-gateway-canary in shop failed: the canary was worse than the thresholds
+                (the success ratio or the share of fast requests) for more than the failure limit. The rollout was aborted.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#analysis-run-failed
+
+  # --- AnalysisRunError (5m) ---
+  # The controller exports one series per phase for each metric of a run, with the value 1 for the phase the metric is in. The metric
+  # success-ratio is in Error (Prometheus could not be queried) and fast-ratio is Successful; the Error series of fast-ratio is 0 and
+  # must not alert.
+  - interval: 1m
+    input_series:
+      - series: >-
+          analysis_run_metric_phase{namespace="shop",name="gateway-6d4cf56db6-2-gateway-canary",metric="success-ratio",type="Prometheus",dry_run="false",phase="Error"}
+        values: '1x40'
+      - series: >-
+          analysis_run_metric_phase{namespace="shop",name="gateway-6d4cf56db6-2-gateway-canary",metric="fast-ratio",type="Prometheus",dry_run="false",phase="Error"}
+        values: '0x40'
+      - series: >-
+          analysis_run_metric_phase{namespace="shop",name="gateway-6d4cf56db6-2-gateway-canary",metric="fast-ratio",type="Prometheus",dry_run="false",phase="Successful"}
+        values: '1x40'
+    alert_rule_test:
+      - alertname: AnalysisRunError
+        eval_time: 4m
+        exp_alerts: []
+      - alertname: AnalysisRunError
+        eval_time: 6m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: shop
+              name: gateway-6d4cf56db6-2-gateway-canary
+              metric: success-ratio
+              type: Prometheus
+              dry_run: "false"
+              phase: Error
+            exp_annotations:
+              summary: "The metric success-ratio of the analysis run gateway-6d4cf56db6-2-gateway-canary has errors"
+              description: >-
+                The metric success-ratio of the analysis run gateway-6d4cf56db6-2-gateway-canary in shop
+                could not be measured. Usually Prometheus could not be queried by the controller. The canary was not judged.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#analysis-run-error
+
+  # --- RolloutsControllerDown (10m), the target fails ---
+  # The controller is up for 5 minutes and then the scrape fails. It is pending until minute 15 and fires after that. A second case
+  # below keeps it up.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="argo-rollouts",namespace="argo-rollouts"}'
+        values: '1x5 0x40'
+    alert_rule_test:
+      - alertname: RolloutsControllerDown
+        eval_time: 14m
+        exp_alerts: []
+      - alertname: RolloutsControllerDown
+        eval_time: 17m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              job: argo-rollouts
+              namespace: argo-rollouts
+            exp_annotations:
+              summary: "The Argo Rollouts controller has been down for 10m"
+              description: >-
+                The Argo Rollouts controller is not running or cannot be scraped. Existing pods keep serving, but a rollout in
+                progress does not
+                advance, and a new release is not started.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#rollouts-controller-down
+
+  # --- RolloutsControllerDown (10m), no pod at all ---
+  # The Deployment has no available pod from minute 5, so the target is gone and "up" has no series. The alert comes from the Deployment.
+  - interval: 1m
+    input_series:
+      - series: 'kube_deployment_status_replicas_available{namespace="argo-rollouts",deployment="argo-rollouts"}'
+        values: '1x5 0x40'
+    alert_rule_test:
+      - alertname: RolloutsControllerDown
+        eval_time: 14m
+        exp_alerts: []
+      - alertname: RolloutsControllerDown
+        eval_time: 17m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              namespace: argo-rollouts
+              deployment: argo-rollouts
+            exp_annotations:
+              summary: "The Argo Rollouts controller has been down for 10m"
+              description: >-
+                The Argo Rollouts controller is not running or cannot be scraped. Existing pods keep serving, but a rollout in
+                progress does not
+                advance, and a new release is not started.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#rollouts-controller-down
+
+  # --- RolloutsControllerDown stays quiet ---
+  # The controller is up and has one available pod all the time. A Deployment of the same name in another namespace is down, which is
+  # not ours.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="argo-rollouts",namespace="argo-rollouts"}'
+        values: '1x40'
+      - series: 'kube_deployment_status_replicas_available{namespace="argo-rollouts",deployment="argo-rollouts"}'
+        values: '1x40'
+      - series: 'kube_deployment_status_replicas_available{namespace="other",deployment="argo-rollouts"}'
+        values: '0x40'
+    alert_rule_test:
+      - alertname: RolloutsControllerDown
+        eval_time: 30m
+        exp_alerts: []
+
+  # --- RolloutsControllerNotReconciling (15m) ---
+  # The reconcile error counter of the gateway rollout rises by one a minute from minute 0. A counter in another namespace rises too, and
+  # the analysis counter is flat. The expression is the sum over the namespace, so the alert has no labels but the severity. The
+  # increase over 10 minutes is above 0 from the first evaluation, so it is pending at 14m and firing at 16m.
+  - interval: 1m
+    input_series:
+      - series: 'rollout_reconcile_error{namespace="shop",name="gateway"}'
+        values: '0+1x60'
+      - series: 'rollout_reconcile_error{namespace="other",name="x"}'
+        values: '0+1x60'
+      - series: 'analysis_run_reconcile_error{namespace="shop",name="gateway-6d4cf56db6-2-gateway-canary"}'
+        values: '3x60'
+    alert_rule_test:
+      - alertname: RolloutsControllerNotReconciling
+        eval_time: 14m
+        exp_alerts: []
+      - alertname: RolloutsControllerNotReconciling
+        eval_time: 17m
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+            exp_annotations:
+              summary: "The Argo Rollouts controller has been failing to reconcile for 15m"
+              description: >-
+                The controller reports errors while it reconciles Rollouts or analysis runs in shop (10 in the last ten
+                minutes). Rollouts may not advance.
+              runbook_url: >-
+                https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md#rollouts-controller-not-reconciling
+
+  # The counters are flat: the controller had errors long ago and has none now. Nothing alerts.
+  - interval: 1m
+    input_series:
+      - series: 'rollout_reconcile_error{namespace="shop",name="gateway"}'
+        values: '7x60'
+      - series: 'analysis_run_reconcile_error{namespace="shop",name="x"}'
+        values: '2x60'
+    alert_rule_test:
+      - alertname: RolloutsControllerNotReconciling
+        eval_time: 40m
+        exp_alerts: []

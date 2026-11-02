@@ -305,6 +305,10 @@ The Cluster status shows the primary, the ready instances and the phase (for exa
 
 **Recovered when.** `kubectl -n data get cluster.postgresql.cnpg.io platform-pg` shows `Cluster in healthy state` with all instances ready.
 
+## Alerts for progressive delivery
+
+Seven tickets for the canary rollout of the gateway and the Argo Rollouts controller: `RolloutAborted`, `RolloutDegraded`, `RolloutPausedTooLong`, `AnalysisRunFailed`, `AnalysisRunError`, `RolloutsControllerDown` and `RolloutsControllerNotReconciling`. They are defined in [`delivery-rules.yaml`](../../platform/observability/monitors/templates/delivery-rules.yaml) and tested in [`delivery-rules.test.yaml`](../../platform/observability/monitors/tests/delivery-rules.test.yaml). They have their own sections, with the first three things to check, in the [progressive delivery runbook](progressive-delivery.md#alerts). They exist only on a cluster with the controller.
+
 ## After an incident
 
 - Write down what happened, the time, the cause and what you did, in `docs/postmortems` if it used a good part of the budget.

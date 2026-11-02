@@ -7,7 +7,7 @@ metadata:
     policies.kyverno.io/title: Require readiness and liveness probes
     policies.kyverno.io/category: Reliability
     policies.kyverno.io/description: >-
-      Every container of a Deployment, StatefulSet or DaemonSet has a readiness probe and a liveness probe. Jobs and CronJobs are
+      Every container of a Deployment, StatefulSet, DaemonSet or Argo Rollout has a readiness probe and a liveness probe. Jobs and CronJobs are
       not checked: a probe has no meaning for a process that is expected to end. The policy matches the controllers, not the pods,
       so the pods of a Job are not checked either.
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true

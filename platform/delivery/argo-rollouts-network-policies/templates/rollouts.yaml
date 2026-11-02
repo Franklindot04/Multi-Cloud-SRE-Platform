@@ -1,0 +1,50 @@
+{{- if .Values.enabled }}
+{{- range $name, $labels := .Values.pods }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-prometheus-scrape
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $labels | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.peer" (dict "namespace" $.Values.prometheus.namespace "labels" $.Values.prometheus.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.metricsPort }}
+{{- end }}
+{{- range $name := .Values.prometheusQuery.pods }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}-allow-prometheus-query
+  namespace: {{ $.Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # For the analysis of the gateway canary. Prometheus is reached through its Service, whose ClusterIP the agent sees, so the rule has the
+  # Service range next to the Prometheus pods; the ingress rule in the observability policies still says who may connect.
+  podSelector:
+    matchLabels:
+      {{- toYaml (get $.Values.pods $name) | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- include "np.peer" (dict "namespace" $.Values.prometheus.namespace "labels" $.Values.prometheus.podLabels) | nindent 8 }}
+        - ipBlock:
+            cidr: {{ include "np.serviceCidr" $ }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.prometheus.queryPort }}
+{{- end }}
+{{- end }}

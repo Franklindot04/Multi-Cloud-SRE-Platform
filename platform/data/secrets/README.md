@@ -11,7 +11,7 @@ The chart renders ordinary RBAC objects (a ServiceAccount, Roles limited to `get
 | `orders-db`, `payments-db` | `shop` | `username`, `password`, `host`, `port`, `dbname` | the orders and payments services |
 | `cache-auth` | `shop` | `password`, `host`, `port` | the services that use the cache |
 
-RabbitMQ credentials are created by the RabbitMQ Cluster Operator (`platform-mq-default-user` in `data`: `username`, `password`, `host`, `port`); the next change copies what the services need into `shop`.
+RabbitMQ credentials are created by the RabbitMQ Cluster Operator (`platform-mq-default-user` in `data`: `username`, `password`, `host`, `port`); a separate chart ([`rabbitmq-credentials`](../rabbitmq-credentials)) copies what the services need into `shop`.
 
 The Job is the interim mechanism. When an external secrets manager is introduced, the same Secret names and keys are produced by External Secrets instead, so the consumers do not change (see [ADR-0014](../../../docs/adr/0014-data-layer.md)).
 

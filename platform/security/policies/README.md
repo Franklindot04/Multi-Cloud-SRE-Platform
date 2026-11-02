@@ -18,7 +18,7 @@ All the policies are of the CEL-based family of `policies.kyverno.io/v1`: five `
 | `restrict-image-registries` | Every container and init container uses an image from `registry` (`ghcr.io/franklindot04`, the value of `image.registry` in `deploy/helm/values/images.yaml`). | Audit | Enforce |
 | `verify-image-signatures` | The images from that registry are signed, keyless, by the images workflow of this repository on `main` (the issuer and identity of `scripts/verify-image.sh`), with a transparency log entry, and carry the SBOM attestation and the build provenance that the script checks. | Audit | Audit |
 | `require-resources` | Every container and init container has CPU and memory requests and a memory limit. | Audit | Enforce |
-| `require-probes` | Every container of a Deployment, StatefulSet or DaemonSet has a readiness and a liveness probe. Jobs and CronJobs are not checked. | Audit | Enforce |
+| `require-probes` | Every container of a Deployment, StatefulSet, DaemonSet or Argo Rollout has a readiness and a liveness probe. Jobs and CronJobs are not checked. | Audit | Enforce |
 | `require-app-name-label` | Every pod has the label `app.kubernetes.io/name`, which the service chart sets. | Audit | Enforce |
 
 The action is `Audit` or `Enforce` (Kyverno's `Deny`), set by `action` in `values.yaml` for all policies and by `policies.<name>.action` for one. Nothing is `Enforce` by default. `values-enforce.yaml` is not used by default; it turns the enforceable policies on and leaves the signature policy in Audit, because it needs the registry and the Sigstore services and has not run on a cluster.
@@ -26,9 +26,18 @@ The action is `Audit` or `Enforce` (Kyverno's `Deny`), set by `action` in `value
 ## Scope
 
 - **Only `shop`** (`scope.namespaces`). The policies are selected by namespace, so `kube-system`, `kube-node-lease`, `argocd`, `kyverno`, `data` and `observability` are not touched. The webhooks of Kyverno itself skip the first four as well.
-- **Pod controllers.** The policies on pods have autogen on for Deployments, StatefulSets, DaemonSets, Jobs and CronJobs, so a controller is checked and not only the pods it makes. The probe policy matches the controllers directly, and not the pods, so the pods of a Job are not checked.
+- **Pod controllers.** The policies on pods have autogen on for Deployments, StatefulSets, DaemonSets, Jobs and CronJobs, so a controller is checked and not only the pods it makes. The probe policy matches the controllers directly, and not the pods, so the pods of a Job are not checked. It also matches `Rollout` (group `argoproj.io`, `v1alpha1`), because a Rollout has `spec.template` like a Deployment and the service chart renders one in place of the Deployment on a cluster with the Argo Rollouts controller ([ADR-0028](../../../docs/adr/0028-progressive-delivery.md)).
 - **One exemption.** A workload with the label `platform.example/policy-exempt: "true"` is left out of every policy. Only the Job that copies the RabbitMQ credentials into `shop` ([`platform/data/rabbitmq-credentials`](../../data/rabbitmq-credentials)) has it: it runs a public `curl` image and belongs to the data layer. It is a `matchCondition` and not an `objectSelector`, because Kyverno does not generate the rules for pod controllers when a policy has an `objectSelector`.
 - **Fail open.** Every policy has `failurePolicy: Ignore`, and Kyverno forces it too, so a dead Kyverno cannot block the cluster.
+
+## Argo Rollouts
+
+A Rollout replaces a Deployment for the gateway on a cluster that has the controller. The policies were reviewed for it:
+
+- **The probe policy** matched `deployments`, `statefulsets` and `daemonsets` only, so a Rollout's pod template was not checked. It now also matches `rollouts`. The rule is harmless on a cluster without the CRD.
+- **The five pod policies** (digest, registries, resources, name label, signatures) match `pods`. The pods of a Rollout are created by its ReplicaSets and are ordinary pods with the same template, so they are checked exactly as before, when each pod is created. Nothing in their CEL depends on the kind of the owner.
+- **What differs is the time of the check.** For a Deployment, autogen checks the Deployment object first, so a bad template is refused (in `Enforce`) when it is applied. Kyverno has no autogen for a Rollout, so with `Enforce` the Rollout would be accepted and the refusal would come later, when its ReplicaSet tries to create a pod, and show as a failed rollout. In `Audit`, as now, there is no difference: the pods are reported. This is accepted for now; a rule on the Rollout object would need a second copy of each expression for the other template path.
+- **The tests** ([`tests`](tests)) have Rollouts for the probe policy (a good one, four that break it, one in another namespace and one that is exempt) and `rollout-pod-*` pods for the others. The reality check renders the gateway as a Rollout, under both clouds, and applies the policies to the Rollout and to the pod made from its template.
 
 ## What is not here, on purpose
 

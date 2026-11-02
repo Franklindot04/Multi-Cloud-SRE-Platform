@@ -1,0 +1,128 @@
+{{- if .Values.deliveryAlerts.enabled }}
+{{- $shop := .Values.services.namespace }}
+{{- $ctl := .Values.delivery.argoRollouts.namespace }}
+{{- $url := .Values.deliveryAlerts.runbookUrl }}
+{{- $a := .Values.deliveryAlerts }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: delivery
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: delivery-rules
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  groups:
+    # Alerts for canary rollouts of the gateway (docs/runbooks/progressive-delivery.md). All are tickets, and the reason is the same for each:
+    # whatever goes wrong, the stable pods keep serving. An aborted canary is scaled down, a paused rollout leaves the old pods in place,
+    # and a dead controller leaves the existing pods alone. Nothing here means that users are failing now; if a canary does fail requests,
+    # the SLO burn-rate alerts (slo-rules.yaml) are the ones that page. Every alert is on state, not on an event, so it resolves when the
+    # state does: a new release, a retry, or the object being removed.
+    #
+    # The metrics are those of the Argo Rollouts controller v1.10.1 (controller/metrics in its source, and docs/features/controller-metrics.md).
+    # They carry the namespace of the Rollout in the label "namespace", which is why the ServiceMonitor sets honorLabels (delivery.yaml):
+    # without it Prometheus would keep the namespace of the controller there. No rule fires on a cluster without the controller: the
+    # series do not exist. Not seen on a cluster.
+    - name: progressive-delivery
+      rules:
+        - alert: RolloutAborted
+          # rollout_info has the value 1 and the phase as a label. "Abort" is the phase of a Rollout that was aborted, by the analysis, by the
+          # progress deadline or by a person, and it stays until a new revision is rolled out or the rollout is retried.
+          expr: rollout_info{namespace="{{ $shop }}", phase="Abort"} == 1
+          for: {{ $a.aborted.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "The rollout {{ `{{ $labels.name }}` }} was aborted and has been for {{ $a.aborted.for }}"
+            description: >-
+              The Rollout {{ `{{ $labels.name }}` }} in {{ `{{ $labels.namespace }}` }} was aborted: the canary was scaled down and the stable
+              pods are serving. The new revision is not live. See why in the analysis runs and the events.
+            runbook_url: {{ $url }}#rollout-aborted
+        - alert: RolloutDegraded
+          # Timeout: the progress deadline passed (the chart aborts then, so Abort follows). Error and InvalidSpec: the controller could not
+          # act on the object.
+          expr: rollout_info{namespace="{{ $shop }}", phase=~"Timeout|Error|InvalidSpec"} == 1
+          for: {{ $a.degraded.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "The rollout {{ `{{ $labels.name }}` }} is in the phase {{ `{{ $labels.phase }}` }}"
+            description: >-
+              The Rollout {{ `{{ $labels.name }}` }} in {{ `{{ $labels.namespace }}` }} is {{ `{{ $labels.phase }}` }} (Argo CD shows it
+              as Degraded): it passed its progress deadline, hit an error, or its spec is not valid. Pods may be stuck.
+            runbook_url: {{ $url }}#rollout-degraded
+        - alert: RolloutPausedTooLong
+          # The steps pause for minutes on their own. A pause that lasts this long is waiting for a person: the analysis was inconclusive (too
+          # little traffic to judge the canary) or a pause step has no duration.
+          expr: rollout_info{namespace="{{ $shop }}", phase="Paused"} == 1
+          for: {{ $a.pausedTooLong.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "The rollout {{ `{{ $labels.name }}` }} has been paused for {{ $a.pausedTooLong.for }}"
+            description: >-
+              The Rollout {{ `{{ $labels.name }}` }} in {{ `{{ $labels.namespace }}` }} is paused and nothing will move it on by itself. The
+              usual reason is an inconclusive analysis: the canary got too little traffic to be judged. Someone has to promote or abort it.
+            runbook_url: {{ $url }}#rollout-paused-too-long
+        - alert: AnalysisRunFailed
+          # The phase of an AnalysisRun is on analysis_run_info. The run stays in the cluster as long as the Rollout keeps it (its history
+          # limit), so this does not resolve the moment the rollout is fixed; it resolves when the run is removed.
+          expr: analysis_run_info{namespace="{{ $shop }}", phase="Failed"} == 1
+          for: {{ $a.analysisFailed.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "The analysis run {{ `{{ $labels.name }}` }} failed"
+            description: >-
+              The analysis run {{ `{{ $labels.name }}` }} in {{ `{{ $labels.namespace }}` }} failed: the canary was worse than the thresholds
+              (the success ratio or the share of fast requests) for more than the failure limit. The rollout was aborted.
+            runbook_url: {{ $url }}#analysis-run-failed
+        - alert: AnalysisRunError
+          # A metric of the run is in the phase Error: the query could not be run, which includes "Prometheus could not be queried" (it is
+          # down, or the network policy does not allow the controller to reach it). A run with such errors in a row ends in Error and aborts
+          # the rollout, so the release is stopped for a reason that has nothing to do with the canary. Same lifetime as AnalysisRunFailed.
+          expr: analysis_run_metric_phase{namespace="{{ $shop }}", phase="Error"} == 1
+          for: {{ $a.analysisError.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "The metric {{ `{{ $labels.metric }}` }} of the analysis run {{ `{{ $labels.name }}` }} has errors"
+            description: >-
+              The metric {{ `{{ $labels.metric }}` }} of the analysis run {{ `{{ $labels.name }}` }} in {{ `{{ $labels.namespace }}` }}
+              could not be measured. Usually Prometheus could not be queried by the controller. The canary was not judged.
+            runbook_url: {{ $url }}#analysis-run-error
+        - alert: RolloutsControllerDown
+          # Two ways to be down: the target is scraped and fails, or the Deployment has no available pod (then the target is gone and "up"
+          # has no series). The Deployment series exists only where the controller is deployed, so this is quiet where it is not.
+          expr: |
+            (up{job="argo-rollouts", namespace="{{ $ctl }}"} == 0)
+              or
+            (kube_deployment_status_replicas_available{namespace="{{ $ctl }}", deployment="argo-rollouts"} == 0)
+          for: {{ $a.controllerDown.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "The Argo Rollouts controller has been down for {{ $a.controllerDown.for }}"
+            description: >-
+              The Argo Rollouts controller is not running or cannot be scraped. Existing pods keep serving, but a rollout in progress does not
+              advance, and a new release is not started.
+            runbook_url: {{ $url }}#rollouts-controller-down
+        - alert: RolloutsControllerNotReconciling
+          # The reconcile error counters of the controller rose over the whole window, for a Rollout or an AnalysisRun in shop.
+          expr: |
+            (sum(increase(rollout_reconcile_error{namespace="{{ $shop }}"}[10m])) > 0)
+              or
+            (sum(increase(analysis_run_reconcile_error{namespace="{{ $shop }}"}[10m])) > 0)
+          for: {{ $a.notReconciling.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "The Argo Rollouts controller has been failing to reconcile for {{ $a.notReconciling.for }}"
+            description: >-
+              The controller reports errors while it reconciles Rollouts or analysis runs in {{ $shop }} ({{ `{{ $value }}` }} in the last ten
+              minutes). Rollouts may not advance.
+            runbook_url: {{ $url }}#rollouts-controller-not-reconciling
+{{- end }}

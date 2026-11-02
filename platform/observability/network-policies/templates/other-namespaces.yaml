@@ -98,6 +98,49 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: prometheus-allow-to-argo-rollouts
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The metrics port of the Argo Rollouts controller. A cluster without it has no such pod, and the rule matches nothing.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- include "np.peer" (dict "namespace" .Values.argoRollouts.namespace "labels" .Values.argoRollouts.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.argoRollouts.metricsPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-allow-from-argo-rollouts
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The Argo Rollouts controller queries Prometheus for the analysis of the gateway canary. It connects to the Service, and the agent matches
+  # ingress against the pod address of the client, so the source is the controller's pod. Query port only.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.peer" (dict "namespace" .Values.argoRollouts.namespace "labels" .Values.argoRollouts.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.argoRollouts.prometheusPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: prometheus-allow-to-coredns
   namespace: {{ .Values.namespace }}
   annotations:

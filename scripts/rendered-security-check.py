@@ -20,7 +20,7 @@ import sys
 
 import yaml
 
-WORKLOADS = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Pod", "CronJob"}
+WORKLOADS = {"Deployment", "Rollout", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Pod", "CronJob"}
 CREDENTIAL_NAME = re.compile(r"(PASSWORD|SECRET|TOKEN|API_?KEY|CREDENTIAL)", re.IGNORECASE)
 
 

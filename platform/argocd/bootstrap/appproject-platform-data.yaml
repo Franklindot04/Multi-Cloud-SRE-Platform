@@ -36,7 +36,7 @@ spec:
       kind: ValidatingWebhookConfiguration
     - group: storage.k8s.io
       kind: StorageClass
-  # Every namespaced kind, which includes the ExternalSecret that will make the data layer's Secrets (a later change). The stores are
+  # Every namespaced kind, which includes the ExternalSecret that makes the data layer's Secrets. The stores are
   # cluster-scoped and belong to the platform-addons project.
   namespaceResourceWhitelist:
     - group: "*"

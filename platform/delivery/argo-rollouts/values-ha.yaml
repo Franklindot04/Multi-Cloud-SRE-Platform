@@ -1,0 +1,9 @@
+---
+# High availability: two controller replicas with leader election (the chart sets --leader-elect when there is more than one). The standby
+# takes over in seconds when the leader's node goes. Needs room for another 50m CPU and 64Mi of memory; use after values.yaml.
+argo-rollouts:
+  controller:
+    replicas: 2
+    pdb:
+      enabled: true
+      maxUnavailable: 1

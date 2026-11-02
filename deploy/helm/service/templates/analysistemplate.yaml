@@ -1,0 +1,54 @@
+{{- if and .Values.rollout.enabled .Values.rollout.analysis.enabled }}
+{{- include "service.validateRollout" . -}}
+{{- $name := include "service.name" . }}
+{{- $a := .Values.rollout.analysis }}
+{{- /* The pods of the canary: their names are <rollout>-<pod template hash>-<suffix>. The hash is the analysis argument. */}}
+{{- $hash := "{{args.canary-hash}}" }}
+{{- $sel := printf "service=%q, pod=~\"%s-%s-.+\", route!~%q" $a.service $name $hash $a.excludedRoutes }}
+{{- $good := printf "http_requests_total{%s, status!~\"4..\"}" $sel }}
+{{- $bad := printf "http_requests_total{%s, status=~\"5..\"}" $sel }}
+{{- $count := printf "http_request_duration_seconds_count{%s}" $sel }}
+{{- $fast := printf "http_request_duration_seconds_bucket{%s, le=\"0.5\"}" $sel }}
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ $name }}-canary
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  args:
+    # The pod template hash of the canary, passed in by the Rollout (podTemplateHashValue: Latest).
+    - name: canary-hash
+  metrics:
+    # The share of requests that were not server errors, on the canary pods only (the availability SLO of the gateway). A
+    # measurement without enough requests, or without data, is NaN: neither condition is true, so it is inconclusive.
+    - name: success-ratio
+      interval: {{ $a.interval }}
+      initialDelay: {{ $a.initialDelay }}
+      successCondition: result[0] >= {{ $a.successRatio }}
+      failureCondition: result[0] < {{ $a.successRatio }}
+      failureLimit: {{ $a.failureLimit }}
+      inconclusiveLimit: {{ $a.inconclusiveLimit }}
+      consecutiveErrorLimit: {{ $a.consecutiveErrorLimit }}
+      provider:
+        prometheus:
+          address: {{ $a.prometheusAddress }}
+          query: >-
+            ((1 - ((sum(increase({{ $bad }}[{{ $a.window }}])) or vector(0)) / sum(increase({{ $good }}[{{ $a.window }}]))))
+            and (sum(increase({{ $good }}[{{ $a.window }}])) >= {{ $a.minRequests }})) or vector(NaN)
+    # The share of requests that took 0.5 s or less, on the canary pods only (the latency SLO of the gateway), by the same rules.
+    - name: fast-ratio
+      interval: {{ $a.interval }}
+      initialDelay: {{ $a.initialDelay }}
+      successCondition: result[0] >= {{ $a.fastRatio }}
+      failureCondition: result[0] < {{ $a.fastRatio }}
+      failureLimit: {{ $a.failureLimit }}
+      inconclusiveLimit: {{ $a.inconclusiveLimit }}
+      consecutiveErrorLimit: {{ $a.consecutiveErrorLimit }}
+      provider:
+        prometheus:
+          address: {{ $a.prometheusAddress }}
+          query: >-
+            ((sum(increase({{ $fast }}[{{ $a.window }}])) / sum(increase({{ $count }}[{{ $a.window }}])))
+            and (sum(increase({{ $count }}[{{ $a.window }}])) >= {{ $a.minRequests }})) or vector(NaN)
+{{- end }}

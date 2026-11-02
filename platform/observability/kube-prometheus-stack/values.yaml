@@ -216,7 +216,7 @@ kube-prometheus-stack:
       existingSecret: grafana-admin
       userKey: admin-user
       passwordKey: admin-password
-    # Dashboards are added in a later change. They will be ConfigMaps in this namespace labelled
+    # Dashboards are ConfigMaps in this namespace (platform/observability/dashboards) labelled
     # grafana_dashboard: "1", which the sidecar loads; the chart's own dashboards need the default rules.
     defaultDashboardsEnabled: false
     # The Prometheus data source is a ConfigMap created by the chart and loaded by the sidecar. Loki and Tempo are added

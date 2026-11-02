@@ -28,6 +28,11 @@ spec:
     # already; the store is the one new kind.
     - server: "*"
       namespace: external-secrets
+    # Argo Rollouts (platform/delivery/argo-rollouts) and its network policies. The cluster-scoped kinds its chart renders (CRDs,
+    # ClusterRoles and ClusterRoleBindings) are in the list below already; the chart renders no webhook configuration and no other
+    # cluster-scoped kind.
+    - server: "*"
+      namespace: argo-rollouts
   # Cluster-scoped kinds the add-on charts create. Anything else is rejected.
   clusterResourceWhitelist:
     - group: ""

@@ -1,0 +1,66 @@
+---
+# Argo Rollouts (vendored, version-pinned official chart): the controller and its CRDs, with no Rollout, no AnalysisTemplate, no dashboard
+# and no notifications. Wave 18: after the observability stack (waves 10 to 17), so that Prometheus is there for the analyses of a later
+# change, and before the admission policies and the services (wave 20), which will use Rollouts. Waves only order the creation of the
+# ApplicationSets; each Application syncs on its own. Only clusters labelled platform.example/progressive-delivery=true get it (off by
+# default; scripts/bootstrap-argocd.sh --enable-progressive-delivery). The CRDs are about 230 KB each at most, under the 256 KiB that
+# client-side apply can store in an annotation, but not by far, so the Application syncs with ServerSideApply=true. The chart creates
+# no webhook and the controller writes into none of the objects it applies, so there is nothing to ignore.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: delivery-argo-rollouts
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "18"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/progressive-delivery: "true"
+  template:
+    metadata:
+      name: 'delivery-argo-rollouts-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: delivery-argo-rollouts
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/delivery/argo-rollouts
+        helm:
+          releaseName: argo-rollouts
+          valueFiles:
+            - values.yaml
+      destination:
+        server: '{{ .server }}'
+        namespace: argo-rollouts
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ServerSideApply=true
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/enforce-version: latest
+            pod-security.kubernetes.io/warn: restricted
+            pod-security.kubernetes.io/warn-version: latest
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/audit-version: latest
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

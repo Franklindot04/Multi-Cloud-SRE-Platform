@@ -111,6 +111,71 @@ topologySpread:
   maxSkew: 1
   whenUnsatisfiable: ScheduleAnyway
 
+# Progressive delivery with Argo Rollouts (platform/delivery/argo-rollouts, ADR-0028). Off by default: the workload is then a
+# Deployment, as before. When enabled the chart renders a Rollout in its place, from the same pod template, and (with
+# analysis.enabled) an AnalysisTemplate. The cluster must have the Rollouts controller and its CRDs: Argo CD sets enabled from the
+# cluster label platform.example/progressive-delivery (see the ApplicationSet of the service), never from Git.
+#
+# There is no ingress controller with weighted routing and no service mesh, so there is no traffic router. A canary step setWeight
+# is then a share of the REPLICAS, and the Service sends requests to every ready pod, stable and canary alike. The split of the
+# requests is only as exact as the replica counts allow: Rollouts picks the whole number of canary pods whose share is closest to the
+# weight (a tie rounds up, and there is always at least one canary and one stable pod between 1 and 99 percent), so 25 percent of 2
+# replicas is 1 canary pod and 1 stable pod, which is about half of the requests. The numbers are approximate, and they depend on
+# the replica count.
+rollout:
+  enabled: false
+  # How many old ReplicaSets are kept for a rollback (the Deployment keeps 3).
+  revisionHistoryLimit: 3
+  # The canary may add this many pods above the desired count (a percentage rounds up). 50 percent lets the largest default step,
+  # 50 percent, have its pods; a smaller surge would cap the canary below the step. It cannot be 0 while maxUnavailable is 0.
+  maxSurge: 50%
+  # Zero, as for the Deployment: a rollout never takes a ready pod away before its replacement is ready. It is never above the
+  # budget in podDisruptionBudget.maxUnavailable, which counts only voluntary disruptions (a node drain), not the rollout itself.
+  maxUnavailable: 0
+  # The rollout is marked failed when it makes no progress for this long, and (progressDeadlineAbort) is then aborted.
+  progressDeadlineSeconds: 600
+  progressDeadlineAbort: true
+  # An aborted rollout sets the canary weight back to zero, so the canary pods are scaled down (as far as the stable pods being
+  # available allows) and the stable ReplicaSet keeps serving. abortScaleDownDelaySeconds is not set: the project documents it only
+  # for a canary with a traffic router.
+  # The canary steps, in order. setWeight is a share of the replicas (see above); pause with a duration continues by itself,
+  # a pause without one waits for a person. When the steps end the canary is promoted. The pauses are long enough for the
+  # analysis to decide before the rollout is promoted (a contract check compares the two).
+  steps:
+    - setWeight: 25
+    - pause: {duration: 5m}
+    - setWeight: 50
+    - pause: {duration: 5m}
+  # The background analysis that runs while the steps proceed. Needs Prometheus (the observability layer).
+  analysis:
+    enabled: false
+    # Where the controller queries: the Service of the Prometheus in platform/observability/kube-prometheus-stack.
+    prometheusAddress: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090
+    # The rate window of both queries and how often they run. The window must hold at least two scrapes (30 s).
+    window: 2m
+    interval: 1m
+    # Wait this long after the first step before the first measurement, so that the canary pods are ready and scraped.
+    initialDelay: 2m
+    # The canary is measured only when it served at least this many requests in the window. Below that the measurement has no
+    # value (NaN), which is neither a success nor a failure: it is inconclusive. See the README of the chart.
+    minRequests: 20
+    # Thresholds. The objectives of the gateway are 99.5 percent available and 95 percent under 0.5 s (monitors chart, slos).
+    # The default is the objective minus a margin of 0.5 percentage points for availability and 5 for latency: a window of two
+    # minutes holds few requests, and one slow or failed request must not abort a rollout by itself.
+    successRatio: 0.99
+    fastRatio: 0.90
+    # A measurement below its threshold is a failure; more than failureLimit failures fail the run, and the rollout is aborted.
+    failureLimit: 2
+    # Measurements with too little traffic. More than this many make the run inconclusive, and the rollout stops where it is
+    # and waits for a person to promote or abort it. It does not promote and it does not abort.
+    inconclusiveLimit: 2
+    # Errors of the query itself (Prometheus not reachable) in a row before the run is an error, which aborts the rollout.
+    consecutiveErrorLimit: 3
+    # The route label of the operational endpoints, left out of both queries as in the SLO rules.
+    excludedRoutes: "/healthz|/readyz|/metrics|/version"
+    # The service label of the series the queries read (the SLO rules use service="gateway"). The values file of the service sets it.
+    service: ""
+
 nodeSelector: {}
 tolerations: []
 podAnnotations: {}

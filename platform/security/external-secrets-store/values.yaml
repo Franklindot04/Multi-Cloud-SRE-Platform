@@ -1,5 +1,5 @@
 ---
-# The ClusterSecretStore the ExternalSecrets of the platform point at (a later change). It holds no credential of any kind: the External
+# The ClusterSecretStore the ExternalSecrets of the platform point at. It holds no credential of any kind: the External
 # Secrets Operator signs in to AWS with the IAM role on its service account (IAM roles for service accounts), through the web identity
 # token Kubernetes gives that service account. The role can only read /<prefix>/<environment>/* (infra/terraform, module
 # aws-external-secrets-iam).

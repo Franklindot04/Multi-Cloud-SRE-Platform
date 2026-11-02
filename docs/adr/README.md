@@ -31,3 +31,4 @@ Significant decisions are recorded here using the [template](template.md). Recor
 | [0025](0025-admission-policies.md) | Admission policies | Accepted |
 | [0026](0026-resilience-and-autoscaling.md) | Resilience and autoscaling | Accepted |
 | [0027](0027-external-secrets.md) | External secrets management | Accepted |
+| [0028](0028-progressive-delivery.md) | Progressive delivery with Argo Rollouts | Accepted |

@@ -6,6 +6,7 @@ on:
       - "deploy/**"
       - "platform/argocd/**"
       - "platform/data/rabbitmq-credentials/**"
+      - "platform/observability/monitors/values.yaml"
       - "scripts/**"
       - ".yamllint.yaml"
       - ".github/workflows/deploy.yml"

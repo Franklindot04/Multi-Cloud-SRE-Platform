@@ -66,6 +66,15 @@ secrets:
     namespace: external-secrets
     interval: 30s
 
+# The Argo Rollouts controller (platform/delivery/argo-rollouts) serves its metrics on the port "metrics" (8090) of a Service. The monitor
+# lives here and selects it in the argo-rollouts namespace, like the ones for Kyverno and the External Secrets Operator, so the controller's
+# chart needs no Prometheus Operator CRD. A cluster without the controller has nothing to select, and the monitor does nothing.
+delivery:
+  argoRollouts:
+    enabled: true
+    namespace: argo-rollouts
+    interval: 30s
+
 # Service level objectives for the order flow: recording rules for the error ratio over several windows, and
 # multi-window burn-rate alerts (docs/adr/0023-slos-and-alerting.md). Prometheus evaluates them. There is no
 # Alertmanager in this profile yet, so an alert is visible in the Prometheus UI and delivered nowhere. The default
@@ -158,6 +167,26 @@ slo:
         sum(__FN__(messages_consumed_total{job="notifier", result="dead_letter"}[__WINDOW__]))
       total: >-
         sum(__FN__(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[__WINDOW__]))
+
+# Alerts for canary rollouts of the gateway (templates/delivery-rules.yaml, docs/runbooks/progressive-delivery.md). All are tickets. They
+# need the Argo Rollouts controller; on a cluster without it the series do not exist and nothing fires.
+deliveryAlerts:
+  enabled: true
+  runbookUrl: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/blob/main/docs/runbooks/progressive-delivery.md
+  aborted:
+    for: 5m
+  degraded:
+    for: 10m
+  pausedTooLong:
+    for: 30m
+  analysisFailed:
+    for: 5m
+  analysisError:
+    for: 5m
+  controllerDown:
+    for: 10m
+  notReconciling:
+    for: 15m
 
 # Alerts for the autoscalers, the disruption budgets, pods that cannot be scheduled and the PostgreSQL instances
 # (templates/scaling-rules.yaml, docs/runbooks/alerts.md). All are tickets. The runbook address is slo.runbookUrl.

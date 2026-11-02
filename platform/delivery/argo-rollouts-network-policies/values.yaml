@@ -1,0 +1,54 @@
+---
+# Network policies for the argo-rollouts namespace: the Argo Rollouts controller (platform/delivery/argo-rollouts, chart 2.43.8). It has no
+# webhook, so nothing calls it but Prometheus, and no rule takes the address range of the VPC.
+
+# Turn the policies off (nothing is rendered, and Argo CD prunes what it created). The way back if a policy blocks something that
+# must work; see docs/runbooks/network-policies.md.
+enabled: true
+
+namespace: argo-rollouts
+
+# The address range of the cluster's Services. The VPC CNI network policy agent matches an egress rule against the address the
+# pod connects to, which for a Service (the Kubernetes API, the cluster DNS, the Prometheus Service) is its ClusterIP, translated to a pod
+# only afterwards. So the API server is reached by port 443 to this range (the Service "kubernetes"), DNS gets it next to the DNS pods, and
+# Prometheus gets it next to its pods. Argo CD passes it from the cluster annotation platform.example/service-cidr, which
+# scripts/bootstrap-argocd.sh writes from the Terraform output service_cidr_block. It is never committed, and the chart refuses to render
+# without it.
+serviceCidr: ""
+
+dns:
+  namespace: kube-system
+  podLabels:
+    k8s-app: kube-dns
+
+# Where Prometheus runs. It scrapes the metrics port of the controller, by pod address.
+prometheus:
+  namespace: observability
+  podLabels:
+    app.kubernetes.io/name: prometheus
+    operator.prometheus.io/name: kube-prometheus-stack-prometheus
+  # The port of the query endpoint (the web port of Prometheus, behind the Service kube-prometheus-stack-prometheus).
+  queryPort: 9090
+
+# The pods, by the labels the chart puts on them.
+pods:
+  controller:
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/component: rollouts-controller
+
+# The controller serves its metrics on this port.
+metricsPort: 8090
+
+# The controller calls the Kubernetes API (it watches Rollouts, ReplicaSets and Services, and writes them) and so gets TCP 443 to the
+# Service range.
+apiAccess:
+  - name: controller
+    matchLabels:
+      app.kubernetes.io/name: argo-rollouts
+      app.kubernetes.io/component: rollouts-controller
+
+# The controller queries Prometheus for the analysis of the gateway canary (the AnalysisTemplate of deploy/helm/service, rollout mode):
+# the controller, not the pod being analysed, runs the query, so this rule is the one that matters. It is a Service, so the rule
+# has the Service range next to the Prometheus pods.
+prometheusQuery:
+  pods: [controller]

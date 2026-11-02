@@ -1,0 +1,207 @@
+---
+# Unit tests for the two queries of the canary analysis (deploy/helm/service/templates/analysistemplate.yaml, ADR-0028).
+#
+# scripts/rollout-analysis-test.py reads the queries from the rendered AnalysisTemplate, puts them in place of the __SUCCESS_RATIO__ and
+# __FAST_RATIO__ markers below (with the pod template hash abc123 in place of the analysis argument) and the thresholds of the
+# conditions in place of __SUCCESS_THRESHOLD__ and __FAST_THRESHOLD__, and scripts/observability-check.sh runs `promtool test rules`
+# on the result with the promtool of the Prometheus image the stack deploys. The queries are therefore the real ones, not copies.
+#
+# The canary is the pod gateway-abc123-aaaaa. The stable pod gateway-def456-bbbbb is always in the data and always in a bad state
+# where the canary is good (and the other way round), so that a query which reads the stable pod too is noticed. Counters rise every
+# 30 seconds, like the scrape interval of the stack, and the window of the queries is 2 minutes. The numbers are worked by hand in
+# the comments; a ratio does not depend on the extrapolation of increase(), because every series is sampled at the same moments.
+#
+# A condition is written as the AnalysisTemplate writes it: success is "result >= T" and failure is "result < T". `>= bool` and
+# `< bool` give 1 when it holds and 0 when it does not; for no data (NaN) both give 0, which is what makes the measurement
+# inconclusive: neither success nor failure. promtool cannot compare NaN with NaN, so "the result is NaN" is written as "the result
+# is not equal to itself" (x != bool x is 1 only for NaN, and gives no sample at all for an empty result).
+evaluation_interval: 30s
+
+tests:
+  # All good. The canary serves 1 request a second, all 200 and all within 0.5 s: success 1 and fast 1. It also served some 404s
+  # (client errors, which are in neither count) and /healthz, which is left out. The stable pod is bad on both counts and must not
+  # change the result.
+  - interval: 30s
+    input_series:
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",status="200"}'
+        values: '0+30x20'
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",status="404"}'
+        values: '0+10x20'
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/healthz",status="500"}'
+        values: '0+30x20'
+      - series: 'http_requests_total{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",status="200"}'
+        values: '0+15x20'
+      - series: 'http_requests_total{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",status="500"}'
+        values: '0+15x20'
+      - series: 'http_request_duration_seconds_count{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",le="0.5"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",le="+Inf"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_count{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",le="0.5"}'
+        values: '0+3x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",le="+Inf"}'
+        values: '0+30x20'
+    promql_expr_test:
+      - expr: __SUCCESS_RATIO__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: __FAST_RATIO__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: (__SUCCESS_RATIO__) >= bool __SUCCESS_THRESHOLD__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+
+  # The canary fails. Of its 30 requests every 30 seconds, 27 are 200 and 3 are 500: the success ratio is 1 - 3 / 30 = 0.9, below
+  # the threshold, so the failure condition holds and the success condition does not. Its latency is good (1). The stable pod is
+  # perfect and must not lift the result.
+  - interval: 30s
+    input_series:
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",status="200"}'
+        values: '0+27x20'
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",status="500"}'
+        values: '0+3x20'
+      - series: 'http_requests_total{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",status="200"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_count{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",le="0.5"}'
+        values: '0+30x20'
+    promql_expr_test:
+      - expr: __SUCCESS_RATIO__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0.9
+      - expr: (__SUCCESS_RATIO__) < bool __SUCCESS_THRESHOLD__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: (__SUCCESS_RATIO__) >= bool __SUCCESS_THRESHOLD__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - expr: __FAST_RATIO__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+
+  # The canary is slow. It answers 30 requests every 30 seconds, all 200, but only 15 of them within 0.5 s: the fast ratio is 0.5,
+  # below its threshold. Its availability is good (1). The stable pod is fast and must not lift the result.
+  - interval: 30s
+    input_series:
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",status="200"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_count{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",le="0.5"}'
+        values: '0+15x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",le="+Inf"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_count{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",le="0.5"}'
+        values: '0+30x20'
+    promql_expr_test:
+      - expr: __FAST_RATIO__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0.5
+      - expr: (__FAST_RATIO__) < bool __FAST_THRESHOLD__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: __SUCCESS_RATIO__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+
+  # No traffic, four ways. In each the result is NaN (see the note at the top), not an empty result and not a number, and both
+  # conditions are false: the measurement is inconclusive. (1) The canary pod is there and idle: its counters do not move. (2) The
+  # canary has not been scraped yet: only the stable pod is in the data, and it is busy. (3) Too little traffic: 1 request a minute
+  # is 2 requests in the window, under the minimum of 20. (4) Only client errors: 404s are in neither count, so there are no valid requests.
+  - interval: 30s
+    input_series:
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",status="200"}'
+        values: '5+0x20'
+      - series: 'http_request_duration_seconds_count{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders"}'
+        values: '5+0x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",le="0.5"}'
+        values: '5+0x20'
+      - series: 'http_requests_total{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",status="200"}'
+        values: '0+30x20'
+    promql_expr_test:
+      - &nan_success
+        expr: (__SUCCESS_RATIO__) != bool (__SUCCESS_RATIO__)
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - &nan_fast
+        expr: (__FAST_RATIO__) != bool (__FAST_RATIO__)
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+      - expr: (__SUCCESS_RATIO__) >= bool __SUCCESS_THRESHOLD__ or (__SUCCESS_RATIO__) < bool __SUCCESS_THRESHOLD__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - expr: (__FAST_RATIO__) >= bool __FAST_THRESHOLD__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - expr: (__FAST_RATIO__) < bool __FAST_THRESHOLD__
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0
+
+  - interval: 30s
+    input_series:
+      - series: 'http_requests_total{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",status="200"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_count{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders"}'
+        values: '0+30x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-def456-bbbbb",route="/api/orders",le="0.5"}'
+        values: '0+30x20'
+    promql_expr_test:
+      - *nan_success
+      - *nan_fast
+
+  - interval: 30s
+    input_series:
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",status="200"}'
+        values: '0+0.5x20'
+      - series: 'http_request_duration_seconds_count{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders"}'
+        values: '0+0.5x20'
+      - series: 'http_request_duration_seconds_bucket{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",le="0.5"}'
+        values: '0+0.5x20'
+    promql_expr_test:
+      - *nan_success
+      - *nan_fast
+
+  - interval: 30s
+    input_series:
+      - series: 'http_requests_total{service="gateway",pod="gateway-abc123-aaaaa",route="/api/orders",status="404"}'
+        values: '0+30x20'
+    promql_expr_test:
+      - *nan_success

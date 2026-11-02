@@ -54,6 +54,10 @@
 #      other alerts go to their receivers), and an Alertmanager started from the image the stack deploys, with that
 #      configuration, a read-only root filesystem and no capabilities, receives six test alerts through its API
 #      (scripts/alertmanager-check.py): they go to the right receivers and the inhibitions hide what they should
+#      the delivery rules (aborted, degraded and paused rollouts, failed analysis runs, the controller) are linted and unit tested the same way
+#      the two queries of the canary analysis (deploy/helm/service, rollout mode) are run by promtool against synthetic series: all good,
+#      canary failing, canary slow and four kinds of no traffic, and the tests are shown to fail on a broken query; the address the
+#      analysis queries is the Prometheus Service the stack renders
 #   6. shellcheck on the scripts, through scripts/shellcheck.sh (same flags and version as CI)
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
@@ -243,6 +247,7 @@ else
 
   contract project-fit "observability-monitors" "$work/monitors.yaml" "$project" "$namespace"
   contract scaling-rules "observability-monitors" "$work/monitors.yaml" docs/runbooks/alerts.md
+  contract delivery-rules "observability-monitors" "$work/monitors.yaml" docs/runbooks/progressive-delivery.md
   contract project-fit "observability-network-policies" "$work/network-policies.yaml" "$project" "$namespace"
   contract network-policies "observability-network-policies" "$work/network-policies.yaml"
   contract hooks "observability-network-policies" "$work/network-policies.yaml"
@@ -507,6 +512,90 @@ for d in yaml.safe_load_all(sys.stdin):
     else
       echo "    FAIL the scaling unit tests"
       cat "$work/promtool-test.out"
+      status=1
+    fi
+  fi
+  # The delivery rules (rollouts, analysis runs and the controller): the same, for the PrometheusRule "delivery".
+  if [ -n "$prom_image" ]; then
+    mkdir -p "$work/delivery"
+    "$contract_py" -c 'import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d.get("kind") == "PrometheusRule" and d["metadata"]["name"] == "delivery":
+        yaml.safe_dump({"groups": d["spec"]["groups"]}, sys.stdout, sort_keys=False, width=250)' < "$work/monitors.yaml" > "$work/delivery/delivery-rules.yaml"
+    cp "$root/monitors/tests/delivery-rules.test.yaml" "$work/delivery/"
+    promtool="docker run --rm --entrypoint /bin/promtool -v $work/delivery:/delivery -w /delivery $prom_image"
+    # shellcheck disable=SC2086 # the command is a fixed word list
+    if $promtool check rules --lint-fatal delivery-rules.yaml > "$work/promtool-check.out" 2>&1; then
+      echo "    promtool check rules: $(sed -n 's/^ *SUCCESS: *//p' "$work/promtool-check.out" | head -1) in the delivery rules"
+    else
+      echo "    FAIL promtool check rules on the delivery rules"
+      cat "$work/promtool-check.out"
+      status=1
+    fi
+    # shellcheck disable=SC2086
+    if $promtool test rules delivery-rules.test.yaml > "$work/promtool-test.out" 2>&1; then
+      echo "    the delivery unit tests pass"
+    else
+      echo "    FAIL the delivery unit tests"
+      cat "$work/promtool-test.out"
+      status=1
+    fi
+  fi
+  # The queries of the canary analysis (deploy/helm/service, rollout mode): the real queries are read from the rendered AnalysisTemplate and
+  # run by promtool against synthetic series (deploy/helm/tests/analysis-queries.test.yaml). They read the series the SLO rules read.
+  if [ -n "$prom_image" ]; then
+    svc_values=deploy/helm/values
+    mkdir -p "$work/analysis"
+    if helm template gateway deploy/helm/service --namespace shop -f "$svc_values/images.yaml" -f "$svc_values/gateway.yaml" \
+      -f "$svc_values/gateway-data.yaml" -f "$svc_values/cloud-aws.yaml" -f "$svc_values/gateway-rollout.yaml" \
+      --set networkPolicy.serviceCidr=203.0.113.0/24 --set rollout.enabled=true --set rollout.analysis.enabled=true > "$work/analysis/rollout.yaml" \
+      && "$contract_py" scripts/rollout-analysis-test.py "$work/analysis/rollout.yaml" deploy/helm/tests/analysis-queries.test.yaml "$work/analysis/queries.test.yaml"; then
+      promtool="docker run --rm --entrypoint /bin/promtool -v $work/analysis:/analysis -w /analysis $prom_image"
+      # shellcheck disable=SC2086
+      if $promtool test rules queries.test.yaml > "$work/promtool-test.out" 2>&1; then
+        echo "    the canary analysis queries pass their tests (all good, canary failing, canary slow, four kinds of no traffic)"
+      else
+        echo "    FAIL the canary analysis query tests"
+        cat "$work/promtool-test.out"
+        status=1
+      fi
+      # The tests must be able to fail: a query that reads the stable pods too, and one that has no no-data value, have to be noticed.
+      sed 's/gateway-abc123-\.+/.+/g' "$work/analysis/queries.test.yaml" > "$work/analysis/stable.test.yaml"
+      sed 's/ or vector(NaN)//g' "$work/analysis/queries.test.yaml" > "$work/analysis/nodata.test.yaml"
+      for broken in stable nodata; do
+        # shellcheck disable=SC2086
+        if $promtool test rules "$broken.test.yaml" > /dev/null 2>&1; then
+          echo "    FAIL the analysis tests did not notice a query broken as '$broken'"
+          status=1
+        fi
+      done
+      # The address the analysis queries must be the Service of the Prometheus that the stack renders.
+      address="$("$contract_py" -c 'import sys, yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "AnalysisTemplate":
+        print(d["spec"]["metrics"][0]["provider"]["prometheus"]["address"])' < "$work/analysis/rollout.yaml")"
+      if "$contract_py" - "$address" "$work/stack.yaml" << 'PYEND'; then
+import sys
+
+import yaml
+
+# A bare "=" in a CRD (an enum value) is the YAML 1.1 "value" tag, which PyYAML cannot construct. Read it as text.
+yaml.SafeLoader.add_constructor("tag:yaml.org,2002:value", lambda loader, node: loader.construct_scalar(node))
+host = sys.argv[1].split("//", 1)[1]
+services = [d for d in yaml.safe_load_all(open(sys.argv[2], encoding="utf-8")) if d and d["kind"] == "Service"]
+names = {"{}.{}.svc.cluster.local:{}".format(d["metadata"]["name"], d["metadata"].get("namespace", "observability"), p["port"])
+         for d in services for p in d["spec"]["ports"]}
+if host not in names:
+    print("    FAIL the analysis queries {} but the stack renders no Service at that address".format(host))
+    sys.exit(1)
+print("    the analysis queries the Prometheus Service the stack renders: " + host)
+PYEND
+        :
+      else
+        status=1
+      fi
+    else
+      echo "    FAIL could not build the canary analysis query tests"
       status=1
     fi
   fi
