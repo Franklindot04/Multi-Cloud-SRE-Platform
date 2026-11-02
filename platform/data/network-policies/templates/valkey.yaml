@@ -47,6 +47,9 @@ spec:
         - podSelector:
             matchLabels:
               {{- toYaml .Values.pods.valkey | nindent 14 }}
+        # A replica may reach its primary through the Service.
+        - ipBlock:
+            cidr: {{ include "np.serviceCidr" . }}
       ports:
         - protocol: TCP
           port: 6379

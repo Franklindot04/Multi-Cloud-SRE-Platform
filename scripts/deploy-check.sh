@@ -96,10 +96,13 @@ else
     fi
   }
 
+  # Fixture for what Argo CD supplies from the cluster secret: the Service range of the network policies (a documentation range).
+  service_cidr=(--set networkPolicy.serviceCidr=203.0.113.0/24)
+
   echo "==> helm lint"
   for svc in $services; do
     for profile in $profiles; do
-      helm lint --strict "$chart" -f "$values/images.yaml" -f "$values/$svc.yaml" -f "$values/$svc-$profile.yaml" \
+      helm lint --strict "$chart" -f "$values/images.yaml" -f "$values/$svc.yaml" -f "$values/$svc-$profile.yaml" "${service_cidr[@]}" \
         > "$work/lint.out" 2>&1 || {
         echo "    FAIL [$svc-$profile] helm lint"
         cat "$work/lint.out"
@@ -121,7 +124,7 @@ else
         args=(-f "$values/images.yaml" -f "$values/$svc.yaml" -f "$values/$svc-$profile.yaml")
         [ "$svc" != "gateway" ] || args+=(-f "$values/cloud-$cloud.yaml")
         label="$svc/$profile/$cloud"
-        if helm template "$svc" "$chart" --namespace shop "${args[@]}" > "$work/render.yaml" 2> "$work/render.err"; then
+        if helm template "$svc" "$chart" --namespace shop "${args[@]}" "${service_cidr[@]}" > "$work/render.yaml" 2> "$work/render.err"; then
           validate "$label" "$cloud" "$work/render.yaml"
           [ -z "$py" ] || "$py" scripts/chart-contract-check.py network-policies "$label" < "$work/render.yaml" || status=1
         else
@@ -140,7 +143,7 @@ else
         -f "$values/images.yaml" -f "$values/gateway.yaml" -f "$values/gateway-data.yaml" -f "$values/cloud-$cloud.yaml" \
         --set ingress.enabled=true --set ingress.scheme="$scheme" --set ingress.host=shop.example.test \
         --set certificate.enabled=true --set metrics.serviceMonitor.enabled=true --set metrics.scrapeAnnotations=true \
-        --set 'networkPolicy.ingressCidrs[0]=192.0.2.0/24' \
+        --set 'networkPolicy.ingressCidrs[0]=192.0.2.0/24' "${service_cidr[@]}" \
         > "$work/render.yaml" 2> "$work/render.err"; then
         validate "$label" "$cloud" "$work/render.yaml"
         [ -z "$py" ] || "$py" scripts/chart-contract-check.py network-policies "$label" < "$work/render.yaml" || status=1
@@ -177,14 +180,23 @@ else
   echo "    rendered and checked $count manifest set(s)"
 
   # The ingress must refuse to render without a cloud, and the chart must not render a Secret.
-  if helm template gateway "$chart" -f "$values/gateway.yaml" --set ingress.enabled=true > /dev/null 2>&1; then
+  if helm template gateway "$chart" -f "$values/gateway.yaml" --set ingress.enabled=true "${service_cidr[@]}" > /dev/null 2>&1; then
     echo "    FAIL the ingress rendered without ingress.cloud"
     status=1
   fi
 
   # With the ingress on, the load balancer's source range is required: without it the default deny would drop the traffic.
-  if helm template gateway "$chart" -f "$values/gateway.yaml" -f "$values/cloud-aws.yaml" --set ingress.enabled=true --set ingress.host=shop.example.test > /dev/null 2>&1; then
+  if helm template gateway "$chart" -f "$values/gateway.yaml" -f "$values/cloud-aws.yaml" --set ingress.enabled=true --set ingress.host=shop.example.test "${service_cidr[@]}" > /dev/null 2>&1; then
     echo "    FAIL the ingress rendered without networkPolicy.ingressCidrs"
+    status=1
+  fi
+  # The egress rules need the Service range: without it the chart must not render.
+  if helm template gateway "$chart" -f "$values/gateway.yaml" -f "$values/gateway-memory.yaml" > /dev/null 2>&1; then
+    echo "    FAIL the chart rendered without networkPolicy.serviceCidr"
+    status=1
+  fi
+  if ! helm template gateway "$chart" -f "$values/gateway.yaml" -f "$values/gateway-memory.yaml" --set networkPolicy.matchServiceAddresses=false > /dev/null 2>&1; then
+    echo "    FAIL the chart did not render with matchServiceAddresses=false and no Service range"
     status=1
   fi
 

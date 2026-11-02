@@ -7,11 +7,14 @@ enabled: true
 
 namespace: data
 
-# The address range of the VPC. The Kubernetes API server of EKS is a set of network interfaces owned by the cluster and
-# placed in the VPC subnets, so a pod selector cannot name it and the only narrow rule is port 443 to the VPC range. Argo CD
-# passes it from the cluster secret (the annotation platform.example/vpc-cidr, written by scripts/bootstrap-argocd.sh from
-# the Terraform output vpc_cidr_block). It is never committed, and the chart refuses to render without it.
-vpcCidr: ""
+# The address range of the cluster's Services. The VPC CNI network policy agent matches an egress rule against the address the
+# pod connects to, which for a Service (the Kubernetes API, the cluster DNS, the PostgreSQL read-write Service) is its
+# ClusterIP, translated to a pod only afterwards. So the API server is reached by port 443 to this range, not to the VPC range
+# (the API is the Service "kubernetes"), and every egress to a Service gets this range as a second peer next to the pod
+# selector. Argo CD passes it from the cluster secret (the annotation platform.example/service-cidr, written by
+# scripts/bootstrap-argocd.sh from the Terraform output service_cidr_block). It is never committed, and the chart refuses to
+# render without it.
+serviceCidr: ""
 
 # The cluster DNS pods.
 dns:
@@ -56,7 +59,7 @@ pods:
     app.kubernetes.io/name: platform-mq
     app.kubernetes.io/component: rabbitmq
 
-# Pods that call the Kubernetes API and so need TCP 443 to the VPC range: the PostgreSQL instance manager, the RabbitMQ
+# Pods that call the Kubernetes API and so need TCP 443 to the Service range: the PostgreSQL instance manager, the RabbitMQ
 # peer discovery, and the Jobs of the secrets and PostgreSQL charts (found by their Job names, which they carry as the label
 # batch.kubernetes.io/job-name).
 apiAccess:

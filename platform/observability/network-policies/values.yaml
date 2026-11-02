@@ -8,10 +8,19 @@ enabled: true
 
 namespace: observability
 
-# The address range of the VPC, for the two things that cannot be named by a pod selector: the Kubernetes API server (a set
-# of network interfaces owned by the cluster, in the VPC subnets) and the kubelets (node addresses). Argo CD passes it from
-# the cluster annotation platform.example/vpc-cidr, which scripts/bootstrap-argocd.sh writes from the Terraform output
-# vpc_cidr_block. It is never committed, and the chart refuses to render without it.
+# The address range of the cluster's Services. The VPC CNI network policy agent matches an egress rule against the address the
+# pod connects to, which for a Service (the Kubernetes API, the cluster DNS, the Prometheus and Loki Services) is its
+# ClusterIP, translated to a pod only afterwards. So the API server is reached by port 443 to this range (the Service
+# "kubernetes"), and every flow marked "service" below gets this range as a second peer next to the pod selector. Argo CD
+# passes it from the cluster annotation platform.example/service-cidr, which scripts/bootstrap-argocd.sh writes from the
+# Terraform output service_cidr_block. It is never committed, and the chart refuses to render without it.
+serviceCidr: ""
+
+# The address range of the VPC, for what Prometheus reaches by address and not through a Service: the kubelets (node
+# addresses) and the addresses of the API server's network interfaces, which are the targets of the apiserver scrape (it
+# follows the endpoints of the Service "kubernetes"). Argo CD passes it from the cluster annotation
+# platform.example/vpc-cidr, which scripts/bootstrap-argocd.sh writes from the Terraform output vpc_cidr_block. It is never
+# committed, and the chart refuses to render without it.
 vpcCidr: ""
 
 dns:
@@ -44,7 +53,7 @@ pods:
   tempo:
     app.kubernetes.io/name: tempo
 
-# Pods that call the Kubernetes API and so get TCP 443 to the VPC range, each on its own and not the whole namespace:
+# Pods that call the Kubernetes API and so get TCP 443 to the Service range, each on its own and not the whole namespace:
 # the Prometheus Operator, Prometheus (service discovery, and the API server itself is scraped), kube-state-metrics, the
 # Grafana sidecars (they watch ConfigMaps), Alloy (it reads pod logs through the API) and the Job that makes the Grafana
 # admin Secret.
@@ -72,7 +81,10 @@ apiAccess:
       batch.kubernetes.io/job-name: observability-secrets-generator
 
 # Traffic inside the namespace. Each entry allows the pod "from" to open connections to the pod "to" on the ports, and
-# renders both halves: an egress policy on "from" and an ingress policy on "to".
+# renders both halves: an egress policy on "from" and an ingress policy on "to". "service: true" marks a connection that goes
+# through a Service (its ClusterIP is what the egress rule is matched against), so the egress policy also allows the Service
+# range on those ports. Without it the connection goes to the pod address (Prometheus follows the endpoints of a Service and
+# connects to the pods).
 flows:
   # Prometheus scrapes the stack (Alertmanager's 9093 is also where it sends alerts) ...
   - {from: prometheus, to: grafana, ports: [3000]}
@@ -83,17 +95,18 @@ flows:
   - {from: prometheus, to: alloy, ports: [12345]}
   - {from: prometheus, to: tempo, ports: [3200]}
   - {from: prometheus, to: collector, ports: [8888, 8889]}
-  # ... the operator checks the Prometheus and Alertmanager it runs ...
-  - {from: operator, to: prometheus, ports: [9090, 8080]}
-  - {from: operator, to: alertmanager, ports: [9093, 8080]}
-  # ... Grafana reads its data sources ...
-  - {from: grafana, to: prometheus, ports: [9090]}
-  - {from: grafana, to: loki, ports: [3100]}
-  - {from: grafana, to: tempo, ports: [3200]}
-  - {from: grafana, to: alertmanager, ports: [9093]}
-  # ... and the telemetry pipelines push: logs to Loki, traces to Tempo.
-  - {from: alloy, to: loki, ports: [3100]}
-  - {from: collector, to: tempo, ports: [4317]}
+  # ... the operator checks the Prometheus and Alertmanager it runs (by pod address, or through their Services; both are
+  # allowed because it is not certain which the operator uses) ...
+  - {from: operator, to: prometheus, ports: [9090, 8080], service: true}
+  - {from: operator, to: alertmanager, ports: [9093, 8080], service: true}
+  # ... Grafana reads its data sources through their Services ...
+  - {from: grafana, to: prometheus, ports: [9090], service: true}
+  - {from: grafana, to: loki, ports: [3100], service: true}
+  - {from: grafana, to: tempo, ports: [3200], service: true}
+  - {from: grafana, to: alertmanager, ports: [9093], service: true}
+  # ... and the telemetry pipelines push through the Services: logs to Loki, traces to Tempo.
+  - {from: alloy, to: loki, ports: [3100], service: true}
+  - {from: collector, to: tempo, ports: [4317], service: true}
 
 # Where the sample services run: they send traces to the Collector, and Prometheus scrapes their metrics ports.
 services:

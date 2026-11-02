@@ -114,6 +114,7 @@ Annotate the Kubernetes service account with `eks.amazonaws.com/role-arn: <role 
 | `cluster_arn` | Cluster ARN |
 | `cluster_endpoint` | API server endpoint |
 | `cluster_certificate_authority_data` | Base64 certificate authority data |
+| `service_cidr_block` | Address range of the cluster's Services; the network policy agent matches egress rules against these addresses |
 | `cluster_security_group_id` | EKS-managed cluster security group |
 | `oidc_provider_arn` | IAM OIDC provider ARN |
 | `oidc_issuer` | OIDC issuer URL |

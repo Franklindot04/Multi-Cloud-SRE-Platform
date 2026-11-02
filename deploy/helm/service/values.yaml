@@ -124,6 +124,17 @@ networkPolicy:
   egressToData: []
   # OTLP/gRPC to the OpenTelemetry Collector. Turn off together with OTEL_EXPORTER_OTLP_ENDPOINT.
   collector: true
+  # The VPC CNI network policy agent matches an egress rule against the address the pod connects to, and a connection to a
+  # Service goes to the Service's ClusterIP, which is only translated to a pod afterwards. A rule that names the pods behind
+  # a Service therefore does not let traffic through to it. Each egress rule has a second peer, this address range (the
+  # cluster's Service range), on the same port; the destination's ingress rule, which is matched against the pod, still
+  # says who may connect. The range comes from the cluster (the annotation platform.example/service-cidr, written by
+  # scripts/bootstrap-argocd.sh from the Terraform output service_cidr_block), is never committed, and the chart refuses to
+  # render without it.
+  serviceCidr: ""
+  # Set to false on a network plugin that matches egress after the address is translated (for example GKE Dataplane V2):
+  # the Service range is then neither needed nor used.
+  matchServiceAddresses: true
   # Where traffic from a load balancer comes from, normally the VPC CIDR. Needed (and required) when the ingress is
   # enabled, because the load balancer sends traffic straight to the pod IPs. Never set from Git: Argo CD passes it
   # from the cluster.

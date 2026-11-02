@@ -85,7 +85,7 @@ aws eks describe-cluster --name "$(terraform output -raw cluster_name)" \
 The `vpc-cni` add-on enforces Kubernetes network policies when its configuration has `enableNetworkPolicy` set to `"true"`. The module sets it with `enable_network_policy` (default `true`); without it, NetworkPolicy objects are accepted and ignored. It needs add-on 1.14.0-eksbuild.3 or later (the module always uses the newest version compatible with the cluster), Kubernetes 1.25 or later, and nodes with Linux kernel 5.10 or later (the Amazon Linux 2023 nodes qualify).
 
 - **Fresh apply:** nothing extra. The add-on is created with the setting, and the `aws-node` pods start with the network policy agent.
-- **Existing cluster:** `terraform apply` updates the `vpc-cni` add-on in place with the new configuration. The `aws-node` DaemonSet rolls node by node and each pod gains a second container (`aws-network-policy-agent`). Policies already in the cluster start to be enforced once the agent runs on the node, so apply the policies after this, never before (the allow rules and the default deny are applied together by Argo CD). The update does not restart your pods, but expect a short pause in new pod networking on a node while its `aws-node` pod restarts.
+- **Existing cluster:** `terraform apply` updates the `vpc-cni` add-on in place with the new configuration, and adds the output `service_cidr_block` (the address range of the cluster's Services; the cluster itself does not change). The `aws-node` DaemonSet rolls node by node and each pod gains a second container (`aws-network-policy-agent`). Policies already in the cluster start to be enforced once the agent runs on the node, so apply the policies after this, never before (the allow rules and the default deny are applied together by Argo CD). The update does not restart your pods, but a node may pause new pod networking for a short time while its `aws-node` pod restarts.
 
 Verify:
 
@@ -93,9 +93,18 @@ Verify:
 kubectl -n kube-system get ds aws-node                                   # READY equals DESIRED
 kubectl -n kube-system get pods -l k8s-app=aws-node -o jsonpath='{.items[0].spec.containers[*].name}'; echo   # includes aws-network-policy-agent
 aws eks describe-addon --cluster-name "$(terraform output -raw cluster_name)" --addon-name vpc-cni --query addon.configurationValues --output text
+terraform output -raw service_cidr_block; echo                           # for example 172.20.0.0/16 (the EKS default; an example)
 ```
 
-The order to apply is: Terraform (this add-on setting), then `scripts/bootstrap-argocd.sh` again (it writes the VPC range the policy charts need), then the policy Applications sync, with every allow rule applied before the default deny. The checks to run afterwards, starting with DNS, and the rollback are in the [network policy runbook](network-policies.md). The policies, the VPC range they need (the cluster annotation `platform.example/vpc-cidr`, written by `scripts/bootstrap-argocd.sh`) and what they allow are in [`platform/data/network-policies`](../../platform/data/network-policies), [`platform/observability/network-policies`](../../platform/observability/network-policies) and the service chart ([`deploy/helm/service`](../../deploy/helm/README.md#network-policies)). Run `scripts/bootstrap-argocd.sh` again on an existing cluster so the annotation exists before the policy Applications sync.
+The policy agent matches egress rules against the address a pod connects to. For a Service that is its ClusterIP, before it becomes a pod address, so the policies need the Service range of the cluster. It comes from the output `service_cidr_block`. This was found on a real cluster on 2026-11-02 with the first version of the policies; the policies of this version, which use the range, have not been applied to a cluster yet. See [ADR-0024](../adr/0024-network-policies.md).
+
+The order to apply, for a new cluster and for an existing one:
+
+1. `terraform apply`: the add-on setting and the output `service_cidr_block`.
+2. `scripts/bootstrap-argocd.sh` again, with the flags you already use. It reads the outputs `vpc_cidr_block` and `service_cidr_block` and writes them as the annotations `platform.example/vpc-cidr` and `platform.example/service-cidr` on the cluster Secret. It stops if an output is empty, so Terraform comes first.
+3. Argo CD syncs the policies, with every allow rule applied before the default deny. The two policy Applications and the four service Applications fail to sync, on purpose, until the annotations exist.
+
+The checks to run afterwards, starting with DNS and then the API server, and the rollback are in the [network policy runbook](network-policies.md). The policies and what they allow are in [`platform/data/network-policies`](../../platform/data/network-policies), [`platform/observability/network-policies`](../../platform/observability/network-policies) and the service chart ([`deploy/helm/service`](../../deploy/helm/README.md#network-policies)).
 
 ## Destroy
 

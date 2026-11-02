@@ -80,7 +80,8 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 spec:
-  # The kubelet and cAdvisor metrics are served on every node's address, which is in the VPC range.
+  # The kubelet and cAdvisor metrics are served on every node's address, which is in the VPC range. Prometheus connects to
+  # the address directly, not through a Service.
   podSelector:
     matchLabels:
       {{- toYaml .Values.pods.prometheus | nindent 6 }}
@@ -93,6 +94,30 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.kubeletPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-allow-to-apiserver-endpoints
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The apiserver scrape follows the endpoints of the Service "kubernetes", which are the addresses of the API server's
+  # network interfaces in the VPC subnets, so Prometheus connects to them directly. Its own calls to the API go through the
+  # Service (see allow-kube-api-prometheus).
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ include "np.vpcCidr" . }}
+      ports:
+        - protocol: TCP
+          port: 443
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -8,6 +8,11 @@ output "vpc_cidr_block" {
   value       = module.network.vpc_cidr_block
 }
 
+output "service_cidr_block" {
+  description = "Address range of the cluster's Services, for the network policies (written to the Argo CD cluster secret by scripts/bootstrap-argocd.sh)."
+  value       = module.eks.service_cidr_block
+}
+
 output "availability_zones" {
   description = "Availability zones used by the network."
   value       = module.network.availability_zones

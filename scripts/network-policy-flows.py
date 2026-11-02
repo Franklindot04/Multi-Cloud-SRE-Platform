@@ -25,6 +25,16 @@ The semantics that are modelled:
   - An empty or missing from/to list means every peer; a missing ingress/egress section means no rule, which with the
     policy type means nothing is allowed.
 
+Connections through a Service. The VPC CNI network policy agent matches an egress rule against the address the pod connects to,
+before kube-proxy turns a Service address into a pod address, while an ingress rule is matched against the pod address of the
+source. A flow of the matrix that goes through a Service ("via: service") is therefore evaluated with the ClusterIP of the
+destination, an address in the Service range of the matrix (serviceCidr), as the destination of the source's egress, and with
+the pod as the destination of the ingress. A flow that goes straight to a pod address ("via: pod": Prometheus following the
+endpoints of a Service, an operator, replication between pods, a headless Service) is matched against the pod on both sides.
+"via" is a name or a list of names, and is required on a flow that is expected to be allowed and goes to a pod; a flow
+that is expected to be denied and names no "via" must be denied both ways. Destinations that are not pods (the API server
+Service, the nodes, the internet) are addresses and need no "via".
+
 Usage:
   network-policy-flows.py [--profile NAME] [--quiet] MATRIX NAMESPACE:FILE...
 
@@ -148,6 +158,8 @@ class Model:
         self.namespaces = {}
         self.endpoints = {}
         self.policies = []
+        # The ClusterIP of the Service in front of each pod (one Service per pod, which is all the egress side needs).
+        self.cluster_ips = {}
 
     def policies_for(self, pod, direction):
         return [
@@ -176,12 +188,19 @@ class Model:
                     break
         return True, allowing
 
-    def evaluate(self, source, destination, port, protocol="TCP"):
-        """Evaluate one flow. Returns (allowed, details) where details names what each side decided."""
+    def evaluate(self, source, destination, port, protocol="TCP", via="pod"):
+        """Evaluate one flow. Returns (allowed, details) where details names what each side decided.
+
+        via "service": the egress of the source is matched against the ClusterIP of the destination, the ingress of the
+        destination against the source pod. via "pod": both sides against the pod addresses.
+        """
         details = []
         allowed = True
         if source.is_pod:
-            isolated, by = self.decide(source, "Egress", destination, port, protocol)
+            target = destination
+            if via == "service" and destination.is_pod:
+                target = Endpoint(destination.key, None, {}, self.cluster_ips[destination.key], False, "")
+            isolated, by = self.decide(source, "Egress", target, port, protocol)
             ok = (not isolated) or bool(by)
             allowed = allowed and ok
             if not isolated:
@@ -284,6 +303,14 @@ def build_model(docs, matrix):
         model.endpoints[key] = Endpoint(key, namespace, labels, next_ip(), True, source)
     for name, entry in (matrix.get("endpoints") or {}).items():
         model.endpoints[name] = Endpoint(name, None, {}, entry["ip"], False, entry.get("source", ""))
+    service_hosts = iter(ipaddress.ip_network(matrix["serviceCidr"]).hosts())
+    for key in sorted(k for k, e in model.endpoints.items() if e.is_pod):
+        for candidate in service_hosts:
+            if candidate not in reserved:
+                model.cluster_ips[key] = candidate
+                break
+        else:
+            raise ModelError("the Service range of the matrix has no address left")
     return model, problems
 
 
@@ -295,7 +322,7 @@ def resolve(model, matrix, name):
 
 
 def expand_flows(matrix, profile):
-    """Expand the rows of the matrix into single flows: (source name, destination name, port, protocol, expect, note)."""
+    """Expand the rows of the matrix into single flows: (source, destination, port, protocol, expect, via, note)."""
     flows = []
     for row in matrix.get("flows") or []:
         if profile not in (row.get("profiles") or ["data"]):
@@ -303,43 +330,56 @@ def expand_flows(matrix, profile):
         sources = row["from"] if isinstance(row["from"], list) else [row["from"]]
         destinations = row["to"] if isinstance(row["to"], list) else [row["to"]]
         ports = row.get("ports") or [row["port"]]
+        via = row.get("via")
+        via = via if isinstance(via, list) or via is None else [via]
         for source in sources:
             for destination in destinations:
                 for port in ports:
-                    flows.append((source, destination, int(port), row.get("protocol", "TCP"), row["expect"], row.get("note", "")))
+                    flows.append((source, destination, int(port), row.get("protocol", "TCP"), row["expect"], via, row.get("note", "")))
     return flows
 
 
 def check_flows(model, matrix, profile):
-    """Evaluate the flows of the matrix. Returns (problems, allowed count, denied count)."""
+    """Evaluate the flows of the matrix. Returns (problems, allowed count, denied count); a flow counts once for each way it is evaluated."""
     problems = []
     allowed_count = denied_count = 0
-    for source_name, destination_name, port, protocol, expect, note in expand_flows(matrix, profile):
+    for source_name, destination_name, port, protocol, expect, via, note in expand_flows(matrix, profile):
         source = resolve(model, matrix, source_name)
         destination = resolve(model, matrix, destination_name)
-        allowed, details = model.evaluate(source, destination, port, protocol)
-        if expect == "allow":
-            allowed_count += 1
-        elif expect == "deny":
-            denied_count += 1
-        else:
+        if expect not in ("allow", "deny"):
             raise ModelError("a flow expects {}, not allow or deny".format(expect))
-        if allowed == (expect == "allow"):
-            continue
-        flow = "{} -> {}:{}/{}".format(source_name, destination_name, port, protocol)
-        if expect == "allow":
-            blockers = [d for d in details if not d[2]]
-            problems.append(
-                "flow {} should be allowed but is blocked: {} ({})".format(
-                    flow, "; ".join("{} {}".format(who, why) for who, why, _ in blockers), note
-                )
-            )
+        if not destination.is_pod:
+            modes = ["address"]
+        elif via:
+            modes = via
+        elif expect == "allow":
+            raise ModelError("the flow {} -> {} is expected to be allowed and needs via: service or pod".format(source_name, destination_name))
         else:
-            problems.append(
-                "flow {} should be denied but is allowed: {} ({})".format(
-                    flow, "; ".join("{} {}".format(who, why) for who, why, _ in details), note
+            modes = ["service", "pod"]
+        for mode in modes:
+            if mode not in ("service", "pod", "address"):
+                raise ModelError("via is service or pod, not {}".format(mode))
+            allowed, details = model.evaluate(source, destination, port, protocol, "service" if mode == "service" else "pod")
+            if expect == "allow":
+                allowed_count += 1
+            else:
+                denied_count += 1
+            if allowed == (expect == "allow"):
+                continue
+            flow = "{} -> {}:{}/{}{}".format(source_name, destination_name, port, protocol, " through the Service" if mode == "service" else "")
+            if expect == "allow":
+                blockers = [d for d in details if not d[2]]
+                problems.append(
+                    "flow {} should be allowed but is blocked: {} ({})".format(
+                        flow, "; ".join("{} {}".format(who, why) for who, why, _ in blockers), note
+                    )
                 )
-            )
+            else:
+                problems.append(
+                    "flow {} should be denied but is allowed: {} ({})".format(
+                        flow, "; ".join("{} {}".format(who, why) for who, why, _ in details), note
+                    )
+                )
     return problems, allowed_count, denied_count
 
 

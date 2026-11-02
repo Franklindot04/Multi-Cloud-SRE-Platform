@@ -80,6 +80,13 @@ spec:
           port: 5432
         - protocol: TCP
           port: 8000
+    # A replica streams from the primary through the read-write Service, whose ClusterIP is what the agent sees.
+    - to:
+        - ipBlock:
+            cidr: {{ include "np.serviceCidr" . }}
+      ports:
+        - protocol: TCP
+          port: 5432
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
