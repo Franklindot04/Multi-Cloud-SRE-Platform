@@ -40,7 +40,7 @@ Grafana
 Collection
 
 - **The OpenTelemetry Collector** runs as a Deployment of the plain distribution, with the image pinned by digest. It accepts OTLP over gRPC and HTTP, applies `memory_limiter` and `batch`, exposes the metrics it receives and its own metrics for Prometheus (scraped through a `ServiceMonitor`), and accepted traces only to drop them when this was written: the `debug` exporter at `basic` verbosity until a trace backend existed (its traces pipeline now exports to Tempo, see [ADR-0022](0022-tracing-stack.md)). Listeners bind to the pod's address, not to every interface.
-- **The services do not send OTLP.** None of them uses an OpenTelemetry SDK or reads an `OTEL_*` setting, so no endpoint setting was added to `deploy/helm` and no application code was changed. The collector is ready for the day they are instrumented.
+- **The services do not send OTLP.** None of them uses an OpenTelemetry SDK or reads an `OTEL_*` setting, so no endpoint setting was added to `deploy/helm` and no application code was changed. The collector is ready for the day they are instrumented. (They were instrumented later, and a trace through the four services into Tempo was seen on a cluster on 2026-11-02; see [ADR-0022](0022-tracing-stack.md).)
 - **Monitors live in the `observability` namespace** and select their targets in `shop` and `data`: a `ServiceMonitor` per sample service, a `ServiceMonitor` for RabbitMQ (the operator adds the port `prometheus` to the cluster's Service), and a **`PodMonitor`** for PostgreSQL, because CloudNativePG serves metrics on the instance pods and none of its Services exposes that port. Prometheus selects every monitor in every namespace, so they need no release label.
 
 Teardown
@@ -68,7 +68,7 @@ Teardown
 - **No RabbitMQ broker metrics in a dashboard**, no Valkey metrics (the chart has no exporter enabled), and the CloudNativePG and RabbitMQ operators are not scraped.
 - **No node-level metrics** (node-exporter), and no control-plane metrics (EKS and GKE do not expose them).
 - **No authentication in front of Grafana beyond its own login** (the namespace has network policies since the network policy change: default deny with explicit allows, on EKS only); access is by port-forward through the Kubernetes API. TLS, SSO and RBAC for Grafana belong to the security phase.
-- **The services are not instrumented** with OpenTelemetry.
+- **The services were not instrumented** with OpenTelemetry when this was written. They are now, and a trace across the four services was seen on a cluster on 2026-11-02 ([ADR-0022](0022-tracing-stack.md)).
 - **The CRD schemas used offline** for the custom resources come from a pinned catalog commit that may lag the operator.
 
 ## What has been exercised
@@ -81,7 +81,7 @@ Not covered by those runs:
 
 - the capacity estimate was not compared with the requests of the running pods in any recorded way;
 - the error-rate panels were empty because there were no 5xx responses, so they have not shown an error;
-- the services are not instrumented, so the collector received no telemetry.
+- the services were not instrumented in those runs, so the collector received no telemetry (traces were seen on 2026-11-02, see [ADR-0022](0022-tracing-stack.md)).
 
 ## Alternatives considered
 
