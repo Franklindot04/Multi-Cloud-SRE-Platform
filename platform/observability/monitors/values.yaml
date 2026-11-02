@@ -46,6 +46,16 @@ tracing:
   tempo:
     enabled: true
 
+# Kyverno (platform/security/kyverno) serves its own metrics on the port "metrics-port" (8000) of a Service for each controller:
+# the admission, background, cleanup and reports controllers. The monitor lives here and selects them in the kyverno namespace,
+# like the ones for the services and the data layer, so Kyverno's chart needs no Prometheus Operator CRD. A cluster without
+# Kyverno has nothing to select, and the monitor does nothing.
+policy:
+  kyverno:
+    enabled: true
+    namespace: kyverno
+    interval: 30s
+
 # Service level objectives for the order flow: recording rules for the error ratio over several windows, and
 # multi-window burn-rate alerts (docs/adr/0023-slos-and-alerting.md). Prometheus evaluates them. There is no
 # Alertmanager in this profile yet, so an alert is visible in the Prometheus UI and delivered nowhere. The default

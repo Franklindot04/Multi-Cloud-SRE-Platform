@@ -55,6 +55,7 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `platform.example/data` | `true`, `false` | Deploy the data layer from `platform/data` (default `false`; volumes it creates outlive `terraform destroy`) |
 | `platform.example/data-profile` | `standard`, `ha` | Data layer profile (default `standard`; `ha` needs three nodes) |
 | `platform.example/observability` | `true`, `false` | Deploy the metrics and logging stack from `platform/observability` (default `false`; no volumes, no ingress) |
+| `platform.example/policy` | `true`, `false` | Deploy the Kyverno policy engine from `platform/security` (default `false`; no policies, no volumes, no ingress) |
 | `platform.example/apps` | `true`, `false` | Deploy the sample services from `deploy/helm` (default `false`; needs published images) |
 | `platform.example/apps-profile` | `memory`, `data` | Service profile (default `memory`; `data` needs the data layer) |
 
@@ -100,7 +101,9 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 15 | `observability-loki` |
 | 16 | `observability-alloy` (the log collector) |
 | 17 | `observability-network-policies` (default deny and the allow rules for the `observability` namespace; EKS clusters only) |
-| 20 | `apps-notifier`, `apps-payments` (only on clusters labelled `platform.example/apps=true`) |
+| 18 | `policy-kyverno` (the Kyverno policy engine, no policies yet; only on clusters labelled `platform.example/policy=true`) |
+| 19 | `policy-network-policies` (default deny and the allow rules for the `kyverno` namespace; EKS clusters only) |
+| 20 | `policy-policies` (the Kyverno admission policies for `shop`, in Audit; only on clusters labelled `platform.example/policy=true`), `apps-notifier`, `apps-payments` (only on clusters labelled `platform.example/apps=true`) |
 | 21 | `apps-orders` |
 | 22 | `apps-gateway` |
 

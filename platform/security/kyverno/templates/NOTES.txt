@@ -1,0 +1,3 @@
+Kyverno is installed without any policy. Its webhooks fail open (features.forceFailurePolicyIgnore) and skip kube-system,
+kube-node-lease, argocd and kyverno. Metrics are on port 8000 of each controller.
+Check the controllers with: kubectl -n {{ .Release.Namespace }} get pods

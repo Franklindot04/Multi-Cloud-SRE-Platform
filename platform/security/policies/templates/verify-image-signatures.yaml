@@ -1,0 +1,47 @@
+{{- if .Values.policies.verifyImageSignatures.enabled }}
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify image signatures
+    policies.kyverno.io/category: Supply chain
+    policies.kyverno.io/description: >-
+      The images from {{ .Values.registry }} are signed, keyless, by the images workflow of this repository on main: the signature,
+      the SBOM attestation and the build provenance, as scripts/verify-image.sh checks them, with an entry in the transparency log.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  validationActions: [{{ include "policies.action" (dict "root" . "name" "verifyImageSignatures") }}]
+  failurePolicy: {{ .Values.failurePolicy }}
+  {{- include "policies.autogen" . | nindent 2 }}
+  matchConditions:
+    {{- include "policies.notExempt" . | nindent 4 }}
+  matchConstraints:
+    {{- include "policies.matchPods" . | nindent 4 }}
+  matchImageReferences:
+    - glob: {{ .Values.registry }}/*
+  attestors:
+    - name: cosign
+      cosign:
+        keyless:
+          identities:
+            - issuer: {{ .Values.signature.issuer }}
+              subject: {{ .Values.signature.subject }}
+        # The signature must have an entry in the transparency log (insecureIgnoreTlog stays false).
+        ctlog:
+          url: {{ .Values.signature.transparencyLog }}
+  attestations:
+    - name: sbom
+      intoto:
+        type: {{ .Values.signature.sbomType }}
+    - name: provenance
+      intoto:
+        type: {{ .Values.signature.provenanceType }}
+  validations:
+    - expression: "(images.containers + images.initContainers).map(image, verifyImageSignatures(image, [attestors.cosign])).all(e, e > 0)"
+      message: the image has no signature from the images workflow of this repository on main
+    - expression: "(images.containers + images.initContainers).map(image, verifyAttestationSignatures(image, attestations.sbom, [attestors.cosign])).all(e, e > 0)"
+      message: the image has no SBOM attestation signed by the images workflow of this repository on main
+    - expression: "(images.containers + images.initContainers).map(image, verifyAttestationSignatures(image, attestations.provenance, [attestors.cosign])).all(e, e > 0)"
+      message: the image has no build provenance signed by the images workflow of this repository on main
+{{- end }}

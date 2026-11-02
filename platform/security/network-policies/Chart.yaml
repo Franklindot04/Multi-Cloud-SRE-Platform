@@ -1,0 +1,7 @@
+apiVersion: v2
+name: kyverno-network-policies
+description: Default-deny network policies for the kyverno namespace, with the allow rules the Kyverno controllers need
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws"

@@ -1,0 +1,24 @@
+{{- if .Values.policies.requireAppNameLabel.enabled }}
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-app-name-label
+  annotations:
+    policies.kyverno.io/title: Require the app.kubernetes.io/name label
+    policies.kyverno.io/category: Operations
+    policies.kyverno.io/description: >-
+      Every pod carries the label app.kubernetes.io/name, which the service chart sets and the monitors and network policies select
+      on.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  validationActions: [{{ include "policies.action" (dict "root" . "name" "requireAppNameLabel") }}]
+  failurePolicy: {{ .Values.failurePolicy }}
+  {{- include "policies.autogen" . | nindent 2 }}
+  matchConditions:
+    {{- include "policies.notExempt" . | nindent 4 }}
+  matchConstraints:
+    {{- include "policies.matchPods" . | nindent 4 }}
+  validations:
+    - expression: "has(object.metadata.labels) && 'app.kubernetes.io/name' in object.metadata.labels && size(object.metadata.labels['app.kubernetes.io/name']) > 0"
+      message: the label app.kubernetes.io/name is required
+{{- end }}

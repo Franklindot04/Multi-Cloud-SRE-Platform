@@ -1,0 +1,1341 @@
+---
+# Resources for the Kyverno tests of the policies (kyverno-test.yaml). Written by hand-checked cases: one that follows every policy, and
+# one for each way to break one. The digest is made up.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: good-deployment
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: good-deployment
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: good-deployment
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: good-statefulset
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: good-statefulset
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: good-statefulset
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: good-job
+  namespace: shop
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: good-cronjob
+  namespace: shop
+spec:
+  schedule: 0 * * * *
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: gateway
+        spec:
+          containers:
+            - name: app
+              image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+          restartPolicy: Never
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digest-tag-only
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: digest-tag-only
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: digest-tag-only
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digest-tagless
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: digest-tagless
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: digest-tagless
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digest-latest
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: digest-latest
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:latest
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: digest-latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digest-latest-with-digest
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: digest-latest-with-digest
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:latest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: digest-latest-with-digest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digest-short
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: digest-short
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway@sha256:abc
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: digest-short
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digest-init
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: digest-init
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+      initContainers:
+        - name: init
+          image: ghcr.io/franklindot04/gateway:1.0
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: digest-init
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: digest-second-container
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: digest-second-container
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+        - name: side
+          image: ghcr.io/franklindot04/gateway:1.0
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: digest-second-container
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: digest-job
+  namespace: shop
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      restartPolicy: Never
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: digest-cronjob
+  namespace: shop
+spec:
+  schedule: 0 * * * *
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: gateway
+        spec:
+          containers:
+            - name: app
+              image: ghcr.io/franklindot04/gateway:1.0
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+          restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: digest-pod
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/franklindot04/gateway:1.0
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-docker
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: registry-docker
+  template:
+    spec:
+      containers:
+        - name: app
+          image: docker.io/library/busybox@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: registry-docker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-other-owner
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: registry-other-owner
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/other/gateway@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: registry-other-owner
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-prefix-trick
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: registry-prefix-trick
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04evil/gateway@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: registry-prefix-trick
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-init
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: registry-init
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+      initContainers:
+        - name: init
+          image: docker.io/library/busybox@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: registry-init
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: registry-pod
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  containers:
+    - name: app
+      image: docker.io/library/busybox@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-pod
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+  ephemeralContainers:
+    - name: debugger
+      image: docker.io/library/busybox:1.37@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      command:
+        - sh
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-pod-tagless
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+  ephemeralContainers:
+    - name: debugger
+      image: busybox
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resources-none
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: resources-none
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: resources-none
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resources-no-memory-limit
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: resources-no-memory-limit
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: resources-no-memory-limit
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resources-no-cpu-request
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: resources-no-cpu-request
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: resources-no-cpu-request
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resources-no-memory-request
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: resources-no-memory-request
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: resources-no-memory-request
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resources-no-limits
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: resources-no-limits
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: resources-no-limits
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resources-no-cpu-limit
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: resources-no-cpu-limit
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: resources-no-cpu-limit
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resources-init
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: resources-init
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+      initContainers:
+        - name: init
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: resources-init
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: resources-job
+  namespace: shop
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      restartPolicy: Never
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probes-no-readiness
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: probes-no-readiness
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: probes-no-readiness
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probes-no-liveness
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: probes-no-liveness
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: probes-no-liveness
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probes-none
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: probes-none
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: probes-none
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probes-second-container
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: probes-second-container
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+        - name: side
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: probes-second-container
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: probes-statefulset
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: probes-statefulset
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: probes-statefulset
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: probes-daemonset
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: probes-daemonset
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: probes-daemonset
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: probes-job-exempt
+  namespace: shop
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      restartPolicy: Never
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: label-none
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: label-none
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app: label-none
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: label-other
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: label-other
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app: label-other
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: label-empty
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: label-empty
+  template:
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+    metadata:
+      labels:
+        app.kubernetes.io/name: ''
+        app: label-empty
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: label-pod
+  namespace: shop
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elsewhere
+  namespace: data
+spec:
+  selector:
+    matchLabels:
+      app: elsewhere
+  template:
+    spec:
+      containers:
+        - name: app
+          image: docker.io/library/busybox
+    metadata:
+      labels:
+        app: elsewhere
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: elsewhere-pod
+  namespace: data
+spec:
+  containers:
+    - name: app
+      image: docker.io/library/busybox
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: exempt-job
+  namespace: shop
+  labels:
+    platform.example/policy-exempt: 'true'
+spec:
+  template:
+    metadata:
+      labels:
+        platform.example/policy-exempt: 'true'
+    spec:
+      containers:
+        - name: app
+          image: curlimages/curl:8.23.0
+      restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: exempt-pod
+  namespace: shop
+  labels:
+    platform.example/policy-exempt: 'true'
+spec:
+  containers:
+    - name: app
+      image: curlimages/curl:8.23.0
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080

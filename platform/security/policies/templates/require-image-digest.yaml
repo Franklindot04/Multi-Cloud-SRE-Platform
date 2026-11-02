@@ -1,0 +1,30 @@
+{{- if .Values.policies.requireImageDigest.enabled }}
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-image-digest
+  annotations:
+    policies.kyverno.io/title: Require image digests
+    policies.kyverno.io/category: Supply chain
+    policies.kyverno.io/description: >-
+      Every container and init container uses an image pinned by digest. A tagless image and the tag latest are refused too.
+    # The CRDs come from the Kyverno Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  validationActions: [{{ include "policies.action" (dict "root" . "name" "requireImageDigest") }}]
+  failurePolicy: {{ .Values.failurePolicy }}
+  {{- include "policies.autogen" . | nindent 2 }}
+  matchConditions:
+    {{- include "policies.notExempt" . | nindent 4 }}
+  matchConstraints:
+    {{- include "policies.matchPods" . | nindent 4 }}
+  variables:
+    # Ephemeral containers are not here: they are added through another subresource, and the debug container of the runbook must work.
+    - name: containers
+      expression: "object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])"
+  validations:
+    - expression: "variables.containers.all(c, c.image.matches('@sha256:[a-f0-9]{64}$'))"
+      message: every container and init container must use an image with a digest (name@sha256:...)
+    - expression: "variables.containers.all(c, !c.image.matches(':latest(@|$)'))"
+      message: the tag latest is not allowed, even with a digest
+{{- end }}

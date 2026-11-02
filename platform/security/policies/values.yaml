@@ -1,0 +1,75 @@
+---
+# Admission policies for the shop namespace, evaluated by Kyverno (platform/security/kyverno). Every policy is a ValidatingPolicy
+# or an ImageValidatingPolicy of policies.kyverno.io/v1, the CEL-based policy types that Kyverno 1.19 supports without a
+# deprecation warning (the classic ClusterPolicy of kyverno.io/v1 is deprecated). See README.md.
+
+# What a policy does when a workload breaks it. Audit records the result in the policy reports and blocks nothing; Enforce rejects
+# the request. One default for all policies, and an override for each one below (an empty action means the default). Nothing is
+# Enforce here: values-enforce.yaml turns the enforceable policies on, and it is not used by default.
+action: Audit
+
+# What the webhook does when Kyverno cannot answer. Ignore lets the request through (platform/security/kyverno forces it too), so a
+# dead Kyverno cannot block the cluster.
+failurePolicy: Ignore
+
+# The namespaces the policies apply to. The system and platform namespaces (kube-system, kube-node-lease, argocd, kyverno, data and
+# observability) are not in the list, so they are not touched.
+scope:
+  namespaces:
+    - shop
+
+# A workload that carries this label with the value "true" is left out of every policy. Only the Job that copies the RabbitMQ
+# credentials into the shop namespace has it (platform/data/rabbitmq-credentials): it runs a public curl image and belongs to the
+# data layer, not to the services. Do not put it on anything else.
+exemptLabel: platform.example/policy-exempt
+
+# The registry and owner the images of the services come from: the same value as image.registry in
+# deploy/helm/values/images.yaml. scripts/chart-contract-check.py (image-policy) fails when the two differ.
+registry: ghcr.io/franklindot04
+
+# How the images are signed (scripts/verify-image.sh): keyless, by the images workflow of this repository on main, with the GitHub
+# Actions OIDC issuer, and with an entry in the Sigstore transparency log. The signature, the SBOM and the build provenance are
+# the same three checks that script makes. The same chart check compares these values with the script.
+signature:
+  issuer: https://token.actions.githubusercontent.com
+  subject: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/.github/workflows/images.yml@refs/heads/main
+  transparencyLog: https://rekor.sigstore.dev
+  # The predicate types of cosign's spdxjson and slsaprovenance1 attestation types.
+  sbomType: https://spdx.dev/Document
+  provenanceType: https://slsa.dev/provenance/v1
+
+# The pod controllers that a policy on pods is also applied to (autogen), so that Deployments, StatefulSets, DaemonSets, Jobs and
+# CronJobs are checked and not only Pods.
+podControllers:
+  - deployments
+  - statefulsets
+  - daemonsets
+  - jobs
+  - cronjobs
+
+policies:
+  # Every container, init containers included, uses an image with a digest. Tagless images and the tag latest are refused too.
+  requireImageDigest:
+    enabled: true
+    action: ""
+  # Every container uses an image from the registry above.
+  restrictImageRegistries:
+    enabled: true
+    action: ""
+  # The images from the registry above are signed by the images workflow (signature, SBOM and provenance). The check needs the
+  # internet (the registry and the Sigstore services), and has not run on a cluster.
+  verifyImageSignatures:
+    enabled: true
+    action: ""
+  # Every container has CPU and memory requests and a memory limit.
+  requireResources:
+    enabled: true
+    action: ""
+  # Every container of a Deployment, StatefulSet or DaemonSet has a readiness and a liveness probe. Jobs are not checked.
+  requireProbes:
+    enabled: true
+    action: ""
+  # Every pod carries the label app.kubernetes.io/name.
+  requireAppNameLabel:
+    enabled: true
+    action: ""

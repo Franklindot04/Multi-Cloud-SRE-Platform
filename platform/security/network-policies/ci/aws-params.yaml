@@ -1,0 +1,4 @@
+---
+# Fixture values standing in for the Helm parameters that Argo CD supplies from the cluster secret (documentation ranges).
+vpcCidr: 192.0.2.0/24
+serviceCidr: 203.0.113.0/24

@@ -24,6 +24,13 @@
 #   obs-persistent      Prometheus and Grafana have claims in the observability namespace (values-persistent.yaml)
 #   stuck-obs-pods      a pod in the observability namespace never goes away
 #   no-pv               kubectl get pv lists nothing even while the claims in the data namespace exist
+#   kyverno-policies    a ClusterPolicy, a Policy, a ValidatingPolicy and an ImageValidatingPolicy exist (their CRDs must be in
+#                       the crds file for the scripts to look at them); deleting them creates kyverno-clusterpolicies-deleted,
+#                       kyverno-policies-deleted, kyverno-validatingpolicies-deleted and kyverno-imagevalidatingpolicies-deleted
+#   kyverno-webhooks    two webhook configurations whose names start with kyverno exist next to two that do not
+#                       (cert-manager and the load balancer controller); deleting one creates deleted-<object>
+#   stuck-kyverno-webhooks
+#                       the Kyverno webhook configurations are not removed by a deletion
 # For scripts/teardown-argocd.sh (the marker argocd-script switches the Application list to this model):
 #   ns-data, ns-shop, ns-argocd
 #                       these namespaces exist (the observability one is obs-namespace); deleting one creates
@@ -158,7 +165,7 @@ case "$*" in
     fi
     echo secret/cluster-in-cluster
     ;;
-  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability-")
+  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-")
     mark labels-removed
     echo "secret/cluster-in-cluster unlabeled"
     ;;
@@ -171,7 +178,8 @@ case "$*" in
       echo "application.argoproj.io/cert-manager-in-cluster"
     else
       printf '%s\n' application.argoproj.io/apps-orders-in-cluster application.argoproj.io/data-postgres-in-cluster \
-        application.argoproj.io/observability-stack-in-cluster application.argoproj.io/cert-manager-in-cluster
+        application.argoproj.io/observability-stack-in-cluster application.argoproj.io/policy-kyverno-in-cluster \
+        application.argoproj.io/cert-manager-in-cluster
     fi
     ;;
   "-n argocd get application.argoproj.io/"*" --ignore-not-found -o name")
@@ -237,9 +245,54 @@ case "$*" in
     fi
     ;;
   "get crd clusters.postgresql.cnpg.io -o name" | "get crd rabbitmqclusters.rabbitmq.com -o name" | "get crd databases.postgresql.cnpg.io -o name" | \
-    "get crd applications.argoproj.io -o name" | "get crd applicationsets.argoproj.io -o name" | "get crd appprojects.argoproj.io -o name")
+    "get crd applications.argoproj.io -o name" | "get crd applicationsets.argoproj.io -o name" | "get crd appprojects.argoproj.io -o name" | \
+    "get crd clusterpolicies.kyverno.io -o name" | "get crd policies.kyverno.io -o name" | \
+    "get crd validatingpolicies.policies.kyverno.io -o name" | "get crd imagevalidatingpolicies.policies.kyverno.io -o name")
     grep -Fxq -- "$3" "$state/crds" || exit 1
     echo "customresourcedefinition.apiextensions.k8s.io/$3"
+    ;;
+  "get clusterpolicies.kyverno.io -o name")
+    if flag kyverno-policies && ! flag kyverno-clusterpolicies-deleted; then echo clusterpolicy.kyverno.io/disallow-latest-tag; fi
+    ;;
+  "get policies.kyverno.io -A -o name")
+    if flag kyverno-policies && ! flag kyverno-policies-deleted; then echo policy.kyverno.io/require-labels; fi
+    ;;
+  "get validatingpolicies.policies.kyverno.io -o name")
+    if flag kyverno-policies && ! flag kyverno-validatingpolicies-deleted; then echo validatingpolicy.policies.kyverno.io/require-image-digest; fi
+    ;;
+  "get imagevalidatingpolicies.policies.kyverno.io -o name")
+    if flag kyverno-policies && ! flag kyverno-imagevalidatingpolicies-deleted; then echo imagevalidatingpolicy.policies.kyverno.io/verify-image-signatures; fi
+    ;;
+  "delete validatingpolicies.policies.kyverno.io --all --wait=true --timeout="*)
+    mark kyverno-validatingpolicies-deleted
+    echo "validatingpolicy.policies.kyverno.io \"require-image-digest\" deleted"
+    ;;
+  "delete imagevalidatingpolicies.policies.kyverno.io --all --wait=true --timeout="*)
+    mark kyverno-imagevalidatingpolicies-deleted
+    echo "imagevalidatingpolicy.policies.kyverno.io \"verify-image-signatures\" deleted"
+    ;;
+  "delete clusterpolicies.kyverno.io --all --wait=true --timeout="*)
+    mark kyverno-clusterpolicies-deleted
+    echo "clusterpolicy.kyverno.io \"disallow-latest-tag\" deleted"
+    ;;
+  "delete policies.kyverno.io --all -A --wait=true --timeout="*)
+    mark kyverno-policies-deleted
+    echo "policy.kyverno.io \"require-labels\" deleted"
+    ;;
+  "get validatingwebhookconfigurations.admissionregistration.k8s.io,mutatingwebhookconfigurations.admissionregistration.k8s.io -o name")
+    printf '%s\n' validatingwebhookconfiguration.admissionregistration.k8s.io/cert-manager-webhook \
+      mutatingwebhookconfiguration.admissionregistration.k8s.io/aws-load-balancer-webhook
+    if flag kyverno-webhooks; then
+      for w in validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-resource-validating-webhook-cfg \
+        mutatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-policy-mutating-webhook-cfg; do
+        if flag stuck-kyverno-webhooks || ! flag "deleted-$(key "$w")"; then echo "$w"; fi
+      done
+    fi
+    ;;
+  "delete validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-"*" --wait=true --timeout="* | \
+    "delete mutatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-"*" --wait=true --timeout="*)
+    mark "deleted-$(key "$2")"
+    echo "$2 deleted"
     ;;
   "-n cnpg-system get pods -l app.kubernetes.io/name=cloudnative-pg --field-selector=status.phase=Running -o name")
     if flag operator-api-error; then

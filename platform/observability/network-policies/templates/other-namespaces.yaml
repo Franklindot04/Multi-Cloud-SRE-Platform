@@ -55,6 +55,27 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: prometheus-allow-to-kyverno
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The metrics port of the Kyverno controllers. A cluster without Kyverno has no such pod, and the rule matches nothing.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- include "np.peer" (dict "namespace" .Values.kyverno.namespace "labels" .Values.kyverno.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.kyverno.metricsPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: prometheus-allow-to-coredns
   namespace: {{ .Values.namespace }}
   annotations:

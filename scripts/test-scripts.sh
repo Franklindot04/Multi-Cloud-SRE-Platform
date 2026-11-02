@@ -174,7 +174,7 @@ new_cluster
 touch "$state/mq-survives"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "the happy path exits 0" test "$rc" -eq 0
-check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability-$' "$state/kubectl.log"
+check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-$' "$state/kubectl.log"
 check "labels come before the Cluster deletion" test "$(line_of 'label secret')" -lt "$(line_of 'delete cluster.postgresql')"
 check "the Cluster is deleted before the RabbitmqCluster" test "$(line_of 'delete cluster.postgresql')" -lt "$(line_of 'delete rabbitmqcluster')"
 check "the surviving StatefulSet is deleted after the RabbitmqCluster" test "$(line_of 'delete rabbitmqcluster')" -lt "$(line_of 'delete statefulset')"
@@ -390,6 +390,47 @@ run_teardown --context test-cluster --region eu-north-1 --bogus
 check "an unknown option is rejected with exit 2" test "$rc" -eq 2
 check "the script never uses --force or runs version control" test "$(grep -Ec -e '--force|(^|[;&| ])git( |$)' "$teardown")" = 0
 
+# Kyverno: its policies and webhook configurations go before anything else is deleted, and only Kyverno's.
+new_cluster
+printf '%s\n' clusterpolicies.kyverno.io policies.kyverno.io validatingpolicies.policies.kyverno.io imagevalidatingpolicies.policies.kyverno.io >> "$state/crds"
+touch "$state/kyverno-policies" "$state/kyverno-webhooks"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "with Kyverno policies and webhooks the run exits 0" test "$rc" -eq 0
+check "the steps are numbered 1 to 15" grep -q -e '^\[1/15\]' -e '^\[15/15\]' "$work/tdout"
+check "the step for Kyverno is the third" grep -q '^\[3/15\] Delete the Kyverno policies and webhook configurations' "$work/tdout"
+check "the cluster Secret label of the policy engine is removed with the others" grep -q 'platform.example/observability- platform.example/policy-$' "$state/kubectl.log"
+check "every kind of Kyverno policy is deleted: ClusterPolicy, Policy, ValidatingPolicy and ImageValidatingPolicy" test "$(grep -c -e 'delete clusterpolicies.kyverno.io --all --wait=true' -e 'delete policies.kyverno.io --all -A --wait=true' -e 'delete validatingpolicies.policies.kyverno.io --all --wait=true' -e 'delete imagevalidatingpolicies.policies.kyverno.io --all --wait=true' "$state/kubectl.log")" = 4
+check "the two Kyverno webhook configurations are deleted by name" test "$(grep -c -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-resource-validating-webhook-cfg ' -e 'delete mutatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-policy-mutating-webhook-cfg ' "$state/kubectl.log")" = 2
+check "no other webhook configuration is deleted" test "$(grep ' delete ' "$state/kubectl.log" | grep -c -e 'cert-manager-webhook' -e 'aws-load-balancer-webhook')" = 0
+check "the policies go before the webhook configurations" test "$(line_of 'delete policies.kyverno.io')" -lt "$(line_of 'delete validatingwebhookconfiguration')"
+check "Kyverno is dealt with after the labels and before the shop, data and observability namespaces are read" test "$(line_of 'label secret')" -lt "$(line_of 'delete clusterpolicies.kyverno.io')" -a "$(line_of 'delete mutatingwebhookconfiguration')" -lt "$(line_of '-n shop get')"
+check "the output waits for the webhook configurations to be gone" grep -q 'ok: no webhook configuration whose name starts with kyverno remains' "$work/tdout"
+check "the Applications of the policy engine are waited for" grep -q 'no apps-\*, data-\*, observability-\* or policy-\* Application remains' "$work/tdout"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "a repeat run finds no Kyverno policy and no webhook configuration" grep -q 'no object of clusterpolicies.kyverno.io' "$work/tdout" -a "$rc" -eq 0
+check "and says so for the webhook configurations" grep -q 'no webhook configuration whose name starts with kyverno' "$work/tdout"
+
+new_cluster
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "without Kyverno the run exits 0 and says the CRDs are not installed" test "$rc" -eq 0 -a "$(grep -c 'kyverno.io CRD is not installed: nothing to delete' "$work/tdout")" = 4
+check "and no webhook configuration is deleted" test "$(grep -c 'delete validatingwebhookconfiguration' "$state/kubectl.log")" = 0
+
+new_cluster
+touch "$state/kyverno-webhooks" "$state/stuck-kyverno-webhooks"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a Kyverno webhook configuration that does not go makes the run stop with exit 1" test "$rc" -eq 1
+check "and the message names it" grep -q 'kyverno-resource-validating-webhook-cfg' "$work/tdout"
+check "nothing after that step runs" test "$(grep -c -e 'delete cluster.postgresql' -e 'get pv' "$state/kubectl.log")" = 0
+
+new_cluster
+printf '%s\n' clusterpolicies.kyverno.io policies.kyverno.io validatingpolicies.policies.kyverno.io imagevalidatingpolicies.policies.kyverno.io >> "$state/crds"
+touch "$state/kyverno-policies" "$state/kyverno-webhooks"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5 --dry-run
+check "a dry run with Kyverno exits 0 and deletes nothing" test "$rc" -eq 0 -a "$(grep -c ' delete ' "$state/kubectl.log")" = 0
+check "it prints the Kyverno deletions it would run" grep -q '+ kubectl --context test-cluster delete validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-resource-validating-webhook-cfg --wait=true' "$work/tdout"
+check "and the policy deletions" grep -q '+ kubectl --context test-cluster delete clusterpolicies.kyverno.io --all --wait=true' "$work/tdout"
+check "and that it would wait for the webhook configurations" grep -q 'dry run: would wait until no webhook configuration whose name starts with kyverno remains' "$work/tdout"
+
 echo "teardown-argocd.sh"
 
 teardown_argocd="./scripts/teardown-argocd.sh"
@@ -418,7 +459,7 @@ argo_patch_re='-n argocd patch (application|appproject)\.argoproj\.io/(platform-
 new_argo_cluster
 run_argocd --context test-cluster --timeout 5
 check "the normal path exits 0" test "$rc" -eq 0
-check "the steps are numbered 1 to 9" grep -q -e '^\[1/9\]' -e '^\[9/9\]' "$work/tdout"
+check "the steps are numbered 1 to 10" grep -q -e '^\[1/10\]' -e '^\[10/10\]' "$work/tdout"
 check "the volume check comes first, before anything is deleted" test "$(line_of 'get pv')" -lt "$(line_of ' delete ')"
 check "the namespaces data, shop and observability are deleted without waiting in the command" test "$(grep -c -e 'delete namespace data --wait=false' -e 'delete namespace shop --wait=false' -e 'delete namespace observability --wait=false' "$state/kubectl.log")" = 3
 check "the storage class is deleted after the namespaces" test "$(line_of 'delete namespace observability')" -lt "$(line_of 'delete storageclass platform-data')"
@@ -528,6 +569,29 @@ rm "$state/pvc-deleted"
 run_argocd --context test-cluster --timeout 2
 check "a volume and a claim together are both named" test "$rc" -eq 1 -a "$(grep -c -e 'persistent volume: ' -e 'claim in the data namespace: ' "$work/tdout")" -ge 2
 check "a refusal also applies to a dry run" test "$(PATH="$fakes:$PATH" FAKE_STATE="$state" "$teardown_argocd" --context test-cluster --dry-run > /dev/null 2>&1; echo $?)" = 1
+
+# Kyverno policies or webhook configurations that are left: refuse before changing anything.
+new_argo_cluster
+printf '%s\n' clusterpolicies.kyverno.io policies.kyverno.io validatingpolicies.policies.kyverno.io imagevalidatingpolicies.policies.kyverno.io >> "$state/crds"
+touch "$state/kyverno-policies"
+run_argocd --context test-cluster --timeout 2
+check "a Kyverno policy that is left makes the script refuse with exit 1" test "$rc" -eq 1
+check "the message names it and says to run teardown-prep.sh first" grep -q 'left: clusterpolicy.kyverno.io/disallow-latest-tag' "$work/tdout"
+check "a ValidatingPolicy and an ImageValidatingPolicy that are left are named too" test "$(grep -c -e 'left: validatingpolicy.policies.kyverno.io/require-image-digest' -e 'left: imagevalidatingpolicy.policies.kyverno.io/verify-image-signatures' "$work/tdout")" = 2
+check "and points at the other script" grep -q 'Run scripts/teardown-prep.sh --context test-cluster first' "$work/tdout"
+check "nothing is deleted, patched or uninstalled" test "$(grep -c -e ' delete ' -e ' patch ' -e ' label ' "$state/kubectl.log")" = 0 -a ! -e "$state/helm.log"
+
+new_argo_cluster
+touch "$state/kyverno-webhooks"
+run_argocd --context test-cluster --timeout 2
+check "a Kyverno webhook configuration that is left makes the script refuse with exit 1" test "$rc" -eq 1
+check "both Kyverno webhook configurations are named, and no other" test "$(grep -c 'left: .*kyverno-' "$work/tdout")" = 2 -a "$(grep -c -e 'cert-manager-webhook' -e 'aws-load-balancer-webhook' "$work/tdout")" = 0
+check "a refusal for Kyverno also applies to a dry run" test "$(PATH="$fakes:$PATH" FAKE_STATE="$state" "$teardown_argocd" --context test-cluster --dry-run > /dev/null 2>&1; echo $?)" = 1
+
+new_argo_cluster
+run_argocd --context test-cluster --timeout 5
+check "without Kyverno the check passes and says so" grep -q 'ok: no Kyverno policy and no webhook configuration whose name starts with kyverno' "$work/tdout"
+check "the Kyverno check is the second step, before anything is deleted" grep -q '^\[2/10\] Check that no Kyverno policy' "$work/tdout"
 
 # Helm.
 new_argo_cluster
@@ -871,6 +935,32 @@ check "and says how to reach Grafana" test "$(sed -n '/--enable-observability/,/
 # The label the script writes must be the one the ApplicationSets select on, or the flag deploys nothing.
 check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 9
 check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/observability' platform/argocd/apps/*.yaml | grep -vc '/9[0-9]-observability-')" = 0
+
+run_bootstrap
+check "the policy engine is off by default" grep -q '"platform.example/policy": "false"' "$work/bout"
+check "and nothing says it is enabled" test "$(grep -c 'policy engine enabled' "$work/bout")" = 0
+
+run_bootstrap --enable-policy
+check "the policy flag exits 0 on its own" test "$rc" -eq 0
+check "the policy flag sets the label to true" grep -q '"platform.example/policy": "true"' "$work/bout"
+check "the policy label is written once" test "$(grep -c 'platform.example/policy' "$work/bout")" = 1
+check "the output says what the flag deploys and what it asks for" grep -q 'policy engine enabled: Kyverno (admission, background, cleanup and reports controllers, no policies) in the kyverno namespace, requests 225m CPU and 320Mi of memory' "$work/bout"
+check "and that the webhooks fail open and skip the system namespaces" grep -q 'its webhooks fail open and skip kube-system, kube-node-lease, argocd and kyverno' "$work/bout"
+check "and that the network policies need the ranges from the cluster Secret" grep -q 'the network policies need the VPC and Service ranges from the cluster Secret' "$work/bout"
+check "the observability and data labels stay false" test "$(grep -c -e '"platform.example/observability": "false"' -e '"platform.example/data": "false"' "$work/bout")" = 2
+check "the dry run with the policy flag called no tool" test ! -e "$stubs/calls.log"
+
+run_bootstrap --enable-policy --enable-observability --enable-data
+check "with the other layers every label is set on the same run" test "$(grep -c -e '"platform.example/observability": "true"' -e '"platform.example/data": "true"' -e '"platform.example/policy": "true"' "$work/bout")" = 3
+
+run_bootstrap --enable-policy extra
+check "the policy flag takes no value" test "$rc" -eq 1
+check "and the message names the argument" grep -q 'unknown argument: extra' "$work/bout"
+
+"$bootstrap" --help > "$work/bout" 2>&1
+check "the help lists the policy flag" grep -q -e '--enable-policy' "$work/bout"
+check "and says it is off by default" test "$(sed -n '/--enable-policy/,/--enable-apps/p' "$work/bout" | grep -c 'Off by default')" -ge 1
+check "and what it requests" test "$(sed -n '/--enable-policy/,/--enable-apps/p' "$work/bout" | grep -c '225m CPU and 320Mi of memory')" -ge 1
 
 echo "chart-contract-check.py (observability checks)"
 
@@ -1506,6 +1596,22 @@ case("empty", lambda d: policy(d, "allow-dns")["spec"].update(egress=[{}]))
 case("uncovered", lambda d: policy(d, "default-deny")["spec"].update(podSelector={"matchLabels": {"app": "other"}}))
 case("badlabel", lambda d: policy(d, "web-allow-prometheus-scrape")["spec"]["ingress"][0]["from"][0]["podSelector"]["matchLabels"].update({"app.kubernetes.io/name": "promethues"}))
 case("badpod", lambda d: policy(d, "web-allow-prometheus-scrape")["spec"]["podSelector"]["matchLabels"].update({"app": "web2"}))
+def internet_policy(docs, **change):
+    policy = copy.deepcopy(next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == "allow-dns"))
+    policy["metadata"]["name"] = "web-allow-internet-https"
+    policy["metadata"]["annotations"] = {WAVE: "-2", "platform.example/internet-egress": change.get("reason", "image signature checks")}
+    policy["spec"]["egress"] = [{"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["192.0.2.0/24"]}}], "ports": change.get("ports", [{"protocol": "TCP", "port": 443}])}]
+    if change.get("ingress"):
+        policy["spec"]["policyTypes"] = ["Ingress"]
+        policy["spec"]["ingress"] = [{"from": [{"ipBlock": {"cidr": "0.0.0.0/0"}}], "ports": [{"protocol": "TCP", "port": 443}]}]
+        del policy["spec"]["egress"]
+    docs.append(policy)
+
+
+case("internet-ok", lambda d: internet_policy(d))
+case("internet-noreason", lambda d: internet_policy(d, reason=""))
+case("internet-ports", lambda d: internet_policy(d, ports=[{"protocol": "TCP", "port": 443}, {"protocol": "TCP", "port": 80}]))
+case("internet-ingress", lambda d: internet_policy(d, ingress=True))
 case("badnamespace", lambda d: policy(d, "allow-dns")["spec"]["egress"][0]["to"][0]["namespaceSelector"]["matchLabels"].update({"kubernetes.io/metadata.name": "kube-systm"}))
 for name, docs in cases.items():
     yaml.safe_dump_all(docs, open("{}/{}.yaml".format(out, name), "w", encoding="utf-8"), sort_keys=False)
@@ -1527,8 +1633,13 @@ NPPY
   np_fails nodeny network-policies "there is no default deny" "a missing default deny is named"
   np_fails egress-only network-policies "there is no default deny" "a deny for ingress only is not a default deny"
   np_fails order network-policies "must have a lower sync wave than NetworkPolicy/default-deny" "an allow applied with or after the deny is named"
-  np_fails world network-policies "allows 0.0.0.0/0" "an allow to every address is refused"
+  np_fails world network-policies "allows the whole range 0.0.0.0/0" "an allow to every address is refused"
   np_fails wide network-policies "allows the whole range 10.0.0.0/0" "an allow to a /0 range is refused"
+  np_fails internet-noreason network-policies "allows the whole range 0.0.0.0/0" "an internet egress without its reason is refused"
+  np_fails internet-ports network-policies "allows the whole range 0.0.0.0/0" "an internet egress on more than TCP 443 is refused"
+  np_fails internet-ingress network-policies "allows the whole range 0.0.0.0/0" "an ingress from every address is refused even with the reason"
+  contract "$np/internet-ok.yaml" network-policies t
+  check "an egress policy with the reason that allows TCP 443 to every address passes" test "$rc" -eq 0
   np_fails noports network-policies "has an egress rule without ports" "a rule without ports is named"
   np_fails nopeer network-policies "has an egress rule without a to" "a rule without a peer is named"
   np_fails empty network-policies "has an empty egress rule, which allows everything" "an empty rule is named"
@@ -1735,6 +1846,7 @@ else
   done
   helm template data-network-policies platform/data/network-policies --namespace data -f platform/data/network-policies/ci/aws-params.yaml > "$npm/data.yaml" 2> /dev/null || true
   helm template observability-network-policies platform/observability/network-policies --namespace observability -f platform/observability/network-policies/ci/aws-params.yaml > "$npm/observability.yaml" 2> /dev/null || true
+  helm template policy-network-policies platform/security/network-policies --namespace kyverno -f platform/security/network-policies/ci/aws-params.yaml > "$npm/kyverno.yaml" 2> /dev/null || true
   "$contract_py" - "$npm" << 'NPMUTPY' > "$npm/results.out" 2>&1 || true
 import copy
 import importlib.util
@@ -1748,7 +1860,7 @@ flows = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(flows)
 matrix = yaml.safe_load(open("scripts/tests/fixtures/network-policies/flows.yaml", encoding="utf-8"))
 entries = [("shop", d + "/shop-" + s + ".yaml") for s in ("gateway", "orders", "payments", "notifier")]
-entries += [("data", d + "/data.yaml"), ("observability", d + "/observability.yaml")]
+entries += [("data", d + "/data.yaml"), ("observability", d + "/observability.yaml"), ("kyverno", d + "/kyverno.yaml")]
 base = flows.load_manifests(entries)
 results = []
 
@@ -1874,6 +1986,44 @@ def whole_service_range(docs):
 
 
 expect("an egress rule to the Service range on every port opens what the destinations must refuse", whole_service_range, "should be denied but is allowed")
+
+def kyverno_without_ipblock_rule(docs):
+    policy(docs, "allow-kube-api-admission", "kyverno")["spec"]["egress"][0]["to"][0]["ipBlock"]["cidr"] = matrix["vpcCidr"]
+
+
+expect("the old API rule (443 to the VPC range) no longer reaches the API server from the kyverno namespace", kyverno_without_ipblock_rule, "flow kyverno-admission -> api-server:443/TCP should be allowed but is blocked")
+expect("removing the webhook rule breaks the call of the API server", drop("admission-allow-webhook-from-api-server", "kyverno"), "flow api-server-eni -> kyverno-admission:9443/TCP should be allowed but is blocked", "ingress of kyverno/kyverno-admission-controller")
+expect("removing the scrape rule of a controller breaks the metrics flow", drop("reports-allow-prometheus-scrape", "kyverno"), "flow prometheus -> kyverno-reports:8000/TCP should be allowed but is blocked")
+expect("removing the egress to Kyverno from the observability policies breaks the scrape", drop("prometheus-allow-to-kyverno", "observability"), "flow prometheus -> kyverno-background:8000/TCP should be allowed but is blocked", "egress of observability/")
+expect("removing the default deny of the kyverno namespace lets a new pod through", drop("default-deny", "kyverno"), "flow internet -> kyverno-stray:8000/TCP should be denied but is allowed", "ingress of kyverno/stray open: no policy isolates it")
+
+
+def webhook_open_to_all(docs):
+    policy(docs, "admission-allow-webhook-from-api-server", "kyverno")["spec"]["ingress"][0]["from"][0]["ipBlock"]["cidr"] = "0.0.0.0/0"
+
+
+expect("a webhook port open to every address lets the internet in", webhook_open_to_all, "flow internet -> kyverno-admission:9443/TCP should be denied but is allowed")
+
+
+def internet_without_except(docs):
+    policy(docs, "admission-allow-internet-https", "kyverno")["spec"]["egress"][0]["to"][0]["ipBlock"].pop("except")
+
+
+expect("an internet rule that does not leave out the VPC range reaches the API server addresses", internet_without_except, "flow kyverno-admission -> api-server-eni:443/TCP should be denied but is allowed")
+
+
+def internet_for_background(docs):
+    policy(docs, "admission-allow-internet-https", "kyverno")["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] = "background-controller"
+
+
+expect("an internet rule given to another controller is found", internet_for_background, "flow kyverno-background -> internet:443/TCP should be denied but is allowed")
+
+
+def internet_on_all_ports(docs):
+    policy(docs, "admission-allow-internet-https", "kyverno")["spec"]["egress"][0].pop("ports")
+
+
+expect("an internet rule without ports opens more than 443", internet_on_all_ports, "flow kyverno-admission -> internet:80/TCP should be denied but is allowed")
 for line in results:
     print(line)
 NPMUTPY
@@ -1902,6 +2052,278 @@ NPMUTPY
   check "and says which value is missing (observability)" grep -q 'serviceCidr must be set' "$npm/obs-nocidr.out"
   if helm template check platform/observability/network-policies --set serviceCidr=203.0.113.0/24 > "$npm/obs-novpc.out" 2>&1; then bad "the observability policies rendered without the VPC range"; else ok "and without the VPC range, which Prometheus needs for the kubelets and the API server addresses"; fi
   check "the data policies keep the API rule on the Service range, not the VPC range" grep -q 'cidr: 203.0.113.0/24' "$npm/data.yaml"
+  if helm template check platform/security/network-policies --set vpcCidr=192.0.2.0/24 > "$npm/kv-nocidr.out" 2>&1; then bad "the Kyverno policies rendered without the Service range"; else ok "the Kyverno policy chart refuses to render without the Service range"; fi
+  check "and says which value is missing (Service range)" grep -q 'serviceCidr must be set' "$npm/kv-nocidr.out"
+  if helm template check platform/security/network-policies --set serviceCidr=203.0.113.0/24 > "$npm/kv-novpc.out" 2>&1; then bad "the Kyverno policies rendered without the VPC range"; else ok "and without the VPC range, which the webhook rule needs (the API server calls it from the VPC)"; fi
+  check "and says which value is missing (VPC range)" grep -q 'vpcCidr must be set' "$npm/kv-novpc.out"
+  check "the Kyverno API rule is on the Service range and the webhook rule on the VPC range" test "$(grep -c 'cidr: 203.0.113.0/24' "$npm/kyverno.yaml")" -ge 5 -a "$(grep -c 'cidr: 192.0.2.0/24' "$npm/kyverno.yaml")" = 2
+  check "the one internet rule is for the admission controller, says why and leaves out both ranges" test "$(grep -c 'platform.example/internet-egress' "$npm/kyverno.yaml")" = 1 -a "$(grep -c 'cidr: 0.0.0.0/0' "$npm/kyverno.yaml")" = 1
+  check "with the policies switched off nothing is rendered" test "$(helm template check platform/security/network-policies --set enabled=false 2> /dev/null | grep -c '^kind:')" = 0
+fi
+
+echo "Kyverno (the policy engine)"
+
+# The Applications: label, waves, project, ServerSideApply.
+kv_apps="platform/argocd/apps"
+check "both policy ApplicationSets select the label the flag sets" test "$(grep -l 'platform.example/policy: "true"' "$kv_apps"/84-policy-kyverno.yaml "$kv_apps"/85-policy-network-policies.yaml | wc -l | tr -d ' ')" = 2
+check "Kyverno is wave 18, after the observability stack and before the services" grep -q 'argocd.argoproj.io/sync-wave: "18"' "$kv_apps/84-policy-kyverno.yaml"
+check "its network policies are wave 19, after Kyverno" grep -q 'argocd.argoproj.io/sync-wave: "19"' "$kv_apps/85-policy-network-policies.yaml"
+check "Kyverno syncs with ServerSideApply, because its CRDs are larger than client-side apply can store" grep -q 'ServerSideApply=true' "$kv_apps/84-policy-kyverno.yaml"
+check "Kyverno is deployed from platform/security/kyverno to the kyverno namespace by platform-addons" test "$(grep -c -e 'path: platform/security/kyverno$' -e 'namespace: kyverno$' -e 'project: platform-addons$' "$kv_apps/84-policy-kyverno.yaml")" = 3
+check "the namespace is created at the restricted Pod Security level" grep -q 'pod-security.kubernetes.io/enforce: restricted' "$kv_apps/84-policy-kyverno.yaml"
+check "the network policies are only for EKS clusters" grep -q 'platform.example/cloud: aws' "$kv_apps/85-policy-network-policies.yaml"
+check "they get the VPC range and the Service range from the cluster Secret annotations" test "$(grep -c -e "value: '.*platform.example/vpc-cidr" -e "value: '.*platform.example/service-cidr" "$kv_apps/85-policy-network-policies.yaml")" = 2
+check "the four service ApplicationSets get the Service range too" test "$(grep -l 'platform.example/service-cidr' "$kv_apps"/8[0-3]-apps-*.yaml | wc -l | tr -d ' ')" = 4
+check "the AppProject has the kyverno namespace as a destination" grep -q 'namespace: kyverno$' platform/argocd/bootstrap/appproject-platform-addons.yaml
+
+if [ -z "$contract_py" ]; then
+  echo "  skip  no Python with PyYAML found (installing yamllint provides it)"
+else
+  kv="$work/kyverno-cases"
+  rm -rf "$kv"
+  mkdir -p "$kv"
+  # The good case is a reduced render of the chart; each bad case changes one thing in it or in the ApplicationSet.
+  "$contract_py" - "$fixtures/policy/kyverno-ok.yaml" platform/argocd/apps/84-policy-kyverno.yaml "$kv" << 'KVPY'
+import copy
+import json
+import sys
+
+import yaml
+
+src, appset_src, out = sys.argv[1], sys.argv[2], sys.argv[3]
+base = list(yaml.safe_load_all(open(src, encoding="utf-8")))
+appset_text = open(appset_src, encoding="utf-8").read()
+yaml.SafeLoader.add_constructor("tag:yaml.org,2002:value", lambda loader, node: loader.construct_scalar(node))
+
+
+def deployment(docs, name):
+    return next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"] == name)
+
+
+def config(docs):
+    return next(d for d in docs if d["kind"] == "ConfigMap")
+
+
+def big_crd(docs):
+    crd = next(d for d in docs if d["kind"] == "CustomResourceDefinition")
+    crd["spec"]["description"] = "x" * 300000
+
+
+cases = {}
+
+
+def case(name, change, appset=None):
+    docs = copy.deepcopy(base)
+    change(docs)
+    cases[name] = docs
+    open("{}/{}.appset.yaml".format(out, name), "w", encoding="utf-8").write(appset if appset is not None else appset_text)
+
+
+def webhooks(docs, change):
+    data = json.loads(config(docs)["data"]["webhooks"])
+    change(data)
+    config(docs)["data"]["webhooks"] = json.dumps(data)
+
+
+case("good", lambda d: big_crd(d))
+case("nolimits", lambda d: deployment(d, "kyverno-background-controller")["spec"]["template"]["spec"]["containers"][0]["resources"].pop("limits"))
+case("noinit", lambda d: deployment(d, "kyverno-admission-controller")["spec"]["template"]["spec"]["initContainers"][0]["resources"].pop("requests"))
+case("cpu", lambda d: deployment(d, "kyverno-admission-controller")["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"].update(cpu="500m"))
+case("replicas", lambda d: deployment(d, "kyverno-admission-controller")["spec"].update(replicas=6))
+case("memory", lambda d: deployment(d, "kyverno-reports-controller")["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"].update(memory="900Mi"))
+case("noignore", lambda d: deployment(d, "kyverno-admission-controller")["spec"]["template"]["spec"]["containers"][0].update(args=[]))
+case("argocd", lambda d: webhooks(d, lambda w: w["namespaceSelector"]["matchExpressions"][0]["values"].remove("argocd")))
+case("kyvernons", lambda d: webhooks(d, lambda w: w["namespaceSelector"]["matchExpressions"].pop()))
+case("noconfig", lambda d: d.remove(config(d)))
+case("metrics", lambda d: deployment(d, "kyverno-cleanup-controller")["spec"]["template"]["spec"]["containers"][0].update(ports=[]))
+case("missing", lambda d: d.remove(deployment(d, "kyverno-reports-controller")))
+case("webhook", lambda d: d.append({"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingWebhookConfiguration", "metadata": {"name": "kyverno-x"}}))
+case("predelete", lambda d: d.append({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "kyverno-rm-webhooks", "annotations": {"helm.sh/hook": "pre-delete"}}}))
+case("nocrd", lambda d: d.remove(next(x for x in d if x["kind"] == "CustomResourceDefinition")))
+case("noserverside", lambda d: big_crd(d), appset_text.replace("          - ServerSideApply=true\n", ""))
+case("smallcrd", lambda d: None, appset_text.replace("          - ServerSideApply=true\n", ""))
+case("baseline", lambda d: big_crd(d), appset_text.replace("pod-security.kubernetes.io/enforce: restricted", "pod-security.kubernetes.io/enforce: baseline"))
+case("label", lambda d: big_crd(d), appset_text.replace('platform.example/policy: "true"', 'platform.example/policy: "yes"'))
+case("namespace", lambda d: big_crd(d), appset_text.replace("        namespace: kyverno\n", "        namespace: default\n"))
+for name, docs in cases.items():
+    yaml.safe_dump_all(docs, open("{}/{}.yaml".format(out, name), "w", encoding="utf-8"), sort_keys=False)
+KVPY
+
+  kv_fails() {
+    # kv_fails CASE MESSAGE LABEL: the case fails and the output names the problem.
+    contract "$kv/$1.yaml" kyverno t "$kv/$1.appset.yaml"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$2" "$work/cout"; then ok "$3"; else bad "$3 (exit $rc)"; fi
+  }
+  contract "$kv/good.yaml" kyverno t "$kv/good.appset.yaml"
+  check "controllers with requests and limits under 600m and 1Gi, failing open, excluding the system namespaces, with a ServerSideApply Application, pass" test "$rc" -eq 0
+  kv_fails nolimits "kyverno-background-controller container controller has no limits cpu" "a controller without limits is named"
+  kv_fails noinit "kyverno-admission-controller container kyverno-pre has no requests cpu" "an init container without requests is named"
+  kv_fails cpu "the controllers request 625m CPU, which is not under 600m" "requests of 600m CPU or more are refused"
+  kv_fails replicas "the controllers request 725m CPU, which is not under 600m" "replicas count in the total"
+  kv_fails memory "which is not under 1Gi" "requests of 1Gi of memory or more are refused"
+  kv_fails noignore "does not force the webhook failure policy to Ignore (a dead Kyverno could block the cluster)" "webhooks that can fail closed are refused"
+  kv_fails argocd "the webhooks do not exclude the namespaces argocd" "a webhook that covers argocd is named"
+  kv_fails kyvernons "the webhooks do not exclude the namespaces kyverno" "a webhook that covers Kyverno's own namespace is named"
+  kv_fails noconfig "no ConfigMap kyverno with the webhook settings" "missing webhook settings are named"
+  kv_fails metrics "kyverno-cleanup-controller does not serve metrics on port 8000" "a controller without the metrics port is named"
+  kv_fails missing "the Deployment kyverno-reports-controller is not rendered" "a missing controller is named"
+  kv_fails webhook "is rendered; Kyverno creates its own webhook configurations" "a rendered webhook configuration is refused"
+  kv_fails predelete "is a Helm pre-delete hook, which Argo CD does not run" "a pre-delete hook is refused"
+  kv_fails nocrd "no CRD is rendered; render with --include-crds" "a render without CRDs is named"
+  kv_fails noserverside "clusterpolicies.kyverno.io is larger than client-side apply can store (256 KiB), so the ApplicationSet needs ServerSideApply=true" "a large CRD without ServerSideApply is named"
+  contract "$kv/smallcrd.yaml" kyverno t "$kv/smallcrd.appset.yaml"
+  check "a CRD that client-side apply can store does not require ServerSideApply" test "$rc" -eq 0
+  kv_fails baseline "the kyverno namespace is not created at the restricted Pod Security level" "a namespace below the restricted level is named"
+  kv_fails label "does not select clusters by platform.example/policy=true" "the wrong cluster label is named"
+  kv_fails namespace "does not deploy to the kyverno namespace" "the wrong namespace is named"
+
+  # The AppProject: what Kyverno renders is allowed, and the whitelist is no wider than that.
+  addons_project="platform/argocd/bootstrap/appproject-platform-addons.yaml"
+  contract "$fixtures/policy/kyverno-project-ok.yaml" project-fit kyverno "$addons_project" kyverno
+  check "everything the Kyverno chart renders is allowed by the platform-addons project (a Helm test hook needs no place)" test "$rc" -eq 0
+  contract "$fixtures/policy/kyverno-project-bad.yaml" project-fit kyverno "$addons_project" kyverno
+  check "a workload in another namespace and cluster-scoped kinds outside the list are refused" test "$rc" -eq 1
+  check "the namespace is named" grep -q 'is in the namespace shop, which is not a destination of platform-addons' "$work/cout"
+  check "a storage class is named" grep -q 'StorageClass/demo (storage.k8s.io) is cluster-scoped and not in clusterResourceWhitelist of platform-addons' "$work/cout"
+  check "a persistent volume is named" grep -q 'PersistentVolume/demo (core) is cluster-scoped and not in clusterResourceWhitelist of platform-addons' "$work/cout"
+fi
+
+
+echo "Kyverno admission policies"
+
+check "the policy ApplicationSet selects the label the flag sets" grep -q 'platform.example/policy: "true"' "$kv_apps/86-policy-policies.yaml"
+check "it is wave 20, after Kyverno and its network policies, with the services" grep -q 'argocd.argoproj.io/sync-wave: "20"' "$kv_apps/86-policy-policies.yaml"
+check "it deploys platform/security/policies by platform-addons, with the default values only" test "$(grep -c -e 'path: platform/security/policies$' -e 'project: platform-addons$' -e '            - values.yaml$' "$kv_apps/86-policy-policies.yaml")" = 3
+check "values-enforce.yaml is not among the value files" test "$(grep -c 'values-enforce' "$kv_apps/86-policy-policies.yaml")" -le 1 -a "$(grep -c -e '- values-enforce' "$kv_apps/86-policy-policies.yaml")" = 0
+check "every policy tolerates missing CRDs at sync time" test "$(grep -l 'SkipDryRunOnMissingResource=true' platform/security/policies/templates/*.yaml | wc -l | tr -d ' ')" = 6
+check "the AppProject allows the two policy kinds it uses and no other" test "$(grep -c -e 'kind: ValidatingPolicy$' -e 'kind: ImageValidatingPolicy$' platform/argocd/bootstrap/appproject-platform-addons.yaml)" = 2 -a "$(grep -c 'kind: ClusterPolicy$' platform/argocd/bootstrap/appproject-platform-addons.yaml)" = 0
+check "the credential copy Job carries the exempt label on the Job and on its pod" test "$(grep -c 'platform.example/policy-exempt: "true"' platform/data/rabbitmq-credentials/templates/copy.yaml)" = 2
+check "the chart README says which policy types are used and why" grep -q 'ClusterPolicy' platform/security/policies/README.md
+check "and that the Pod Security levels already enforce what the policies leave out" grep -q 'Pod Security' platform/security/policies/README.md
+
+if [ -n "$contract_py" ]; then
+  addons_project="platform/argocd/bootstrap/appproject-platform-addons.yaml"
+  contract "$fixtures/policy/kyverno-project-ok.yaml" project-fit kyverno "$addons_project" kyverno
+  check "a ValidatingPolicy and an ImageValidatingPolicy are allowed by the platform-addons project" test "$rc" -eq 0
+  contract "$fixtures/policy/kyverno-project-bad.yaml" project-fit kyverno "$addons_project" kyverno
+  check "the deprecated ClusterPolicy is refused" grep -q 'ClusterPolicy/demo (kyverno.io) is cluster-scoped and not in clusterResourceWhitelist of platform-addons' "$work/cout"
+  check "and so is a MutatingPolicy, which no policy here uses" grep -q 'MutatingPolicy/demo (policies.kyverno.io) is cluster-scoped and not in clusterResourceWhitelist of platform-addons' "$work/cout"
+fi
+
+if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
+  echo "  skip  needs helm and a Python with PyYAML"
+else
+  ap="$work/policy-cases"
+  rm -rf "$ap"
+  mkdir -p "$ap"
+  helm template policies platform/security/policies --namespace kyverno -f platform/security/policies/values.yaml > "$ap/audit.yaml" 2> /dev/null || true
+  helm template policies platform/security/policies --namespace kyverno -f platform/security/policies/values.yaml -f platform/security/policies/values-enforce.yaml > "$ap/enforce.yaml" 2> /dev/null || true
+  # A copy of the verify script with another issuer, and of the images file with another registry.
+  sed 's#^ISSUER="https://token.actions.githubusercontent.com"#ISSUER="https://accounts.example.test"#' scripts/verify-image.sh > "$ap/verify-other-issuer.sh"
+  sed 's#registry: ghcr.io/franklindot04#registry: ghcr.io/other#' deploy/helm/values/images.yaml > "$ap/images-other.yaml"
+  "$contract_py" - "$ap" << 'APPY'
+import copy
+import sys
+
+import yaml
+
+d = sys.argv[1]
+audit = list(yaml.safe_load_all(open(d + "/audit.yaml", encoding="utf-8")))
+enforce = list(yaml.safe_load_all(open(d + "/enforce.yaml", encoding="utf-8")))
+cases = {}
+
+
+def policy(docs, name):
+    return next(x for x in docs if x and x["metadata"]["name"] == name)
+
+
+def case(name, change, base=audit):
+    docs = [copy.deepcopy(x) for x in base if x]
+    change(docs)
+    cases[name] = docs
+
+
+def spec(docs, name):
+    return policy(docs, name)["spec"]
+
+
+def keyless(docs):
+    return spec(docs, "verify-image-signatures")["attestors"][0]["cosign"]
+
+
+case("good-audit", lambda x: None)
+case("good-enforce", lambda x: None, enforce)
+case("deny-in-audit", lambda x: spec(x, "require-resources").update(validationActions=["Deny"]))
+case("audit-in-enforce", lambda x: spec(x, "require-probes").update(validationActions=["Audit"]), enforce)
+case("signature-deny", lambda x: spec(x, "verify-image-signatures").update(validationActions=["Deny"]), enforce)
+case("clusterpolicy", lambda x: x.append({"apiVersion": "kyverno.io/v1", "kind": "ClusterPolicy", "metadata": {"name": "old"}, "spec": {}}))
+case("everywhere", lambda x: spec(x, "require-resources")["matchConstraints"].pop("namespaceSelector"))
+case("system", lambda x: spec(x, "require-resources")["matchConstraints"]["namespaceSelector"]["matchExpressions"][0]["values"].append("kube-system"))
+case("objectselector", lambda x: spec(x, "require-resources")["matchConstraints"].update(objectSelector={"matchLabels": {"a": "b"}}))
+case("noexempt", lambda x: spec(x, "require-resources").update(matchConditions=[]))
+case("fail", lambda x: spec(x, "require-resources").update(failurePolicy="Fail"))
+case("subresource", lambda x: spec(x, "restrict-image-registries")["matchConstraints"]["resourceRules"][0].update(resources=["pods", "pods/ephemeralcontainers"]))
+case("ephemeral", lambda x: spec(x, "require-image-digest")["validations"].append({"expression": "object.spec.ephemeralContainers.all(c, c.image.matches('@sha256:'))", "message": "x"}))
+case("nocronjobs", lambda x: spec(x, "require-resources")["autogen"]["podControllers"].update(controllers=["deployments", "jobs"]))
+case("probes-jobs", lambda x: spec(x, "require-probes")["matchConstraints"]["resourceRules"][0].update(resources=["deployments", "jobs"]))
+case("registry", lambda x: spec(x, "restrict-image-registries")["validations"][0].update(expression="variables.containers.all(c, c.image.startsWith('docker.io/'))"))
+case("missing", lambda x: x.remove(policy(x, "require-probes")))
+case("wrong-issuer", lambda x: keyless(x)["keyless"]["identities"][0].update(issuer="https://accounts.example.test"))
+case("wrong-subject", lambda x: keyless(x)["keyless"]["identities"][0].update(subject="https://github.com/Franklindot04/Multi-Cloud-SRE-Platform/.github/workflows/images.yml@refs/heads/dev"))
+case("two-identities", lambda x: keyless(x)["keyless"]["identities"].append({"issuer": "https://accounts.example.test", "subject": "someone"}))
+case("no-tlog", lambda x: keyless(x)["ctlog"].update(insecureIgnoreTlog=True))
+case("no-ctlog", lambda x: keyless(x).pop("ctlog"))
+case("key", lambda x: keyless(x).update(key={"data": "x"}))
+case("no-provenance", lambda x: spec(x, "verify-image-signatures").update(attestations=[a for a in spec(x, "verify-image-signatures")["attestations"] if a["name"] != "provenance"]))
+case("no-sbom-validation", lambda x: spec(x, "verify-image-signatures").update(validations=[v for v in spec(x, "verify-image-signatures")["validations"] if "attestations.sbom" not in v["expression"]]))
+case("loose-result", lambda x: spec(x, "verify-image-signatures")["validations"][0].update(expression="(images.containers + images.initContainers).map(image, verifyImageSignatures(image, [attestors.cosign])).all(e, e >= 0)"))
+case("wrong-glob", lambda x: spec(x, "verify-image-signatures").update(matchImageReferences=[{"glob": "*"}]))
+for name, docs in cases.items():
+    yaml.safe_dump_all(docs, open("{}/{}.yaml".format(d, name), "w", encoding="utf-8"), sort_keys=False)
+APPY
+
+  pol() {
+    # pol CASE MODE: run the policies contract on the case with the real images file and verify script.
+    contract "$ap/$1.yaml" policies t "$2" deploy/helm/values/images.yaml scripts/verify-image.sh
+  }
+  pol_fails() {
+    # pol_fails CASE MODE MESSAGE LABEL
+    pol "$1" "$2"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$3" "$work/cout"; then ok "$4"; else bad "$4 (exit $rc)"; fi
+  }
+  pol good-audit audit
+  check "the policies with the default values pass: every action Audit, shop only, failing open, matching pods, signature as verify-image.sh" test "$rc" -eq 0
+  pol good-enforce enforce
+  check "and with values-enforce.yaml: Deny everywhere but the signature policy" test "$rc" -eq 0
+  pol_fails deny-in-audit audit "has the action ['Deny'] (expected ['Audit'] in audit mode)" "a policy that denies by default is named"
+  pol_fails audit-in-enforce enforce "require-probes has the action ['Audit'] (expected ['Deny'] in enforce mode)" "a policy that is not enforced by values-enforce.yaml is named"
+  pol_fails signature-deny enforce "verify-image-signatures has the action ['Deny'] (expected ['Audit'] in enforce mode)" "the signature policy that is enforced by values-enforce.yaml is named"
+  pol_fails clusterpolicy audit "ClusterPolicy/old (kyverno.io/v1) is not a ValidatingPolicy or ImageValidatingPolicy of policies.kyverno.io/v1" "the deprecated ClusterPolicy is refused"
+  pol_fails everywhere audit "require-resources must apply to the namespace shop only (it selects every namespace)" "a policy for every namespace is named"
+  pol_fails system audit "selects the system or platform namespaces ['kube-system']" "a policy that selects a system namespace is named"
+  pol_fails objectselector audit "has an objectSelector, which turns off the rules for pod controllers (autogen)" "an objectSelector is refused because it turns autogen off"
+  pol_fails noexempt audit "does not skip the workloads that carry platform.example/policy-exempt" "a policy that ignores the exempt label is named"
+  pol_fails fail audit "must fail open (failurePolicy Ignore)" "a policy that fails closed is named"
+  pol_fails subresource audit "restrict-image-registries must match pods and no subresource, so the ephemeral debug container is not stopped" "a policy that matches pods/ephemeralcontainers is refused"
+  pol_fails ephemeral audit "looks at ephemeral containers" "a policy that looks at ephemeral containers is refused"
+  pol_fails nocronjobs audit "require-resources has no autogen for cronjobs" "missing autogen for CronJobs is named"
+  pol_fails probes-jobs audit "require-probes must match deployments, statefulsets and daemonsets only (Jobs are exempt)" "a probe policy that matches Jobs is refused"
+  pol_fails registry audit "restrict-image-registries does not use the registry ghcr.io/franklindot04 of deploy/helm/values/images.yaml" "a registry that is not the one of images.yaml is named"
+  pol_fails missing audit "the policy require-probes is not rendered" "a missing policy is named"
+  pol_fails wrong-issuer audit "must accept one identity: issuer https://token.actions.githubusercontent.com" "a different OIDC issuer is refused"
+  pol_fails wrong-subject audit "must accept one identity" "a different workflow identity is refused"
+  pol_fails two-identities audit "must accept one identity" "a second accepted identity is refused"
+  pol_fails no-tlog audit "must require the transparency log entry" "a signature policy that ignores the transparency log is refused"
+  pol_fails no-ctlog audit "must require the transparency log entry" "a signature policy without a log url is refused"
+  pol_fails key audit "must have one cosign attestor with keyless verification and the transparency log, nothing else" "a key attestor next to the keyless one is refused"
+  pol_fails no-provenance audit "must require the provenance attestation of type https://slsa.dev/provenance/v1" "a missing provenance attestation is named"
+  pol_fails no-sbom-validation audit "has no validation that calls verifyAttestationSignatures(image, attestations.sbom" "a missing SBOM validation is named"
+  pol_fails loose-result audit "must require a verified result (e > 0)" "a validation that accepts an unverified image is refused"
+  pol_fails wrong-glob audit "must match the images of ghcr.io/franklindot04/*" "a glob that is not the registry is refused"
+  contract "$ap/good-audit.yaml" policies t audit "$ap/images-other.yaml" scripts/verify-image.sh
+  check "a registry in images.yaml that is not the one of the policies is named" grep -q 'does not use the registry ghcr.io/other of' "$work/cout"
+  contract "$ap/good-audit.yaml" policies t audit deploy/helm/values/images.yaml "$ap/verify-other-issuer.sh"
+  check "an issuer in verify-image.sh that is not the one of the policy is named" grep -q 'must accept one identity: issuer https://accounts.example.test' "$work/cout"
 fi
 
 echo

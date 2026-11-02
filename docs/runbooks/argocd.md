@@ -154,8 +154,8 @@ Delete everything that makes AWS create load balancers **while the load balancer
 1. **Delete workloads that create load balancers or volumes, labels first.** Deleting an Application of an ApplicationSet by hand only makes the ApplicationSet create it again while the cluster Secret still has the labels that select the cluster. Delete the label keys (this switches off the services and the data layer on the cluster; setting them to `false` also works, see the [data layer teardown](data-layer.md#teardown)), then delete what is left:
 
    ```bash
-   kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability-
-   kubectl -n argocd get applications | grep -E 'apps-|data-|observability-'     # wait until they are gone
+   kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-
+   kubectl -n argocd get applications | grep -E 'apps-|data-|observability-|policy-'     # wait until they are gone
    kubectl -n shop get deployments,statefulsets,jobs,ingresses,pods   # wait until the namespace is empty
    kubectl delete ingress --all -A
    kubectl delete svc -A --field-selector spec.type=LoadBalancer
@@ -180,7 +180,7 @@ Delete everything that makes AWS create load balancers **while the load balancer
    scripts/teardown-argocd.sh --context <CTX>
    ```
 
-   It refuses to start while `kubectl get pv` lists a volume or a claim is left in the `data` namespace. Then it deletes the `data`, `shop` and `observability` namespaces and the `platform-data` storage class, deletes `platform-root` and the ApplicationSets, waits for the Applications to go, runs `helm uninstall argocd`, and deletes the `argocd` namespace. Every step waits (`--timeout`, 600 seconds by default) and stops at the first one that does not finish; running it again continues from there. Argo CD's CRDs are kept by design; they go with the cluster. Delete them (`kubectl delete crd applications.argoproj.io applicationsets.argoproj.io appprojects.argoproj.io`) only when you are removing Argo CD from a cluster that stays.
+   It refuses to start while `kubectl get pv` lists a volume, a claim is left in the `data` namespace, or a Kyverno policy or a Kyverno webhook configuration (a name that starts with `kyverno`) is left; `teardown-prep.sh` removes those. Then it deletes the `data`, `shop` and `observability` namespaces and the `platform-data` storage class, deletes `platform-root` and the ApplicationSets, waits for the Applications to go, runs `helm uninstall argocd`, and deletes the `argocd` namespace. Every step waits (`--timeout`, 600 seconds by default) and stops at the first one that does not finish; running it again continues from there. Argo CD's CRDs are kept by design; they go with the cluster. Delete them (`kubectl delete crd applications.argoproj.io applicationsets.argoproj.io appprojects.argoproj.io`) only when you are removing Argo CD from a cluster that stays.
 
    **Why the script exists, and the one finalizer it removes.** When `platform-root` is deleted, Argo CD also deletes its own Application and removes itself. The `argocd` Application and the AppProjects then keep the finalizer `resources-finalizer.argocd.argoproj.io` with no controller left to clear it, and the `argocd` namespace stays in `Terminating` until that one finalizer is removed. The script removes it, and only when the application controller (pods labelled `app.kubernetes.io/name=argocd-application-controller`) is no longer running. It does that for Applications that are being deleted and for AppProjects left in the namespace, with a JSON patch that first tests the finalizer value at its position, so nothing else can change. It never uses `--force`, never touches another finalizer or object, and with the controller still running it only waits.
 
@@ -205,7 +205,7 @@ Delete everything that makes AWS create load balancers **while the load balancer
 ### Teardown checklist
 
 - [ ] Ingress and `LoadBalancer` Services deleted; no PVCs left
-- [ ] The `platform.example/apps`, `platform.example/data` and `platform.example/observability` labels removed from the cluster Secret before anything was deleted (`scripts/teardown-prep.sh` does this)
+- [ ] The `platform.example/apps`, `platform.example/data`, `platform.example/observability` and `platform.example/policy` labels removed from the cluster Secret before anything was deleted (`scripts/teardown-prep.sh` does this)
 - [ ] If the data layer was enabled: all PersistentVolumeClaims deleted, `kubectl get pv` empty and the cloud volumes confirmed gone ([data layer teardown](data-layer.md#teardown)); volumes are not removed by Terraform
 - [ ] No load balancers, target groups or controller-created security groups from the cluster (`aws elbv2 ...`, `aws ec2 describe-security-groups` on the `elbv2.k8s.aws/cluster` tag)
 - [ ] `scripts/teardown-argocd.sh` finished: the namespaces `data`, `shop`, `observability` and `argocd` and the `platform-data` storage class are gone, `platform-root` and the ApplicationSets deleted, Applications gone, Argo CD uninstalled

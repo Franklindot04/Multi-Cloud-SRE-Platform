@@ -1,0 +1,23 @@
+---
+# The higher-availability profile, not used by default: three admission controller replicas (the pods that answer the API
+# server) with a PodDisruptionBudget, so that a node going away (the nodes are Spot instances) never leaves the webhook
+# without a pod. The other controllers do background work and stay at one replica. Add it after values.yaml in the valueFiles
+# of the Application. It needs three schedulable nodes. The requests rise to 425m CPU and 576Mi of memory in total.
+#
+# The webhook failure policy stays Ignore (features.forceFailurePolicyIgnore in values.yaml). With three replicas Kyverno
+# can answer while a node is replaced, but whether a policy may fail closed is a separate decision, made with the policies.
+kyverno:
+  admissionController:
+    replicas: 3
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 2
+    # Spread the replicas over nodes, so that one node does not take all of them.
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: admission-controller
+            app.kubernetes.io/instance: kyverno

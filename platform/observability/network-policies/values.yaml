@@ -130,6 +130,13 @@ data:
       app.kubernetes.io/component: rabbitmq
     metricsPort: 15692
 
+# Kyverno (platform/security/kyverno): Prometheus scrapes the metrics port of its four controllers, by pod address.
+kyverno:
+  namespace: kyverno
+  podLabels:
+    app.kubernetes.io/part-of: kyverno
+  metricsPort: 8000
+
 # CoreDNS exposes metrics on this port; Prometheus scrapes it through the Service the stack creates in kube-system.
 coredns:
   port: 9153

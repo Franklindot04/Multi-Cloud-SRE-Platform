@@ -1,0 +1,28 @@
+{{- if .Values.policies.requireResources.enabled }}
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-resources
+  annotations:
+    policies.kyverno.io/title: Require resource requests and a memory limit
+    policies.kyverno.io/category: Reliability
+    policies.kyverno.io/description: >-
+      Every container and init container has CPU and memory requests and a memory limit.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  validationActions: [{{ include "policies.action" (dict "root" . "name" "requireResources") }}]
+  failurePolicy: {{ .Values.failurePolicy }}
+  {{- include "policies.autogen" . | nindent 2 }}
+  matchConditions:
+    {{- include "policies.notExempt" . | nindent 4 }}
+  matchConstraints:
+    {{- include "policies.matchPods" . | nindent 4 }}
+  variables:
+    - name: containers
+      expression: "object.spec.containers + (has(object.spec.initContainers) ? object.spec.initContainers : [])"
+  validations:
+    - expression: >-
+        variables.containers.all(c, has(c.resources) && has(c.resources.requests) && 'cpu' in c.resources.requests &&
+        'memory' in c.resources.requests && has(c.resources.limits) && 'memory' in c.resources.limits)
+      message: every container and init container needs CPU and memory requests and a memory limit
+{{- end }}

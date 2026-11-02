@@ -1,0 +1,158 @@
+---
+# What the Kyverno chart renders, reduced to what scripts/chart-contract-check.py kyverno reads: the four controllers (requests,
+# limits, ports, the failure policy flag), the ConfigMap with the webhook settings, a metrics Service and a CRD (the size of the
+# real ones is added by the tests that need it).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kyverno
+  namespace: kyverno
+data:
+  webhooks: |-
+    {
+      "namespaceSelector": {
+        "matchExpressions": [
+          {
+            "key": "kubernetes.io/metadata.name",
+            "operator": "NotIn",
+            "values": [
+              "kube-system",
+              "kube-node-lease",
+              "argocd"
+            ]
+          },
+          {
+            "key": "kubernetes.io/metadata.name",
+            "operator": "NotIn",
+            "values": [
+              "kyverno"
+            ]
+          }
+        ],
+        "matchLabels": null
+      }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kyverno-svc-metrics
+  namespace: kyverno
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: metrics-port
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-admission-controller
+  namespace: kyverno
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: kyverno
+          args:
+            - --forceFailurePolicyIgnore=true
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          ports:
+            - containerPort: 9443
+            - containerPort: 8000
+      initContainers:
+        - name: kyverno-pre
+          resources:
+            limits:
+              cpu: 100m
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-background-controller
+  namespace: kyverno
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: controller
+          args: []
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          ports:
+            - containerPort: 9443
+            - containerPort: 8000
+      initContainers: []
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-cleanup-controller
+  namespace: kyverno
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: controller
+          args: []
+          resources:
+            limits:
+              cpu: 250m
+              memory: 128Mi
+            requests:
+              cpu: 25m
+              memory: 64Mi
+          ports:
+            - containerPort: 9443
+            - containerPort: 8000
+      initContainers: []
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-reports-controller
+  namespace: kyverno
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: controller
+          args: []
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          ports:
+            - containerPort: 9443
+            - containerPort: 8000
+      initContainers: []
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterpolicies.kyverno.io
+spec:
+  group: kyverno.io
