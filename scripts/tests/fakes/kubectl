@@ -24,6 +24,7 @@
 #   obs-persistent      Prometheus and Grafana have claims in the observability namespace (values-persistent.yaml)
 #   stuck-obs-pods      a pod in the observability namespace never goes away
 #   no-pv               kubectl get pv lists nothing even while the claims in the data namespace exist
+#   stuck-pg2-claim     the claim of the second PostgreSQL instance is not removed by its deletion
 #   kyverno-policies    a ClusterPolicy, a Policy, a ValidatingPolicy and an ImageValidatingPolicy exist (their CRDs must be in
 #                       the crds file for the scripts to look at them); deleting them creates kyverno-clusterpolicies-deleted,
 #                       kyverno-policies-deleted, kyverno-validatingpolicies-deleted and kyverno-imagevalidatingpolicies-deleted
@@ -377,14 +378,17 @@ case "$*" in
     if flag stuck-pods; then
       echo pod/stuck-0
     else
-      flag pg-deleted || echo pod/platform-pg-1
+      flag pg-deleted || printf '%s\n' pod/platform-pg-1 pod/platform-pg-2
       if ! flag sts-deleted && { exists "$mq" || flag mq-survives; }; then
         echo pod/platform-mq-server-0
       fi
     fi
     ;;
   "-n data get persistentvolumeclaims -o name")
-    flag pvc-deleted || printf '%s\n' persistentvolumeclaim/platform-pg-1 persistentvolumeclaim/platform-valkey
+    # The cluster has two instances, so two claims (one volume each), and Valkey has one.
+    flag pvc-deleted || printf '%s\n' persistentvolumeclaim/platform-pg-1 persistentvolumeclaim/platform-pg-2 persistentvolumeclaim/platform-valkey
+    # The replica's claim can outlive the others (a volume that is still attached to a node that has gone).
+    if flag pvc-deleted && flag stuck-pg2-claim; then echo persistentvolumeclaim/platform-pg-2; fi
     ;;
   "-n data delete persistentvolumeclaim/"*" --wait=true --timeout="*)
     mark pvc-deleted
@@ -393,6 +397,8 @@ case "$*" in
   "get pv -o name")
     if flag stuck-pv || { ! flag pvc-deleted && ! flag no-pv; }; then
       echo persistentvolume/pvc-0123
+      echo persistentvolume/pvc-0124
+      echo persistentvolume/pvc-0125
     fi
     if flag obs-persistent && ! flag obs-pvc-deleted; then
       echo persistentvolume/pvc-4567

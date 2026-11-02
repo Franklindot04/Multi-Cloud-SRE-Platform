@@ -3,6 +3,11 @@
 # engine only: no policy is deployed here. Sized for a cluster of three Spot nodes that already runs the data layer and
 # the observability stack.
 kyverno:
+  # The controllers and the migration Job use the class of the add-ons, which ranks above the services (platform/addons/priority-classes).
+  # Kyverno fails open, so a dead Kyverno does not block the cluster; the class keeps a full cluster from evicting it.
+  global:
+    priorityClassName: platform-addons-critical
+
   # The chart installs its CRDs (22 of them, some larger than the 256 KiB that client-side apply can store in an annotation),
   # so the Argo CD Application syncs with ServerSideApply=true (platform/argocd/apps/84-policy-kyverno.yaml).
   crds:

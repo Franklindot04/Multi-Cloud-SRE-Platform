@@ -110,6 +110,9 @@ spec:
         platform.example/api-access: "true"
     spec:
       serviceAccountName: rabbitmq-credentials-copier
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       automountServiceAccountToken: true
       restartPolicy: OnFailure
       securityContext:

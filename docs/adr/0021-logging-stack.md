@@ -19,7 +19,7 @@ Storage: Loki
 - **TSDB index, schema v13**, the current one, from a date in the past so every line is covered. A later schema change needs a new entry with a later date, never an edit of this one; the contract check looks at the newest entry.
 - **Forty-eight hours of retention**, through the compactor (retention enabled, a two-hour delete delay) and `retention_period: 48h`, and lines older than that are rejected on the way in. Two days matches the metrics retention, is enough to look at yesterday's incident, and keeps the data far below the 2 GiB limit for a few small services. It is a development setting, not a recommendation.
 - **Limits that fit the size of the cluster:** about 4 MB/s ingestion (burst 8), 2 MB/s per stream (burst 6) so one crash-looping pod cannot use the budget of the others, lines up to 256 KB, 5,000 streams, 15 labels per stream, 2,000 entries and 500 series per query, a 48-hour query window. Usage reporting is off.
-- **Requests of about 100m CPU and 256Mi memory** (limits 500m and 512Mi), no priority class: as with the metrics stack, when a node is short of room the logging stack goes before the services.
+- **Requests of about 100m CPU and 256Mi memory** (limits 500m and 512Mi), the priority class `platform-observability` (added in the resilience change, [ADR-0026](0026-resilience-and-autoscaling.md); not yet run on a cluster): as with the metrics stack, when a node is short of room the logging stack goes before the services.
 
 Collection: Alloy
 

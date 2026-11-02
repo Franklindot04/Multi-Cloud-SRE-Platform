@@ -11,3 +11,10 @@ platformAddonsCritical:
 platformApps:
   name: platform-apps
   value: 100000
+
+# The observability stack (metrics, logs, traces). Below the services: when a node is short of room the stack goes first, and an
+# autoscaler adding a service pod never has to wait for it. Above pods with no class, so it is not the first thing a pod without a
+# class pushes off a node.
+platformObservability:
+  name: platform-observability
+  value: 10000

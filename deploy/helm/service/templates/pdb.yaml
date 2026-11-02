@@ -1,4 +1,5 @@
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- /* Not for a single replica: a budget there blocks every node drain and Spot replacement. */ -}}
+{{- if and .Values.podDisruptionBudget.enabled (gt (int (include "service.minReplicas" .)) 1) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:

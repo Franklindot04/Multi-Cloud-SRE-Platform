@@ -1,8 +1,8 @@
 ---
-# Gateway: the public entry point. Stateless, so it runs two replicas in every profile.
+# Gateway: the public entry point. Stateless, so it is safe with any number of replicas. The count comes from the profile file:
+# two fixed replicas in the memory profile, a CPU autoscaler in the data profile.
 port: 8080
 runAsUser: 65532
-replicas: 2
 env:
   ORDERS_URL: http://orders:8081
   PAYMENTS_URL: http://payments:8082

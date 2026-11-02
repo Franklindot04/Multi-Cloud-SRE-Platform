@@ -1,0 +1,86 @@
+{{- if .Values.scaling.enabled }}
+{{- $shop := .Values.services.namespace }}
+{{- $data := .Values.data.namespace }}
+{{- $pg := .Values.data.postgres.cluster }}
+{{- $url := .Values.slo.runbookUrl }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: scaling
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: scaling-rules
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  groups:
+    # Alerts for the objects that keep the services up while the cluster changes under them: the autoscalers, the disruption budgets,
+    # pods that cannot be scheduled and the PostgreSQL instances. All of them are tickets, with a minimum duration, because none of them
+    # means that users are failing now; the SLO alerts and ServiceTargetDown say that. The metrics are kube-state-metrics 2.20
+    # (docs/metrics/workload/horizontalpodautoscaler-metrics.md, docs/metrics/policy/poddisruptionbudget-metrics.md, pod-metrics.md).
+    - name: scaling-and-capacity
+      rules:
+        - alert: HpaAtMaxReplicas
+          # The autoscaler wants as many pods as it may have. desired is capped at the maximum, so ">=" is "at the maximum". A pod count
+          # that stays there for a long time means the maximum is too low for the load, or the load is a fault.
+          expr: |
+            kube_horizontalpodautoscaler_status_desired_replicas{namespace="{{ $shop }}"}
+              >= on (namespace, horizontalpodautoscaler)
+            kube_horizontalpodautoscaler_spec_max_replicas{namespace="{{ $shop }}"}
+          for: {{ .Values.scaling.hpaAtMax.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ `{{ $labels.horizontalpodautoscaler }}` }} has been at its maximum number of replicas for {{ .Values.scaling.hpaAtMax.for }}"
+            description: >-
+              The autoscaler {{ `{{ $labels.horizontalpodautoscaler }}` }} in {{ `{{ $labels.namespace }}` }} has wanted its maximum number of
+              replicas ({{ `{{ $value }}` }} wanted) for {{ .Values.scaling.hpaAtMax.for }}. It cannot add pods, so more load means slower or failing requests.
+            runbook_url: {{ $url }}#hpa-at-max-replicas
+        - alert: PodDisruptionBudgetBlocked
+          # Only the budgets of the services in shop. A budget exists only for a service with more than one replica, and with all of its pods
+          # healthy it allows one disruption; zero allowed means a pod is already down and the next node drain or Spot replacement would be
+          # refused or would take the service down. The budgets the CloudNativePG operator keeps for the database in {{ $data }} are left out on
+          # purpose: the one for the primary allows no disruption at all, all the time.
+          expr: kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace="{{ $shop }}"} == 0
+          for: {{ .Values.scaling.pdbBlocked.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ `{{ $labels.poddisruptionbudget }}` }} has allowed no disruption for {{ .Values.scaling.pdbBlocked.for }}"
+            description: >-
+              The budget {{ `{{ $labels.poddisruptionbudget }}` }} in {{ `{{ $labels.namespace }}` }} allows no voluntary disruption, so a node
+              drain cannot move its pods. Fewer pods are healthy than the budget needs.
+            runbook_url: {{ $url }}#pod-disruption-budget-blocked
+        - alert: PodsPending
+          expr: kube_pod_status_phase{namespace=~"{{ $shop }}|{{ $data }}", phase="Pending"} == 1
+          for: {{ .Values.scaling.podsPending.for }}
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ `{{ $labels.pod }}` }} in {{ `{{ $labels.namespace }}` }} has been Pending for {{ .Values.scaling.podsPending.for }}"
+            description: >-
+              The pod {{ `{{ $labels.pod }}` }} in {{ `{{ $labels.namespace }}` }} has not started for {{ .Values.scaling.podsPending.for }}. It
+              cannot be scheduled (not enough CPU or memory, a volume in another zone, a node that is gone) or its image cannot be pulled.
+            runbook_url: {{ $url }}#pods-pending
+        - alert: PostgresInstancesNotReady
+          # CloudNativePG exports no metric for the number of instances the Cluster asks for, so this uses kube-state-metrics on the pods and the
+          # volume claims: every instance has a claim of the same name as its pod, and the claim stays when the pod is gone, so the claims are the
+          # instances the cluster has. Ready pods are counted with "or vector(0)" so that no pod at all is also fewer than asked. The pod and
+          # claim names are "<cluster>-<number>"; the Pods of the initdb and join Jobs and the gate Job have longer names and are not counted.
+          expr: |
+            (sum(kube_pod_status_ready{namespace="{{ $data }}", pod=~"{{ $pg }}-[0-9]+", condition="true"}) or vector(0))
+              <
+            scalar(count(kube_persistentvolumeclaim_info{namespace="{{ $data }}", persistentvolumeclaim=~"{{ $pg }}-[0-9]+"}))
+          for: {{ .Values.scaling.postgresInstances.for }}
+          labels:
+            severity: ticket
+            service: postgres
+          annotations:
+            summary: Fewer PostgreSQL instances are ready than the cluster has
+            description: >-
+              {{ `{{ $value }}` }} instance(s) of the PostgreSQL cluster {{ $pg }} are ready, fewer than it has volumes for. With two instances a
+              failover has no replica to go to while one is down; with one instance the database is down.
+            runbook_url: {{ $url }}#postgres-instances-not-ready
+{{- end }}

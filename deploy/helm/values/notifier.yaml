@@ -1,6 +1,8 @@
 ---
 # Notifier: records the notifications that would be sent; delivers nothing. One replica in every profile
-# because its duplicate detection is in memory (see ADR-0015).
+# because its duplicate detection and its notifications are in memory, per pod: with two replicas a redelivered event can reach the other
+# pod, which has not seen it, and a request for the list of notifications would show only the notifications that pod recorded
+# (see ADR-0015). It has no autoscaler and no budget for the same reason; do not raise replicas until that state is shared.
 port: 8083
 runAsUser: 65532
 replicas: 1

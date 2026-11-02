@@ -70,7 +70,7 @@ tempo:
       seccompProfile:
         type: RuntimeDefault
 
-    # No priority class, on purpose: when a node is short of room the tracing stack goes before the services.
+    # Below the services: when a node is short of room the tracing stack goes before them.
     resources:
       requests:
         cpu: 50m
@@ -117,6 +117,8 @@ tempo:
       type: RuntimeDefault
 
   replicas: 1
+
+  priorityClassName: platform-observability
 
   # Tempo does not call the Kubernetes API.
   serviceAccount:

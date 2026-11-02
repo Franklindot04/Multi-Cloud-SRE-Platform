@@ -17,7 +17,13 @@
 #   5. network policies (scripts/chart-contract-check.py network-policies): every pod of every service render is covered by a
 #      default deny for ingress and egress, the allows are applied before the deny, nothing is open to a whole range, and
 #      an enabled ingress needs the load balancer's source range
-#   6. yamllint on the non-template files, and shellcheck through scripts/shellcheck.sh
+#   6. resilience (scripts/chart-contract-check.py scaling): the replicas or the autoscaler of every service and profile are the ones
+#      below, a PodDisruptionBudget exists only for more than one replica, the pods spread over nodes and zones, and the grace period
+#      covers the drain. A service whose state is in memory (the notifier, and everything in the memory profile except the
+#      gateway) stays at one replica
+#   7. everything rendered is allowed by the platform-apps AppProject (kinds and namespace), so a new kind is not found out by a
+#      failed sync
+#   8. yamllint on the non-template files, and shellcheck through scripts/shellcheck.sh
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
 #
@@ -69,6 +75,19 @@ else
     "$candidate" -c 'import yaml' > /dev/null 2>&1 && py="$candidate"
   fi
   [ -n "$py" ] || echo "no Python with PyYAML found (installing yamllint provides it); the security checks will fail"
+
+  # What each service and profile must render for the replica count: replicas=N for a fixed count, hpa for the autoscaler.
+  # The orders service in the memory profile keeps its orders in memory and the notifier its notifications and its duplicate
+  # detection, so a second replica would see only part of the data. Orders and payments are safe in the data profile (the outbox
+  # relay claims its rows with SKIP LOCKED, and PostgreSQL arbitrates the idempotency keys). The gateway keeps no state.
+  scaling_expect() {
+    case "$1/$2" in
+      gateway/memory) echo "replicas=2" ;;
+      gateway/data | orders/data) echo "hpa" ;;
+      payments/data) echo "replicas=2" ;;
+      *) echo "replicas=1" ;;
+    esac
+  }
 
   schema_version() {
     case "$1" in
@@ -127,6 +146,8 @@ else
         if helm template "$svc" "$chart" --namespace shop "${args[@]}" "${service_cidr[@]}" > "$work/render.yaml" 2> "$work/render.err"; then
           validate "$label" "$cloud" "$work/render.yaml"
           [ -z "$py" ] || "$py" scripts/chart-contract-check.py network-policies "$label" < "$work/render.yaml" || status=1
+          [ -z "$py" ] || "$py" scripts/chart-contract-check.py scaling "$label" "$(scaling_expect "$svc" "$profile")" < "$work/render.yaml" || status=1
+          [ -z "$py" ] || "$py" scripts/chart-contract-check.py project-fit "$label" platform/argocd/bootstrap/appproject-platform-apps.yaml shop < "$work/render.yaml" || status=1
         else
           echo "    FAIL [$label] helm template"
           cat "$work/render.err"
@@ -147,6 +168,8 @@ else
         > "$work/render.yaml" 2> "$work/render.err"; then
         validate "$label" "$cloud" "$work/render.yaml"
         [ -z "$py" ] || "$py" scripts/chart-contract-check.py network-policies "$label" < "$work/render.yaml" || status=1
+        [ -z "$py" ] || "$py" scripts/chart-contract-check.py scaling "$label" hpa < "$work/render.yaml" || status=1
+        [ -z "$py" ] || "$py" scripts/chart-contract-check.py project-fit "$label" platform/argocd/bootstrap/appproject-platform-apps.yaml shop < "$work/render.yaml" || status=1
         if ! grep -q 'name: gateway-allow-load-balancer' "$work/render.yaml"; then
           echo "    FAIL [$label] the enabled ingress has no network policy for the load balancer"
           status=1
@@ -197,6 +220,34 @@ else
   fi
   if ! helm template gateway "$chart" -f "$values/gateway.yaml" -f "$values/gateway-memory.yaml" --set networkPolicy.matchServiceAddresses=false > /dev/null 2>&1; then
     echo "    FAIL the chart did not render with matchServiceAddresses=false and no Service range"
+    status=1
+  fi
+
+  # The autoscaler and a fixed replica count must not be set together, the autoscaler must not end below its minimum, and the spread
+  # mode must be one Kubernetes knows. Each of these fails to render instead of rendering something that fights or means nothing.
+  scaling_refused() {
+    local what="$1"
+    shift
+    if helm template gateway "$chart" -f "$values/images.yaml" -f "$values/gateway.yaml" -f "$values/gateway-data.yaml" "${service_cidr[@]}" "$@" \
+      > /dev/null 2>&1; then
+      echo "    FAIL the chart rendered with $what"
+      status=1
+    fi
+  }
+  scaling_refused "replicas set next to the autoscaler" --set replicas=3
+  scaling_refused "an autoscaler maximum below its minimum" --set autoscaling.maxReplicas=1
+  scaling_refused "an unknown spread mode" --set topologySpread.whenUnsatisfiable=Sometimes
+  # A production profile can make the spread a hard rule, and the render must still pass the checks.
+  if helm template gateway "$chart" -f "$values/images.yaml" -f "$values/gateway.yaml" -f "$values/gateway-data.yaml" "${service_cidr[@]}" \
+    --set topologySpread.whenUnsatisfiable=DoNotSchedule > "$work/render.yaml" 2> "$work/render.err"; then
+    [ -z "$py" ] || "$py" scripts/chart-contract-check.py scaling "gateway/data/DoNotSchedule" hpa < "$work/render.yaml" || status=1
+    if [ "$(grep -c 'whenUnsatisfiable: DoNotSchedule' "$work/render.yaml")" != 2 ]; then
+      echo "    FAIL topologySpread.whenUnsatisfiable=DoNotSchedule did not reach both constraints"
+      status=1
+    fi
+  else
+    echo "    FAIL the chart did not render with topologySpread.whenUnsatisfiable=DoNotSchedule"
+    cat "$work/render.err"
     status=1
   fi
 

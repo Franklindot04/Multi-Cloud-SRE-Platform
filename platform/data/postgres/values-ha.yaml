@@ -4,6 +4,7 @@
 cluster:
   instances: 3
   podAntiAffinityType: required
+  zoneSpread: DoNotSchedule
   resources:
     requests:
       cpu: 500m

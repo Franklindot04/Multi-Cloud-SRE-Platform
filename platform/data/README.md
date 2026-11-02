@@ -44,11 +44,13 @@ Profiles are values files: `values.yaml` (shared, the standard profile) + `value
 
 | Component | Standard (non-production) | HA |
 | --- | --- | --- |
-| PostgreSQL | 1 instance, 5 GiB, 250m / 512Mi requests | 3 instances on separate nodes, 20 GiB, 500m / 1Gi |
+| PostgreSQL | 2 instances (a primary and an asynchronous replica), 5 GiB each, 250m / 512Mi requests each | 3 instances on separate nodes, 20 GiB, 500m / 1Gi |
 | Valkey | 1 pod, 1 GiB, `maxmemory` 128mb | primary and 2 replicas with a disruption budget, 2 GiB each |
 | RabbitMQ | 1 replica, 2 GiB, 200m / 512Mi | 3 replicas, 10 GiB, disruption budget, `pause_minority` |
 
-The HA profiles need at least three schedulable nodes. The standard profile fits the two Spot nodes (2 vCPU and 8 GiB each) with room to spare: the whole data layer requests about 0.75 vCPU and 1.7 GiB of memory, including the two operators.
+The HA profiles need at least three schedulable nodes. The standard profile fits the two Spot nodes (2 vCPU and 8 GiB each) with room to spare: the whole data layer requests about 1.0 vCPU and 2.2 GiB of memory, including the two operators and the second PostgreSQL instance (250m and 512Mi, plus a second 5 GiB volume, which on AWS is a second EBS volume).
+
+**Single instances.** Valkey and RabbitMQ stay single instances in the standard profile; the data layer is highly available for PostgreSQL only. RabbitMQ would need three nodes and quorum queues to survive the loss of a broker, which is a later change; until then a Spot replacement of its node stops the broker until the pod runs somewhere else, and the orders outbox keeps the events meanwhile. Every pod of the data layer uses the priority class `platform-addons-critical`, so a full cluster never evicts it to place a service pod (see [priority-classes](../addons/priority-classes)); the one exception is the vendored RabbitMQ Cluster Operator, whose manifest is not edited.
 
 ## Namespaces and Pod Security
 

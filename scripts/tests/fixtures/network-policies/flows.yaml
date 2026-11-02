@@ -61,7 +61,9 @@ pods:
       platform/observability/monitors selects on the first two
   - name: data/platform-pg-2
     labels: {cnpg.io/cluster: platform-pg, cnpg.io/podRole: instance, cnpg.io/instanceName: platform-pg-2}
-    source: a second instance of the HA profile (platform/data/postgres/values-ha.yaml), same labels as the first
+    source: >-
+      the second instance (the replica) of the data profile, and of the high availability profile
+      (platform/data/postgres/values-ha.yaml), same labels as the first
   - name: data/platform-valkey
     labels: {app.kubernetes.io/name: valkey, app.kubernetes.io/instance: data-valkey}
     source: the Deployment of the Valkey chart (rendered by the check; declared here so the unit tests do not need the chart)
@@ -202,7 +204,7 @@ names:
 # of the services the row applies to (data by default; memory is the profile without the data layer).
 flows:
   # --- DNS: every pod of the three namespaces may ask the cluster DNS, over UDP and TCP ---
-  - from: [gateway, orders, payments, notifier, postgres, valkey, rabbitmq, data-secrets-job, pg-gate-job, prometheus,
+  - from: [gateway, orders, payments, notifier, postgres, postgres-2, valkey, rabbitmq, data-secrets-job, pg-gate-job, prometheus,
            alertmanager, prometheus-operator, grafana, ksm, collector, loki, alloy, tempo, obs-secrets-job]
     to: coredns
     ports: [53]
@@ -218,7 +220,7 @@ flows:
     expect: allow
     via: [service, pod]
     note: DNS for the migration Jobs
-  - from: [gateway, orders, payments, notifier, postgres, rabbitmq, prometheus, grafana, alloy]
+  - from: [gateway, orders, payments, notifier, postgres, postgres-2, rabbitmq, prometheus, grafana, alloy]
     to: coredns
     ports: [53]
     protocol: TCP
@@ -245,17 +247,17 @@ flows:
     note: without the broker orders tells the notifier over HTTP
   - {from: orders, to: notifier, port: 8083, expect: deny, profiles: [data], note: with the broker orders publishes an event instead}
   - from: [orders, orders-migrate]
-    to: postgres
+    to: [postgres, postgres-2]
     port: 5432
     expect: allow
     via: service
-    note: orders and its migration Job use PostgreSQL
+    note: orders and its migration Job use PostgreSQL; the read-write Service points at whichever instance is the primary
   - from: [payments, payments-migrate]
-    to: postgres
+    to: [postgres, postgres-2]
     port: 5432
     expect: allow
     via: service
-    note: payments and its migration Job use PostgreSQL
+    note: payments and its migration Job use PostgreSQL; the read-write Service points at whichever instance is the primary
   - {from: orders, to: valkey, port: 6379, expect: allow, via: service, note: the cache}
   - {from: [orders, notifier], to: rabbitmq, port: 5672, expect: allow, via: service, note: orders publishes and the notifier consumes}
   - from: [gateway, orders, payments, notifier]
@@ -273,19 +275,24 @@ flows:
   - {from: prometheus, to: notifier, port: 8083, profiles: [data, memory], expect: allow, via: pod, note: metrics}
 
   # --- data ---
-  - {from: cnpg-operator, to: postgres, ports: [8000, 5432], expect: allow, via: pod, note: instance status and SQL for managed roles}
+  - from: cnpg-operator
+    to: [postgres, postgres-2]
+    ports: [8000, 5432]
+    expect: allow
+    via: pod
+    note: instance status and SQL for managed roles
   - from: [postgres, postgres-2]
     to: [postgres, postgres-2]
     ports: [5432, 8000]
     expect: allow
     via: pod
-    note: streaming replication and instance status between instances
+    note: streaming replication and instance status between instances, straight to the pod address
   - {from: valkey, to: valkey-2, port: 6379, expect: allow, via: pod, note: replication}
   - {from: valkey-2, to: valkey, port: 6379, expect: allow, via: pod, note: replication}
   - {from: rabbitmq-operator, to: rabbitmq, ports: [15672, 5672], expect: allow, via: pod, note: the operator reaches the broker}
   - {from: rabbitmq, to: rabbitmq-2, ports: [4369, 25672, 35672, 35680, 35682], expect: allow, via: pod, note: Erlang clustering}
   - {from: rabbitmq-2, to: rabbitmq, ports: [4369, 25672, 35672, 35682], expect: allow, via: pod, note: Erlang clustering}
-  - {from: prometheus, to: postgres, port: 9187, expect: allow, via: pod, note: PostgreSQL metrics}
+  - {from: prometheus, to: [postgres, postgres-2], port: 9187, expect: allow, via: pod, note: PostgreSQL metrics}
   - {from: prometheus, to: rabbitmq, port: 15692, expect: allow, via: pod, note: RabbitMQ metrics}
 
   - from: [postgres-2, postgres]
@@ -293,7 +300,9 @@ flows:
     port: 5432
     expect: allow
     via: service
-    note: a replica streams through the read-write Service
+    note: >-
+      a replica streams from the primary through the read-write Service (the replication connection goes to the Service name,
+      so the agent sees its ClusterIP)
   - from: [valkey-2, valkey]
     to: [valkey, valkey-2]
     port: 6379
@@ -302,7 +311,8 @@ flows:
     note: a replica reaches its primary through the Service
 
   # --- the Kubernetes API server and the nodes (addresses inside the VPC range) ---
-  - from: [postgres, rabbitmq, data-secrets-job, pg-gate-job, prometheus, prometheus-operator, ksm, grafana, alloy, obs-secrets-job]
+  - from: [postgres, postgres-2, rabbitmq, data-secrets-job, pg-gate-job,
+           prometheus, prometheus-operator, ksm, grafana, alloy, obs-secrets-job]
     to: api-server
     port: 443
     expect: allow
@@ -341,7 +351,7 @@ flows:
 
   # --- denied: the services reach only what they use ---
   - from: gateway
-    to: [postgres, valkey, rabbitmq]
+    to: [postgres, postgres-2, valkey, rabbitmq]
     ports: [5432, 6379, 5672]
     profiles: [data, memory]
     expect: deny
@@ -363,7 +373,11 @@ flows:
     expect: deny
     note: the memory profile has no data layer to reach
   - {from: payments, to: postgres, port: 5432, profiles: [memory], expect: deny, note: the memory profile has no data layer to reach}
-  - {from: orders, to: [postgres], port: 8000, expect: deny, note: orders may use SQL, not the instance status port}
+  - from: [orders, payments]
+    to: [postgres, postgres-2]
+    port: 8000
+    expect: deny
+    note: the services may use SQL, not the instance status port
   - {from: orders, to: rabbitmq, ports: [15672, 25672], expect: deny, note: orders may publish, not manage or cluster}
   - from: [gateway, orders, payments, notifier, orders-migrate, payments-migrate]
     to: internet
@@ -394,7 +408,7 @@ flows:
   - {from: [orders, payments], to: collector, ports: [4318, 8888], expect: deny, note: only OTLP/gRPC is open on the Collector}
 
   # --- denied at the destination: the source may open the port to the Service range, the pod behind it refuses ---
-  - {from: gateway, to: postgres, port: 5432, expect: deny, via: service, note: the gateway has no egress to the data layer}
+  - {from: gateway, to: [postgres, postgres-2], port: 5432, expect: deny, via: service, note: the gateway has no egress to the data layer}
   - from: orders
     to: [valkey, rabbitmq, data-stray]
     port: 5432
@@ -451,28 +465,43 @@ flows:
     note: the data layer calls nothing in the shop
 
   # --- denied: the data layer ---
-  - {from: grafana, to: [postgres, valkey, rabbitmq], ports: [5432, 6379, 5672], expect: deny, note: Grafana does not read the data layer}
-  - {from: prometheus, to: postgres, ports: [5432, 8000], expect: deny, note: Prometheus may scrape metrics only}
+  - from: grafana
+    to: [postgres, postgres-2, valkey, rabbitmq]
+    ports: [5432, 6379, 5672]
+    expect: deny
+    note: Grafana does not read the data layer
+  - {from: prometheus, to: [postgres, postgres-2], ports: [5432, 8000], expect: deny, note: Prometheus may scrape metrics only}
   - {from: prometheus, to: rabbitmq, ports: [5672, 15672], expect: deny, note: Prometheus may scrape metrics only}
   - {from: prometheus, to: valkey, port: 6379, expect: deny, note: Valkey has no metrics endpoint and Prometheus has no access}
-  - from: [postgres, valkey, rabbitmq, data-stray]
+  - from: [postgres, postgres-2, valkey, rabbitmq, data-stray]
     to: [gateway, orders, payments, notifier]
     ports: [8080, 8081, 8082, 8083]
     expect: deny
     note: the data layer calls nothing in the shop
-  - from: [postgres, valkey, rabbitmq]
+  - from: [postgres, postgres-2, valkey, rabbitmq]
     to: internet
     ports: [80, 443]
     expect: deny
     note: the data layer reaches nothing outside the cluster (backups are not configured)
-  - {from: [valkey, valkey-2], to: [postgres, rabbitmq], ports: [5432, 5672], expect: deny, note: Valkey calls nothing}
-  - {from: postgres, to: rabbitmq, port: 5672, expect: deny, note: PostgreSQL does not use the broker}
+  - {from: [valkey, valkey-2], to: [postgres, postgres-2, rabbitmq], ports: [5432, 5672], expect: deny, note: Valkey calls nothing}
+  - {from: [postgres, postgres-2], to: [rabbitmq, rabbitmq-2], port: 5672, expect: deny, note: PostgreSQL does not use the broker}
+  - {from: [postgres, postgres-2], to: [valkey, valkey-2], port: 6379, expect: deny, note: PostgreSQL does not use the cache}
+  - from: [rabbitmq, rabbitmq-2]
+    to: [postgres, postgres-2]
+    ports: [5432, 8000]
+    expect: deny
+    via: pod
+    note: the broker may not join the replication or ask for the status of an instance
   - {from: valkey, to: [api-server, api-server-eni], port: 443, expect: deny, note: Valkey does not call the API}
   - {from: [cnpg-operator, rabbitmq-operator], to: valkey, port: 6379, expect: deny, note: the operators do not reach the cache}
-  - {from: rabbitmq-operator, to: postgres, ports: [5432, 8000], expect: deny, note: the RabbitMQ operator does not reach PostgreSQL}
+  - from: rabbitmq-operator
+    to: [postgres, postgres-2]
+    ports: [5432, 8000]
+    expect: deny
+    note: the RabbitMQ operator does not reach PostgreSQL
   - {from: cnpg-operator, to: rabbitmq, ports: [5672, 15672], expect: deny, note: the CloudNativePG operator does not reach the broker}
   - from: [internet, vpc-client]
-    to: [postgres, valkey, rabbitmq]
+    to: [postgres, postgres-2, valkey, rabbitmq]
     ports: [5432, 6379, 5672]
     expect: deny
     note: nothing from outside the cluster reaches the data layer

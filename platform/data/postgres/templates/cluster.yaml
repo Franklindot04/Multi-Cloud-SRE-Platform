@@ -11,8 +11,14 @@ spec:
   imageName: {{ .Values.cluster.imageName }}
   priorityClassName: {{ .Values.cluster.priorityClassName }}
   enableSuperuserAccess: false
-  # A single instance has no replica to fail over to, and a disruption budget would block node drains.
+  # The operator creates the disruption budgets of the cluster itself (this chart renders none, so there is no second one to conflict
+  # with them). A single instance has no replica to fail over to, and a budget would block node drains.
   enablePDB: {{ gt (int .Values.cluster.instances) 1 }}
+  primaryUpdateStrategy: {{ .Values.cluster.primaryUpdateStrategy }}
+  primaryUpdateMethod: {{ .Values.cluster.primaryUpdateMethod }}
+  switchoverDelay: {{ .Values.cluster.switchoverDelay }}
+  minSyncReplicas: {{ .Values.cluster.minSyncReplicas }}
+  maxSyncReplicas: {{ .Values.cluster.maxSyncReplicas }}
   bootstrap:
     initdb:
       database: platform
@@ -28,7 +34,7 @@ spec:
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: ScheduleAnyway
+      whenUnsatisfiable: {{ .Values.cluster.zoneSpread }}
       labelSelector:
         matchLabels:
           cnpg.io/cluster: {{ .Values.cluster.name }}

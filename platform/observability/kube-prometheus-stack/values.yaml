@@ -71,6 +71,7 @@ kube-prometheus-stack:
     ingress:
       enabled: false
     alertmanagerSpec:
+      priorityClassName: platform-observability
       replicas: 1
       # The pod settings are repeated from the chart so a chart change cannot loosen them. The operator gives the
       # containers a read-only root filesystem, no privilege escalation and no capabilities.
@@ -116,9 +117,10 @@ kube-prometheus-stack:
   kubeProxy:
     enabled: false
 
-  # No priority class is set on any pod of the stack, on purpose. The sample services use platform-apps; metrics must
-  # never preempt them, and when a node is short of room the stack goes first.
+  # Every pod of the stack uses platform-observability (platform/addons/priority-classes), below the sample services
+  # (platform-apps): metrics never preempt them, and when a node is short of room the stack goes first.
   prometheusOperator:
+    priorityClassName: platform-observability
     # The admission webhooks need a certificate and a hook Job to patch it in. They only validate rule files,
     # which are checked in CI instead, so they are off, and with them the operator's own TLS listener.
     admissionWebhooks:
@@ -168,6 +170,7 @@ kube-prometheus-stack:
     controlPlaneScrapeClass:
       enabled: true
     prometheusSpec:
+      priorityClassName: platform-observability
       replicas: 1
       # Two days of data. With emptyDir the data is lost whenever the pod is rescheduled, so a longer retention
       # would only cost disk on the node. The size limit stops a high-cardinality mistake from filling it.
@@ -206,6 +209,7 @@ kube-prometheus-stack:
 
   grafana:
     enabled: true
+    priorityClassName: platform-observability
     # The admin account comes from the Secret grafana-admin, generated in the cluster by the
     # observability-secrets chart. No password is set, defaulted or committed anywhere in this repository.
     admin:
@@ -337,6 +341,7 @@ kube-prometheus-stack:
       enabled: false
 
   kube-state-metrics:
+    priorityClassName: platform-observability
     resources:
       requests:
         cpu: 10m

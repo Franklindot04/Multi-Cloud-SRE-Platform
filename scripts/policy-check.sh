@@ -86,6 +86,10 @@ helm template policy-network-policies "$netpol" --namespace kyverno -f "$netpol/
 contract restricted "kyverno" "$work/kyverno.yaml"
 contract restricted "kyverno + values-ha.yaml" "$work/kyverno-ha.yaml"
 contract kyverno "kyverno" "$work/kyverno.yaml" "$appset"
+# The controllers rank with the add-ons, above the services. The chart has no setting for the priority class of its migration Job (a
+# post-upgrade hook that runs once and ends), so that Job is named as an exception.
+contract priority "kyverno" "$work/kyverno.yaml" platform-addons-critical Job/kyverno-migrate-resources
+contract priority "kyverno + values-ha.yaml" "$work/kyverno-ha.yaml" platform-addons-critical Job/kyverno-migrate-resources
 contract kyverno "kyverno + values-ha.yaml" "$work/kyverno-ha.yaml" "$appset"
 contract project-fit "kyverno" "$work/kyverno.yaml" "$project" kyverno
 contract project-fit "kyverno-network-policies" "$work/policies.yaml" "$project" kyverno

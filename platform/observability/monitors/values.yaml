@@ -148,3 +148,16 @@ slo:
         sum(__FN__(messages_consumed_total{job="notifier", result="dead_letter"}[__WINDOW__]))
       total: >-
         sum(__FN__(messages_consumed_total{job="notifier", result=~"processed|duplicate|dead_letter"}[__WINDOW__]))
+
+# Alerts for the autoscalers, the disruption budgets, pods that cannot be scheduled and the PostgreSQL instances
+# (templates/scaling-rules.yaml, docs/runbooks/alerts.md). All are tickets. The runbook address is slo.runbookUrl.
+scaling:
+  enabled: true
+  hpaAtMax:
+    for: 15m
+  pdbBlocked:
+    for: 30m
+  podsPending:
+    for: 10m
+  postgresInstances:
+    for: 10m

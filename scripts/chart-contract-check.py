@@ -39,6 +39,35 @@ The observability charts (platform/observability) add checks on the rendered out
                       container, app, service, service_name) and the level, and every selector must exclude the empty
                       value, as Loki requires. The
                       rendered ConfigMaps (stdin) carry the label that the Grafana sidecar in STACK_VALUES selects
+  scaling LABEL EXPECT
+                      the resilience settings of a service render (deploy/helm/service): EXPECT is replicas=N, a fixed
+                      count with no autoscaler, or hpa, an autoscaler with the CPU target at 70 percent, a scale-down
+                      window of at least five minutes, a minimum of at least two and a maximum above it. A fixed
+                      count needs the Deployment to set it; an autoscaler needs the Deployment not to (the two would
+                      fight). The PodDisruptionBudget (maxUnavailable 1, selecting the pods) exists if and only if the
+                      service starts with more than one replica, so a single replica never blocks a node drain. The pods
+                      spread over nodes and zones, selecting their own labels. The rollout never lowers capacity
+                      (maxUnavailable 0), and the grace period covers the preStop sleep, the drain and the shutdown time.
+                      The EXPECT of each service and profile is in scripts/deploy-check.sh, which keeps a service with
+                      in-memory state at one replica
+  priority LABEL CLASS [EXEMPT...]
+                      every pod a render creates or asks an operator to create uses the PriorityClass CLASS: the pod template
+                      of each Deployment, StatefulSet, DaemonSet, Job and CronJob, and the Prometheus, Alertmanager,
+                      CloudNativePG Cluster and RabbitmqCluster resources. An object that cannot be given the class (a
+                      vendored manifest, a hook Job in a chart that has no setting for it) is named as an EXEMPT such as
+                      Deployment/rabbitmq-cluster-operator, so the gap is written down where the check runs
+  priority-classes LABEL
+                      the PriorityClasses are platform-addons-critical, platform-apps and platform-observability, in that
+                      order of value, all below the built-in system classes (2 billion) and above zero, none the default
+  postgres-ha LABEL N the PostgreSQL Cluster has N instances. With more than one: the operator manages the disruption budget
+                      and the chart renders none, the instances avoid one node (preferred or required), spread over zones
+                      without leaving a pod Pending unless the mode says so, replicate asynchronously (no synchronous
+                      replicas), update the primary by switchover, and carry the priority class; with one, no budget
+  scaling-rules LABEL ALERTS_MD
+                      the PrometheusRule "scaling" has the four alerts HpaAtMaxReplicas, PodDisruptionBudgetBlocked, PodsPending and
+                      PostgresInstancesNotReady, each a ticket (never a page) that waits at least 15, 30, 10 and 10 minutes, with a
+                      summary, a description and a runbook_url whose anchor is a heading of ALERTS_MD, and with an expression that
+                      uses only the metrics kube-state-metrics 2.20 documents for them
   loki LABEL          the Loki configuration is single tenant, uses the TSDB index with schema v13 and the filesystem,
                       has the compactor's retention on with a retention period of at most 168h, and sets ingestion and
                       line size limits
@@ -1281,6 +1310,255 @@ def check_project_fit(docs, label, project_file, default_namespace):
     return problems
 
 
+def check_scaling(docs, label, expect):
+    """Replicas, autoscaler, budget, spread, rollout and grace period of one service render."""
+    problems = []
+    by_kind = {}
+    for d in docs:
+        by_kind.setdefault(d["kind"], []).append(d)
+    deployments = by_kind.get("Deployment", [])
+    if len(deployments) != 1:
+        return ["{}: expected one Deployment, found {}".format(label, len(deployments))]
+    dep = deployments[0]
+    spec = dep["spec"]
+    pod = spec["template"]["spec"]
+    pod_labels = (spec["template"].get("metadata") or {}).get("labels") or {}
+    selector = (spec.get("selector") or {}).get("matchLabels") or {}
+    hpas = by_kind.get("HorizontalPodAutoscaler", [])
+    pdbs = by_kind.get("PodDisruptionBudget", [])
+
+    if len(hpas) > 1:
+        problems.append("{}: {} autoscalers".format(label, len(hpas)))
+    if expect == "hpa":
+        starts = None
+        if len(hpas) != 1:
+            problems.append("{}: expected an autoscaler".format(label))
+        else:
+            h = hpas[0]["spec"]
+            ref = h.get("scaleTargetRef") or {}
+            if (ref.get("kind"), ref.get("name"), ref.get("apiVersion")) != ("Deployment", dep["metadata"]["name"], "apps/v1"):
+                problems.append("{}: the autoscaler does not target the Deployment {}".format(label, dep["metadata"]["name"]))
+            starts = h.get("minReplicas")
+            if not isinstance(starts, int) or starts < 2:
+                problems.append("{}: the autoscaler minimum is {}, it must be at least 2".format(label, starts))
+            if not isinstance(h.get("maxReplicas"), int) or h["maxReplicas"] <= (starts if isinstance(starts, int) else 0):
+                problems.append("{}: the autoscaler maximum must be above its minimum".format(label))
+            targets = [(m.get("resource") or {}) for m in h.get("metrics") or [] if m.get("type") == "Resource"]
+            cpu = [t for t in targets if t.get("name") == "cpu"]
+            if len(h.get("metrics") or []) != 1 or len(cpu) != 1 or (cpu[0].get("target") or {}).get("type") != "Utilization" \
+                    or (cpu[0].get("target") or {}).get("averageUtilization") != 70:
+                problems.append("{}: the autoscaler must have one metric, CPU utilisation with a target of 70 percent".format(label))
+            window = ((h.get("behavior") or {}).get("scaleDown") or {}).get("stabilizationWindowSeconds")
+            if not isinstance(window, int) or window < 300:
+                problems.append("{}: the scale-down stabilisation window is {}, it must be at least 300 seconds".format(label, window))
+        if "replicas" in spec:
+            problems.append("{}: the Deployment sets replicas ({}) next to an autoscaler; they would fight over the count".format(
+                label, spec["replicas"]))
+    elif expect.startswith("replicas="):
+        starts = int(expect.split("=", 1)[1])
+        if hpas:
+            problems.append("{}: an autoscaler on a service that is fixed at {} replica(s)".format(label, starts))
+        if spec.get("replicas") != starts:
+            problems.append("{}: replicas is {}, expected {}".format(label, spec.get("replicas"), starts))
+    else:
+        return ["{}: unknown expectation {}".format(label, expect)]
+
+    if starts is not None and starts > 1:
+        if len(pdbs) != 1:
+            problems.append("{}: {} replicas at the start and {} PodDisruptionBudgets, expected one".format(label, starts, len(pdbs)))
+    elif pdbs:
+        problems.append("{}: a PodDisruptionBudget on a single replica would block every node drain".format(label))
+    for b in pdbs:
+        if b["spec"].get("maxUnavailable") != 1 or "minAvailable" in b["spec"]:
+            problems.append("{}: the budget must be maxUnavailable: 1".format(label))
+        match = (b["spec"].get("selector") or {}).get("matchLabels") or {}
+        if not match or any(pod_labels.get(k) != v for k, v in match.items()):
+            problems.append("{}: the budget does not select the pods of the Deployment".format(label))
+
+    constraints = pod.get("topologySpreadConstraints") or []
+    keys = {c.get("topologyKey"): c for c in constraints}
+    for key in ("kubernetes.io/hostname", "topology.kubernetes.io/zone"):
+        c = keys.get(key)
+        if c is None:
+            problems.append("{}: no topology spread constraint over {}".format(label, key))
+            continue
+        if c.get("whenUnsatisfiable") not in ("ScheduleAnyway", "DoNotSchedule"):
+            problems.append("{}: the spread over {} has no valid whenUnsatisfiable".format(label, key))
+        sel = (c.get("labelSelector") or {}).get("matchLabels") or {}
+        if not sel or any(pod_labels.get(k) != v for k, v in sel.items()):
+            problems.append("{}: the spread over {} does not select the pods of the Deployment".format(label, key))
+    if len({c.get("whenUnsatisfiable") for c in constraints}) > 1:
+        problems.append("{}: the spread constraints disagree on whenUnsatisfiable".format(label))
+
+    ru = (spec.get("strategy") or {}).get("rollingUpdate") or {}
+    if (spec.get("strategy") or {}).get("type") != "RollingUpdate" or str(ru.get("maxUnavailable")) != "0" or not ru.get("maxSurge"):
+        problems.append("{}: the rollout must be RollingUpdate with maxUnavailable 0 and a surge".format(label))
+
+    container = pod["containers"][0]
+    sleep = (((container.get("lifecycle") or {}).get("preStop") or {}).get("sleep") or {}).get("seconds")
+    env = {e["name"]: e.get("value") for e in container.get("env") or []}
+    try:
+        needed = int(sleep) + int(env["SHUTDOWN_DRAIN_SECONDS"]) + int(env["SHUTDOWN_TIMEOUT_SECONDS"])
+    except (TypeError, KeyError, ValueError):
+        problems.append("{}: no preStop sleep, or no SHUTDOWN_DRAIN_SECONDS and SHUTDOWN_TIMEOUT_SECONDS".format(label))
+        return problems
+    grace = pod.get("terminationGracePeriodSeconds")
+    if not isinstance(grace, int) or grace < needed:
+        problems.append("{}: the grace period {} is shorter than the preStop sleep, the drain and the shutdown time ({}s)".format(
+            label, grace, needed))
+    return problems
+
+
+def check_priority(docs, label, klass, exempt):
+    """Every pod of a render has the priority class (or is a named exception)."""
+    problems = []
+    seen = 0
+    for d in docs:
+        kind = d["kind"]
+        name = name_of(d)
+        # Helm test pods (helm test) are never created by Argo CD.
+        if "test" in str(annotations(d).get(HELM_HOOK, "")).split(","):
+            continue
+        if kind in WORKLOAD_KINDS:
+            specs = [(n, ps) for n, ps, _ in pod_specs([d])]
+        elif kind in ("Prometheus", "Alertmanager", "Cluster"):
+            if kind == "Cluster" and "postgresql.cnpg.io" not in str(d.get("apiVersion", "")):
+                continue
+            specs = [(name, d.get("spec") or {})]
+        elif kind == "RabbitmqCluster":
+            override = ((d.get("spec") or {}).get("override") or {}).get("statefulSet") or {}
+            specs = [(name, (((override.get("spec") or {}).get("template") or {}).get("spec")) or {})]
+        else:
+            continue
+        for n, spec in specs:
+            seen += 1
+            if n in exempt:
+                continue
+            if spec.get("priorityClassName") != klass:
+                problems.append("{}: {} has priorityClassName {!r}, expected {}".format(label, n, spec.get("priorityClassName"), klass))
+    for e in exempt:
+        if not any(name_of(d) == e for d in docs):
+            problems.append("{}: the exception {} is not in the render (remove it from the list)".format(label, e))
+    if seen == 0:
+        problems.append("{}: no pod or pod-creating resource found; the check would pass on an empty render".format(label))
+    return problems
+
+
+def check_priority_classes(docs, label):
+    classes = {d["metadata"]["name"]: d for d in docs if d["kind"] == "PriorityClass"}
+    problems = []
+    order = ["platform-addons-critical", "platform-apps", "platform-observability"]
+    for n in order:
+        if n not in classes:
+            problems.append("{}: PriorityClass {} is missing".format(label, n))
+    if problems:
+        return problems
+    if set(classes) != set(order):
+        problems.append("{}: unexpected PriorityClasses {}".format(label, sorted(set(classes) - set(order))))
+    values = [float(classes[n]["value"]) for n in order]  # Helm renders 1000000 as 1e+06, which YAML reads as text
+    if not (values[0] > values[1] > values[2] > 0):
+        problems.append("{}: the values must fall in the order {} (they are {})".format(label, ", ".join(order), values))
+    if values[0] >= 2000000000:
+        problems.append("{}: platform-addons-critical must stay below the built-in system classes (2000000000)".format(label))
+    for n, c in classes.items():
+        if c.get("globalDefault"):
+            problems.append("{}: {} is the global default, so every pod with no class would get it".format(label, n))
+    return problems
+
+
+def check_postgres_ha(docs, label, instances):
+    problems = []
+    clusters = [d for d in docs if d["kind"] == "Cluster" and "postgresql.cnpg.io" in str(d.get("apiVersion", ""))]
+    if len(clusters) != 1:
+        return ["{}: expected one Cluster, found {}".format(label, len(clusters))]
+    spec = clusters[0]["spec"]
+    want = int(instances)
+    if spec.get("instances") != want:
+        problems.append("{}: instances is {}, expected {}".format(label, spec.get("instances"), want))
+    if any(d["kind"] == "PodDisruptionBudget" for d in docs):
+        problems.append("{}: the chart renders a PodDisruptionBudget; the operator manages the budgets of the cluster and a second one would conflict".format(label))
+    if spec.get("priorityClassName") != "platform-addons-critical":
+        problems.append("{}: the Cluster must use platform-addons-critical".format(label))
+    if want == 1:
+        if spec.get("enablePDB") is not False:
+            problems.append("{}: a single instance must have enablePDB: false (a budget would block every node drain)".format(label))
+        return problems
+    if spec.get("enablePDB") is not True:
+        problems.append("{}: with {} instances enablePDB must be true (the operator's budgets protect the primary)".format(label, want))
+    aff = spec.get("affinity") or {}
+    if aff.get("topologyKey") != "kubernetes.io/hostname" or aff.get("podAntiAffinityType") not in ("preferred", "required"):
+        problems.append("{}: the instances must avoid sharing a node (affinity over kubernetes.io/hostname, preferred or required)".format(label))
+    zones = [c for c in spec.get("topologySpreadConstraints") or [] if c.get("topologyKey") == "topology.kubernetes.io/zone"]
+    if len(zones) != 1 or zones[0].get("whenUnsatisfiable") not in ("ScheduleAnyway", "DoNotSchedule"):
+        problems.append("{}: the instances need one spread over topology.kubernetes.io/zone".format(label))
+    elif ((zones[0].get("labelSelector") or {}).get("matchLabels") or {}).get("cnpg.io/cluster") != clusters[0]["metadata"]["name"]:
+        problems.append("{}: the zone spread does not select the pods of the cluster".format(label))
+    if spec.get("minSyncReplicas", 0) != 0 or spec.get("maxSyncReplicas", 0) != 0:
+        problems.append("{}: synchronous replication is on (minSyncReplicas {}, maxSyncReplicas {}); this profile is asynchronous".format(
+            label, spec.get("minSyncReplicas"), spec.get("maxSyncReplicas")))
+    if spec.get("primaryUpdateMethod") != "switchover":
+        problems.append("{}: primaryUpdateMethod must be switchover, so that the primary is not restarted in place".format(label))
+    if spec.get("primaryUpdateStrategy") != "unsupervised":
+        problems.append("{}: primaryUpdateStrategy must be unsupervised".format(label))
+    delay = spec.get("switchoverDelay")
+    if not isinstance(delay, int) or not 0 < delay <= 900:
+        problems.append("{}: switchoverDelay {} must be set, and at most 900 seconds".format(label, delay))
+    return problems
+
+
+SCALING_ALERTS = {
+    # name: (minimum for in minutes, metrics the expression may use)
+    "HpaAtMaxReplicas": (15, {"kube_horizontalpodautoscaler_status_desired_replicas", "kube_horizontalpodautoscaler_spec_max_replicas"}),
+    "PodDisruptionBudgetBlocked": (30, {"kube_poddisruptionbudget_status_pod_disruptions_allowed"}),
+    "PodsPending": (10, {"kube_pod_status_phase"}),
+    "PostgresInstancesNotReady": (10, {"kube_pod_status_ready", "kube_persistentvolumeclaim_info"}),
+}
+
+
+def _minutes(text):
+    m = re.match(r"^(\d+)([mh])$", str(text))
+    return int(m.group(1)) * (60 if m.group(2) == "h" else 1) if m else None
+
+
+def check_scaling_rules(docs, label, alerts_md):
+    problems = []
+    rules_docs = [d for d in docs if d.get("kind") == "PrometheusRule" and (d.get("metadata") or {}).get("name") == "scaling"]
+    if len(rules_docs) != 1:
+        return ["{}: expected exactly one PrometheusRule named scaling, found {}".format(label, len(rules_docs))]
+    rules = [r for g in rules_docs[0]["spec"].get("groups") or [] for r in g.get("rules") or []]
+    anchors = set()
+    for line in open(alerts_md, encoding="utf-8"):
+        if line.startswith("### "):
+            anchors.add(re.sub(r"[^a-z0-9 -]", "", line[4:].strip().lower()).replace(" ", "-"))
+    by_name = {r.get("alert"): r for r in rules}
+    for name, (minimum, metrics) in SCALING_ALERTS.items():
+        r = by_name.get(name)
+        if r is None:
+            problems.append("{}: the alert {} is missing".format(label, name))
+            continue
+        if (r.get("labels") or {}).get("severity") != "ticket":
+            problems.append("{}: {} must have severity ticket".format(label, name))
+        waited = _minutes(r.get("for"))
+        if waited is None or waited < minimum:
+            problems.append("{}: {} waits {} and must wait at least {}m".format(label, name, r.get("for"), minimum))
+        ann = r.get("annotations") or {}
+        for key in ("summary", "description", "runbook_url"):
+            if not ann.get(key):
+                problems.append("{}: {} has no {}".format(label, name, key))
+        m = re.match(r"^https://\S+/docs/runbooks/alerts\.md#([a-z0-9-]+)$", str(ann.get("runbook_url", "")))
+        if not m:
+            problems.append("{}: the runbook_url of {} is not a link to docs/runbooks/alerts.md with an anchor".format(label, name))
+        elif m.group(1) not in anchors:
+            problems.append("{}: the runbook_url of {} points at #{}, which is not a heading of the alerts runbook".format(label, name, m.group(1)))
+        used = set(re.findall(r"\b(kube_[a-z_]+)\b", r.get("expr", "")))
+        if used != metrics:
+            problems.append("{}: {} uses the metrics {} and should use {}".format(label, name, sorted(used), sorted(metrics)))
+    for name in by_name:
+        if name not in SCALING_ALERTS:
+            problems.append("{}: the alert {} is not one the check knows".format(label, name))
+    return problems
+
+
 def table_waves(readme):
     """{ApplicationSet name: wave} from the README table of '| wave | `name`, `name` ... |' rows."""
     waves = {}
@@ -1784,6 +2062,16 @@ def main(argv):
         problems = check_policy_labels(load_stdin(), argv[2], set(argv[3:]))
     elif len(argv) == 6 and argv[1] == "policies":
         problems = check_policies(load_stdin(), argv[2], argv[3], argv[4], argv[5])
+    elif len(argv) >= 4 and argv[1] == "priority":
+        problems = check_priority(load_stdin(), argv[2], argv[3], set(argv[4:]))
+    elif len(argv) == 3 and argv[1] == "priority-classes":
+        problems = check_priority_classes(load_stdin(), argv[2])
+    elif len(argv) == 4 and argv[1] == "scaling-rules":
+        problems = check_scaling_rules(load_stdin(), argv[2], argv[3])
+    elif len(argv) == 4 and argv[1] == "postgres-ha":
+        problems = check_postgres_ha(load_stdin(), argv[2], argv[3])
+    elif len(argv) == 4 and argv[1] == "scaling":
+        problems = check_scaling(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "kyverno":
         problems = check_kyverno(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "crds":

@@ -1,9 +1,23 @@
 ---
-# Standard (non-production) profile: one instance. See values-ha.yaml for three.
+# Standard (non-production) profile: two instances, a primary and one replica. See values-ha.yaml for three. Set cluster.instances to 1
+# to go back to a single instance (no replica, no disruption budget).
 cluster:
   name: platform-pg
   namespace: data
-  instances: 1
+  instances: 2
+  # Replication is asynchronous: the primary acknowledges a commit without waiting for the replica. If the primary is lost, the
+  # replica is promoted and transactions that had not reached it are lost; this chart does not say how many, because that depends on
+  # the load and the network. Synchronous replication (minSyncReplicas and maxSyncReplicas above 0) is for a profile that accepts the
+  # primary stopping accepting writes when no replica can confirm them.
+  minSyncReplicas: 0
+  maxSyncReplicas: 0
+  # A rolling update (a new image or a changed setting that needs a restart) updates the replicas first and the primary last, by a
+  # switchover to an updated replica, and without waiting for a person. The operator refuses an update that changes the image and the
+  # PostgreSQL parameters together while the method is switchover, so change them in two steps. switchoverDelay is how long the old
+  # primary has to shut down cleanly during a switchover (the operator's default is an hour).
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: switchover
+  switchoverDelay: 300
   # Pinned PostgreSQL image maintained by the CloudNativePG project (minimal variant, Debian 13).
   imageName: ghcr.io/cloudnative-pg/postgresql:18.6-minimal-trixie
   priorityClassName: platform-addons-critical
@@ -17,8 +31,12 @@ cluster:
     limits:
       cpu: "1"
       memory: 1Gi
-  # preferred: spread instances over nodes when possible. The HA profile requires it.
+  # preferred: spread instances over nodes when possible, so that a cluster with fewer nodes than instances still runs them. The HA
+  # profile requires it (required: an instance that cannot go on a node of its own stays Pending).
   podAntiAffinityType: preferred
+  # What the instances do about zones: ScheduleAnyway prefers a spread over the zones the nodes are in and never leaves a pod
+  # Pending for it (and does nothing on a cluster whose nodes are in one zone); DoNotSchedule makes it a rule.
+  zoneSpread: ScheduleAnyway
   parameters:
     max_connections: "100"
     shared_buffers: 128MB
@@ -39,3 +57,5 @@ gate:
   enabled: true
   image: curlimages/curl:8.23.0
   waitSeconds: 900
+  # The same class as the database the Job waits for.
+  priorityClassName: platform-addons-critical

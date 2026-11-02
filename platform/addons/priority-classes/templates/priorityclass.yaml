@@ -19,3 +19,14 @@ value: {{ .Values.platformApps.value }}
 globalDefault: false
 preemptionPolicy: PreemptLowerPriority
 description: The sample application services. Below the platform add-ons, above workloads with no priority class.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.platformObservability.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+value: {{ .Values.platformObservability.value }}
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: The metrics, logging and tracing stack. Below the sample application services.

@@ -23,7 +23,9 @@ digests: {}
 
 imagePullSecrets: []
 
-replicas: 1
+# A fixed number of replicas. Leave it unset (null) when autoscaling.enabled is true: the Deployment then has no replicas field and
+# the autoscaler owns the count, so Argo CD and the autoscaler do not fight over it. Setting both is refused.
+replicas: null
 port: 8080
 
 # Numeric user and group the image runs as (see the Dockerfile of the service).
@@ -85,14 +87,29 @@ probes:
 # An existing PriorityClass from platform/addons/priority-classes. Empty means the cluster default.
 priorityClassName: platform-apps
 
+# Scale on CPU with a HorizontalPodAutoscaler (autoscaling/v2). Only for a service that is safe with several replicas, which
+# the values file of that service says. The utilisation is measured against the CPU request, so it follows the request. Needs
+# metrics-server (platform/addons/metrics-server on EKS; GKE has its own).
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+  # Scale up at once (the Kubernetes default), scale down only after the load has been lower for this long.
+  scaleDownStabilizationSeconds: 300
+
+# Keeps one pod of a node drain or a Spot replacement from taking the service down. It is rendered only when the service
+# has more than one replica (replicas, or autoscaling.minReplicas): on a single replica it would block every drain.
 podDisruptionBudget:
   enabled: true
   maxUnavailable: 1
 
-# Spread replicas over nodes and zones. ScheduleAnyway keeps pods schedulable on a small or single-zone cluster.
+# Spread the replicas over nodes and over zones. ScheduleAnyway keeps pods schedulable on a small or single-zone cluster and
+# only prefers the spread; a production profile can use DoNotSchedule, which leaves a pod Pending rather than break it.
 topologySpread:
   enabled: true
   maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
 
 nodeSelector: {}
 tolerations: []

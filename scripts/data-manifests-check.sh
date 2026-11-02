@@ -11,7 +11,9 @@
 #   5. shellcheck on the scripts, through scripts/shellcheck.sh (same flags and version as CI)
 #   6. contracts that a schema check cannot see (scripts/chart-contract-check.py): no chart renders only hook
 #      resources, no Job that creates Secrets is a Helm hook, the PostgreSQL chart has its PreSync gate for the
-#      role Secrets (the sync waves are checked by scripts/argocd-check.sh)
+#      role Secrets (the sync waves are checked by scripts/argocd-check.sh), the PostgreSQL cluster has one, two or three
+#      instances as asked, with the instances kept off one node, asynchronous replication, switchover updates and the
+#      operator's own disruption budgets, and every pod of the data layer has the priority class platform-addons-critical
 #
 # Tools that are not installed are skipped with a message. Nothing is installed in a cluster.
 #
@@ -101,6 +103,56 @@ else
     fi
     contracts=$((contracts + 1))
   done
+
+  # PostgreSQL: two instances in the standard profile (a primary and an asynchronous replica), one when the value says so, three in the
+  # high availability profile.
+  pg=platform/data/postgres
+  pg_render() { helm template postgres "$pg" --namespace data -f "$pg/values.yaml" -f "$pg/values-standard.yaml" "$@"; }
+  pg_check() {
+    local label="$1" want="$2"
+    shift 2
+    if pg_render "$@" > "$contract_work/pg.yaml" 2> "$contract_work/render.err"; then
+      "$contract_py" scripts/chart-contract-check.py postgres-ha "$label" "$want" < "$contract_work/pg.yaml" || status=1
+      contracts=$((contracts + 1))
+    else
+      echo "    FAIL [$label] helm template"
+      cat "$contract_work/render.err"
+      status=1
+    fi
+  }
+  pg_check "postgres (standard profile)" 2
+  pg_check "postgres (cluster.instances=1)" 1 --set cluster.instances=1
+  pg_check "postgres (values-ha.yaml)" 3 -f "$pg/values-ha.yaml"
+  if [ "$(helm template postgres "$pg" --namespace data -f "$pg/values.yaml" -f "$pg/values-standard.yaml" -f "$pg/values-ha.yaml" 2> /dev/null \
+    | grep -c 'podAntiAffinityType: required')" != 1 ]; then
+    echo "    FAIL the high availability profile does not require the instances to be on different nodes"
+    status=1
+  fi
+
+  # The data layer ranks with the add-ons (platform-addons-critical), above the services (platform-apps). The RabbitMQ Cluster Operator
+  # is a vendored manifest that is checked against a SHA-256 and cannot be given a class without changing it, so it is named as an exception.
+  data_prio() {
+    local label="$1" chart="$2"
+    shift 2
+    if helm template "$(basename "$chart")" "$chart" --namespace data -f "$chart/values.yaml" "$@" > "$contract_work/prio.yaml" 2> "$contract_work/render.err"; then
+      "$contract_py" scripts/chart-contract-check.py priority "$label" platform-addons-critical < "$contract_work/prio.yaml" || status=1
+      contracts=$((contracts + 1))
+    else
+      echo "    FAIL [$label] helm template"
+      cat "$contract_work/render.err"
+      status=1
+    fi
+  }
+  data_prio "cloudnative-pg" platform/data/cloudnative-pg -f platform/data/cloudnative-pg/values-standard.yaml
+  data_prio "postgres" "$pg" -f "$pg/values-standard.yaml"
+  data_prio "postgres + values-ha.yaml" "$pg" -f "$pg/values-standard.yaml" -f "$pg/values-ha.yaml"
+  data_prio "valkey" platform/data/valkey -f platform/data/valkey/values-standard.yaml
+  data_prio "rabbitmq" platform/data/rabbitmq -f platform/data/rabbitmq/values-standard.yaml
+  data_prio "data-secrets" platform/data/secrets
+  data_prio "rabbitmq-credentials" platform/data/rabbitmq-credentials
+  "$contract_py" scripts/chart-contract-check.py priority "rabbitmq-operator (vendored manifest)" platform-addons-critical \
+    Deployment/rabbitmq-cluster-operator < platform/data/rabbitmq-operator/cluster-operator.yml || status=1
+
   rm -rf "$contract_work"
   echo "    checked $contracts chart(s)"
 fi
