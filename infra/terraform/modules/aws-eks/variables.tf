@@ -220,6 +220,14 @@ variable "node_labels" {
   default     = {}
 }
 
+# --- Networking ---
+
+variable "enable_network_policy" {
+  description = "Enforce Kubernetes network policies in the VPC CNI add-on (enableNetworkPolicy). Without it NetworkPolicy objects are accepted and ignored."
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
   description = "Additional tags merged onto all resources."
   type        = map(string)

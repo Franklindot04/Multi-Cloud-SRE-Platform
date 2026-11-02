@@ -97,6 +97,28 @@ run "defaults" {
   }
 }
 
+run "network_policy_enabled_by_default" {
+  command = plan
+
+  assert {
+    condition     = jsondecode(aws_eks_addon.before_compute["vpc-cni"].configuration_values).enableNetworkPolicy == "true"
+    error_message = "Network policy enforcement must be on in the vpc-cni add-on by default."
+  }
+}
+
+run "network_policy_disabled" {
+  command = plan
+
+  variables {
+    enable_network_policy = false
+  }
+
+  assert {
+    condition     = jsondecode(aws_eks_addon.before_compute["vpc-cni"].configuration_values).enableNetworkPolicy == "false"
+    error_message = "The vpc-cni add-on must say enableNetworkPolicy false when the variable is off."
+  }
+}
+
 run "secrets_encryption_disabled" {
   command = plan
 

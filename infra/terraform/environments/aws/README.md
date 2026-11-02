@@ -60,6 +60,7 @@ Apply and destroy steps, with cost notes, are in the [AWS network runbook](../..
 | `node_capacity_type` | `SPOT` | `SPOT` or `ON_DEMAND` |
 | `node_desired_size`, `node_min_size`, `node_max_size` | `2`, `1`, `4` | |
 | `node_disk_size_gb` | `30` | |
+| `enable_network_policy` | `true` | Turns on network policy enforcement in the `vpc-cni` add-on; see [network policies](../../../../docs/runbooks/aws-eks.md#network-policy-enforcement) |
 
 Apply and destroy steps, with cost notes, are in the [AWS EKS runbook](../../../../docs/runbooks/aws-eks.md). The control plane bills hourly while the cluster exists.
 

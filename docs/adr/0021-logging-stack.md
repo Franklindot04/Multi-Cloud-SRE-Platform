@@ -76,7 +76,7 @@ None of this is meant to be left as it is for a production cluster:
 - **No long-term or cross-cluster storage, no replication, no backup.**
 - **Only the `shop` and `data` namespaces,** and only pod logs: no Kubernetes events, no audit logs, no node logs.
 - **No parsing beyond the level.** Fields such as `route` or `status` stay in the line. Querying them is `| json | status >= 500`, which parses at query time.
-- **No network policies** on the namespace and no authentication in front of Loki.
+- **No authentication in front of Loki.** The namespace has network policies (default deny with explicit allows, on EKS only), so only Alloy, Grafana and Prometheus reach it.
 
 ## What has been exercised
 

@@ -56,7 +56,7 @@ Checks
 - **Capacity.** Tempo adds 50m CPU and 128Mi memory to the requests. The stack's requests total about 0.495 vCPU and 1.47 GiB, from the requests of the charts as rendered. On the two default nodes that is about one percentage point of CPU on top of [ADR-0021](0021-logging-stack.md). These are arithmetic on rendered requests, not measurements.
 - **Traces are lost when Tempo's pod is rescheduled,** by design. A trace that matters has to be read before then; the 24-hour window assumes the pod survives that long.
 - **Single replica.** Tempo runs once. While it restarts, the collector's exporter queues and retries; whether traces sent meanwhile are replayed or lost was not observed.
-- **The collector sends to Tempo without TLS or authentication,** and Tempo accepts any client in the cluster. The namespace has no network policy ([ADR-0020](0020-metrics-stack.md)).
+- **The collector sends to Tempo without TLS or authentication,** and Tempo accepts any client that the namespace's network policies let through, which is the collector, Grafana and Prometheus (on EKS; other clouds have no policies yet).
 - **A deprecated chart is in the tree.** See above for why and for the way out.
 - The trace ID in a log line links to a trace only if the trace exists in Tempo, and no trace does until a service sends spans.
 
@@ -66,7 +66,7 @@ None of this is meant to be left as it is for a production cluster:
 
 - **Object storage** (S3 or GCS) for the blocks, with the bucket's own lifecycle rule for retention, a role the pods can assume (IRSA or Workload Identity) and a retention agreed with whoever reads the traces, on the supported chart (see the migration path above).
 - **Sampling** decided on purpose, in the SDKs or in the collector, once real traffic exists. Nothing samples now because nothing sends.
-- **TLS and authentication** between the collector and Tempo, and network policies on the namespace.
+- **TLS and authentication** between the collector and Tempo.
 - **The metrics generator**, with a remote-write endpoint, when service graphs or span metrics are wanted; the data source then turns the service map on.
 
 ## Services that send traces
@@ -114,4 +114,4 @@ Not exercised, because it needs a cluster or a service that sends traces:
 - **A hosted tracing service.** Out of scope for a platform that runs its own components, and it would need a credential.
 - **Trace ID as a Loki label.** It would make the link from a trace to its logs a plain selector, and it would create a stream per request. A text filter on the ID is slower and does not grow the index.
 - **Enabling the metrics generator now.** It needs a remote-write endpoint and gives service graphs, which no one can use until spans exist.
-- **TLS between the collector and Tempo now.** It would need certificates for an in-cluster hop that has no other client; it belongs with the network policies of the security phase.
+- **TLS between the collector and Tempo now.** It would need certificates for an in-cluster hop that has no other client; it belongs with the rest of the transport security of the security phase.

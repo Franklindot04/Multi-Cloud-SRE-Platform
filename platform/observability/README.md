@@ -31,12 +31,13 @@ To move to a newer chart: `ADDONS_UPDATE=1 ./scripts/addons-check.sh platform/ob
 | [`secrets`](secrets) | local chart | In-cluster generation of the Grafana admin credentials (ordinary RBAC objects and a Sync hook Job), as in the data layer |
 | [`otel-collector`](otel-collector) | local chart | The OpenTelemetry Collector as a Deployment, with its Service and a ServiceMonitor |
 | [`monitors`](monitors) | local chart | ServiceMonitors for the four sample services, a PodMonitor for PostgreSQL and a ServiceMonitor for RabbitMQ, and the `PrometheusRule` `slo` with the SLO recording rules and burn-rate alerts ([ADR-0023](../../docs/adr/0023-slos-and-alerting.md)) |
+| [`network-policies`](network-policies) | local chart | Default deny for the namespace and the allow rules of the stack (EKS only) |
 | [`dashboards`](dashboards) | local chart | The Grafana dashboards: one JSON file per dashboard in `files/`, one labelled ConfigMap each. `confirmed-upstream.txt` lists the metric names confirmed against upstream documentation |
 | [`loki`](loki) | wrapper chart | Loki in single-binary mode on an `emptyDir`, 48 hours of retention. `values-persistent.yaml` is an optional overlay, off by default |
 | [`alloy`](alloy) | wrapper chart | Grafana Alloy as a single-replica Deployment that tails pod logs through the Kubernetes API and pushes them to Loki |
 | [`tempo`](tempo) | wrapper chart | Tempo in single-binary mode on an `emptyDir`, 24 hours of retention, OTLP receivers only. `values-persistent.yaml` is an optional overlay, off by default |
 
-Argo CD deploys them as eight ApplicationSets (`observability-secrets`, `-stack`, `-tempo`, `-collector`, `-monitors`, `-dashboards`, `-loki`, `-alloy`, waves 10 to 16) in the `platform-observability` AppProject. The monitors chart and the collector's ServiceMonitor skip the dry run while the operator's CRDs are missing, and the Applications retry with backoff, so the order inside a first sync heals itself.
+Argo CD deploys them as nine ApplicationSets (`observability-secrets`, `-stack`, `-tempo`, `-collector`, `-monitors`, `-dashboards`, `-loki`, `-alloy`, `-network-policies`, waves 10 to 17) in the `platform-observability` AppProject. The monitors chart and the collector's ServiceMonitor skip the dry run while the operator's CRDs are missing, and the Applications retry with backoff, so the order inside a first sync heals itself.
 
 ## Sizing and storage
 

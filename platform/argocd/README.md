@@ -64,6 +64,7 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `region` | load balancer controller, external-dns, Route 53 issuer region |
 | `account-id` | recorded for reference and verified by the bootstrap script |
 | `vpc-id` | load balancer controller VPC |
+| `vpc-cidr` | address range of the VPC, for the network policies of the `data` and `observability` namespaces (API server and kubelet access) |
 | `lbc-role-arn`, `external-dns-role-arn`, `cert-manager-role-arn` | IRSA role annotations on the service accounts (AWS) |
 | `external-dns-sa-email`, `cert-manager-sa-email` | Workload Identity annotations (GCP) |
 | `project-id` | external-dns and Cloud DNS issuer project (GCP) |
@@ -89,6 +90,7 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 6 | `data-secrets`, `data-cnpg-operator`, `data-rabbitmq-operator` |
 | 7 | `data-postgres`, `data-valkey`, `data-rabbitmq` |
 | 8 | `data-rabbitmq-credentials` (copies the broker credentials into `shop`) |
+| 9 | `data-network-policies` (default deny and the allow rules for the `data` namespace; EKS clusters only) |
 | 10 | `observability-secrets` (only on clusters labelled `platform.example/observability=true`) |
 | 11 | `observability-stack` (Prometheus Operator, Prometheus, Grafana), `observability-tempo` (the trace backend, before the collector exports to it) |
 | 12 | `observability-collector` |
@@ -96,6 +98,7 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 14 | `observability-dashboards` (Grafana dashboards as ConfigMaps) |
 | 15 | `observability-loki` |
 | 16 | `observability-alloy` (the log collector) |
+| 17 | `observability-network-policies` (default deny and the allow rules for the `observability` namespace; EKS clusters only) |
 | 20 | `apps-notifier`, `apps-payments` (only on clusters labelled `platform.example/apps=true`) |
 | 21 | `apps-orders` |
 | 22 | `apps-gateway` |

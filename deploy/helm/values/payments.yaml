@@ -26,3 +26,5 @@ resources:
   limits:
     cpu: 500m
     memory: 640Mi
+networkPolicy:
+  ingressFrom: [gateway, orders]

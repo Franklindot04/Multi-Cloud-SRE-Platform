@@ -866,7 +866,7 @@ check "and says it is off by default" test "$(sed -n '/--enable-observability/,/
 check "and says how to reach Grafana" test "$(sed -n '/--enable-observability/,/--enable-apps/p' "$work/bout" | grep -c 'port-forward')" -ge 1
 
 # The label the script writes must be the one the ApplicationSets select on, or the flag deploys nothing.
-check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 8
+check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 9
 check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/observability' platform/argocd/apps/*.yaml | grep -vc '/9[0-9]-observability-')" = 0
 
 echo "chart-contract-check.py (observability checks)"
@@ -1456,6 +1456,349 @@ spec.loader.exec_module(c)
 print(" ".join(c.metrics_in('histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket{route=~"$route", status="5.."}[$__rate_interval]))) / on (a) group_left (b) up or vector(0)')))
 MPY
 )" = "http_request_duration_seconds_bucket up"
+fi
+
+echo "chart-contract-check.py (network policies)"
+
+if [ -z "$contract_py" ]; then
+  echo "  skip  no Python with PyYAML found (installing yamllint provides it)"
+else
+  np="$work/netpol-cases"
+  rm -rf "$np"
+  mkdir -p "$np"
+  # The good case is a reduced render of the policy charts; each bad case changes one thing in it.
+  "$contract_py" - "$obs/netpol-ok.yaml" "$np" << 'NPPY'
+import copy
+import sys
+
+import yaml
+
+src, out = sys.argv[1], sys.argv[2]
+base = list(yaml.safe_load_all(open(src, encoding="utf-8")))
+WAVE = "argocd.argoproj.io/sync-wave"
+
+
+def policy(docs, name):
+    return next(d for d in docs if d["kind"] == "NetworkPolicy" and d["metadata"]["name"] == name)
+
+
+cases = {}
+
+
+def case(name, change):
+    docs = copy.deepcopy(base)
+    change(docs)
+    cases[name] = docs
+
+
+case("good", lambda d: None)
+case("nodeny", lambda d: d.remove(policy(d, "default-deny")))
+case("egress-only", lambda d: policy(d, "default-deny")["spec"].update(policyTypes=["Ingress"]))
+case("order", lambda d: policy(d, "default-deny")["metadata"]["annotations"].update({WAVE: "-2"}))
+case("world", lambda d: policy(d, "allow-dns")["spec"]["egress"][0].update(to=[{"ipBlock": {"cidr": "0.0.0.0/0"}}]))
+case("wide", lambda d: policy(d, "allow-dns")["spec"]["egress"][0].update(to=[{"ipBlock": {"cidr": "10.0.0.0/0"}}]))
+case("noports", lambda d: policy(d, "allow-dns")["spec"]["egress"][0].pop("ports"))
+case("nopeer", lambda d: policy(d, "allow-dns")["spec"]["egress"][0].pop("to"))
+case("empty", lambda d: policy(d, "allow-dns")["spec"].update(egress=[{}]))
+case("uncovered", lambda d: policy(d, "default-deny")["spec"].update(podSelector={"matchLabels": {"app": "other"}}))
+case("badlabel", lambda d: policy(d, "web-allow-prometheus-scrape")["spec"]["ingress"][0]["from"][0]["podSelector"]["matchLabels"].update({"app.kubernetes.io/name": "promethues"}))
+case("badpod", lambda d: policy(d, "web-allow-prometheus-scrape")["spec"]["podSelector"]["matchLabels"].update({"app": "web2"}))
+case("badnamespace", lambda d: policy(d, "allow-dns")["spec"]["egress"][0]["to"][0]["namespaceSelector"]["matchLabels"].update({"kubernetes.io/metadata.name": "kube-systm"}))
+for name, docs in cases.items():
+    yaml.safe_dump_all(docs, open("{}/{}.yaml".format(out, name), "w", encoding="utf-8"), sort_keys=False)
+NPPY
+
+  np_fails() {
+    # np_fails CASE CHECK MESSAGE LABEL: the case fails and the output names the problem.
+    if [ "$2" = policy-labels ]; then
+      contract "$np/$1.yaml" "$2" t kube-system observability demo
+    else
+      contract "$np/$1.yaml" "$2" t
+    fi
+    if [ "$rc" -eq 1 ] && grep -qF -- "$3" "$work/cout"; then ok "$4"; else bad "$4 (exit $rc)"; fi
+  }
+  contract "$np/good.yaml" network-policies t
+  check "policies with a default deny, allows that come first and no open range pass" test "$rc" -eq 0
+  contract "$np/good.yaml" policy-labels t kube-system observability demo
+  check "and every label and namespace they use is carried by a pod, a Service or a real namespace" test "$rc" -eq 0
+  np_fails nodeny network-policies "there is no default deny" "a missing default deny is named"
+  np_fails egress-only network-policies "there is no default deny" "a deny for ingress only is not a default deny"
+  np_fails order network-policies "must have a lower sync wave than NetworkPolicy/default-deny" "an allow applied with or after the deny is named"
+  np_fails world network-policies "allows 0.0.0.0/0" "an allow to every address is refused"
+  np_fails wide network-policies "allows the whole range 10.0.0.0/0" "an allow to a /0 range is refused"
+  np_fails noports network-policies "has an egress rule without ports" "a rule without ports is named"
+  np_fails nopeer network-policies "has an egress rule without a to" "a rule without a peer is named"
+  np_fails empty network-policies "has an empty egress rule, which allows everything" "an empty rule is named"
+  np_fails uncovered network-policies "the pods of Deployment/web are not covered by a default deny" "a workload the deny does not select is named"
+  np_fails badlabel policy-labels "names pods with labels {'app.kubernetes.io/name': 'promethues'} that no pod in the manifests has" "a peer label that matches no pod is named"
+  np_fails badpod policy-labels "selects pods with labels {'app': 'web2'} that no pod in the manifests has" "a policy for pods that do not exist is named"
+  np_fails badnamespace policy-labels "names the namespace kube-systm" "a misspelt namespace is named"
+fi
+
+echo "network-policy-flows.py (evaluator semantics)"
+
+if [ -z "$contract_py" ]; then
+  echo "  skip  no Python with PyYAML found (installing yamllint provides it)"
+else
+  # Small hand-made policies against the evaluator; each case prints "ok NAME" or "bad NAME".
+  "$contract_py" - << 'NPUNITPY' > "$work/npunit.out" 2>&1 || true
+import importlib.util
+
+spec = importlib.util.spec_from_file_location("flows", "scripts/network-policy-flows.py")
+flows = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(flows)
+E = flows.Endpoint
+results = []
+
+
+def pod(ns, name, ip, **labels):
+    return E(ns + "/" + name, ns, labels, ip, True, "")
+
+
+def addr(name, ip):
+    return E(name, None, {}, ip, False, "")
+
+
+def model(policies, namespaces=None):
+    m = flows.Model()
+    m.namespaces = {"a": {flows.METADATA_NAME: "a"}, "b": {flows.METADATA_NAME: "b", "team": "x"}}
+    m.namespaces.update(namespaces or {})
+    for i, spec in enumerate(policies):
+        namespace = spec.pop("ns", "a")
+        m.policies.append({"kind": "NetworkPolicy", "metadata": {"name": spec.pop("name", "p%d" % i), "namespace": namespace}, "spec": spec})
+    return m
+
+
+def case(name, expected, m, src, dst, port=80, protocol="TCP"):
+    allowed, _ = m.evaluate(src, dst, port, protocol)
+    results.append(("ok" if allowed == expected else "bad") + " " + name)
+
+
+web = pod("a", "web", "10.0.0.1", app="web")
+db = pod("a", "db", "10.0.0.2", app="db")
+other = pod("b", "other", "10.0.1.1", app="other", tier="front")
+lb = addr("lb", "192.0.2.50")
+
+case("with no policy everything is allowed", True, model([]), web, db)
+m = model([{"podSelector": {"matchLabels": {"app": "db"}}, "policyTypes": ["Ingress"]}])
+case("a policy with Ingress and no rule isolates the pod for ingress", False, m, web, db)
+case("and leaves its egress open", True, m, db, web)
+m = model([{"podSelector": {"matchLabels": {"app": "db"}}, "policyTypes": ["Egress"]}])
+case("a policy with Egress isolates egress only", False, m, db, web)
+case("and leaves ingress open", True, m, web, db)
+m = model([{"podSelector": {}, "egress": []}])
+case("a policy without policyTypes but with an egress section isolates both directions (egress)", False, m, web, db)
+case("and (ingress)", False, m, other, db)
+m = model([{"podSelector": {}, "ingress": [{"from": [{"podSelector": {"matchLabels": {"app": "web"}}}]}]}])
+case("a policy without policyTypes and without an egress section leaves egress open", True, m, db, other)
+case("an empty podSelector selects every pod of the namespace", True, m, web, db)
+case("and a pod that matches no rule is blocked", False, m, other, db)
+m = model([{"podSelector": {}, "policyTypes": ["Ingress"], "ingress": [{"from": [{"podSelector": {"matchLabels": {"app": "db"}}}]}]}, {"ns": "b", "podSelector": {}, "policyTypes": ["Ingress"]}])
+case("traffic inside the namespace gets no special treatment", False, m, web, db)
+case("a policy of another namespace does not select the pod", True, m, db, web) if False else None
+
+# union of policies and the AND of the two sides
+db_in = lambda *peers: {"podSelector": {"matchLabels": {"app": "db"}}, "policyTypes": ["Ingress"], "ingress": [{"from": list(peers)}]}
+m = model([db_in({"podSelector": {"matchLabels": {"app": "web"}}}), db_in({"podSelector": {"matchLabels": {"app": "cache"}}})])
+cache = pod("a", "cache", "10.0.0.3", app="cache")
+case("the rules of two policies are added up (first)", True, m, web, db)
+case("the rules of two policies are added up (second)", True, m, cache, db)
+case("a pod named by neither is blocked", False, m, other, db)
+m = model([db_in({"podSelector": {"matchLabels": {"app": "web"}}}), {"podSelector": {"matchLabels": {"app": "web"}}, "policyTypes": ["Egress"]}])
+case("the source egress can block what the destination ingress allows", False, m, web, db)
+m = model([{"podSelector": {"matchLabels": {"app": "web"}}, "policyTypes": ["Egress"], "egress": [{"to": [{"podSelector": {"matchLabels": {"app": "db"}}}]}]}, {"podSelector": {"matchLabels": {"app": "db"}}, "policyTypes": ["Ingress"]}])
+case("the destination ingress can block what the source egress allows", False, m, web, db)
+m = model([{"podSelector": {"matchLabels": {"app": "web"}}, "policyTypes": ["Egress"], "egress": [{"to": [{"podSelector": {"matchLabels": {"app": "db"}}}]}]}, db_in({"podSelector": {"matchLabels": {"app": "web"}}})])
+case("both sides allowing is an allow", True, m, web, db)
+
+# selectors
+sel = lambda s: model([db_in({"podSelector": s})])
+case("matchExpressions In selects a value in the list", True, sel({"matchExpressions": [{"key": "app", "operator": "In", "values": ["web", "x"]}]}), web, db)
+case("matchExpressions In does not select another value", False, sel({"matchExpressions": [{"key": "app", "operator": "In", "values": ["x"]}]}), web, db)
+case("matchExpressions NotIn selects a value outside the list", True, sel({"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["x"]}]}), web, db)
+case("matchExpressions NotIn does not select a value in the list", False, sel({"matchExpressions": [{"key": "app", "operator": "NotIn", "values": ["web"]}]}), web, db)
+case("matchExpressions Exists needs the key", True, sel({"matchExpressions": [{"key": "app", "operator": "Exists"}]}), web, db)
+case("matchExpressions DoesNotExist refuses the key", False, sel({"matchExpressions": [{"key": "app", "operator": "DoesNotExist"}]}), web, db)
+case("matchLabels and matchExpressions must both hold", False, sel({"matchLabels": {"app": "web"}, "matchExpressions": [{"key": "tier", "operator": "Exists"}]}), web, db)
+
+# namespaces
+case("a podSelector alone does not reach into another namespace", False, sel({"matchLabels": {"app": "other"}}), other, db)
+nsel = lambda peer, **kw: model([db_in(peer)], **kw)
+case("a namespaceSelector alone selects every pod of the namespace (by name label)", True, nsel({"namespaceSelector": {"matchLabels": {flows.METADATA_NAME: "b"}}}), other, db)
+case("and not the pods of another namespace", False, nsel({"namespaceSelector": {"matchLabels": {flows.METADATA_NAME: "b"}}}), web, db)
+case("a namespaceSelector uses the other labels of the namespace", True, nsel({"namespaceSelector": {"matchLabels": {"team": "x"}}}), other, db)
+case("an empty namespaceSelector selects every namespace", True, nsel({"namespaceSelector": {}}), other, db)
+both = {"namespaceSelector": {"matchLabels": {flows.METADATA_NAME: "b"}}, "podSelector": {"matchLabels": {"app": "other"}}}
+case("a namespaceSelector and a podSelector in one peer must both match", True, nsel(both), other, db)
+case("in one peer a pod of the right namespace with the wrong label is blocked", False, nsel(both), pod("b", "x", "10.0.1.2", app="x"), db)
+case("in one peer a pod with the right label in the wrong namespace is blocked", False, nsel(both), pod("a", "y", "10.0.0.9", app="other"), db)
+two = [{"namespaceSelector": {"matchLabels": {flows.METADATA_NAME: "b"}}}, {"podSelector": {"matchLabels": {"app": "other"}}}]
+m2 = model([db_in(*two)])
+case("as two peers they add up (any pod of b)", True, m2, pod("b", "x", "10.0.1.2", app="x"), db)
+case("as two peers they add up (the labelled pod of a)", True, m2, pod("a", "y", "10.0.0.9", app="other"), db)
+
+# addresses
+ipb = lambda block: model([db_in({"ipBlock": block})])
+case("an ipBlock matches an address in the range", True, ipb({"cidr": "192.0.2.0/24"}), lb, db)
+case("an ipBlock does not match an address outside the range", False, ipb({"cidr": "198.51.100.0/24"}), lb, db)
+case("an ipBlock keeps out an excepted address", False, ipb({"cidr": "192.0.2.0/24", "except": ["192.0.2.48/28"]}), lb, db)
+case("an ipBlock keeps in an address next to the exception", True, ipb({"cidr": "192.0.2.0/24", "except": ["192.0.2.0/28"]}), lb, db)
+case("an ipBlock also matches the address of a pod", True, ipb({"cidr": "10.0.1.0/24"}), other, db)
+case("a podSelector never matches an address that is not a pod", False, sel({"matchLabels": {"app": "web"}}), lb, db)
+eg = lambda block: model([{"podSelector": {"matchLabels": {"app": "web"}}, "policyTypes": ["Egress"], "egress": [{"to": [{"ipBlock": block}], "ports": [{"protocol": "TCP", "port": 443}]}]}])
+case("an egress ipBlock lets the source reach an address outside the cluster", True, eg({"cidr": "192.0.2.0/24"}), web, lb, 443)
+case("and only on the listed port", False, eg({"cidr": "192.0.2.0/24"}), web, lb, 80)
+case("and not another address", False, eg({"cidr": "192.0.2.0/24"}), web, addr("net", "198.51.100.7"), 443)
+
+# ports
+pp = lambda ports: model([{"podSelector": {"matchLabels": {"app": "db"}}, "policyTypes": ["Ingress"], "ingress": [{"from": [{"podSelector": {}}], "ports": ports}]}])
+case("a rule without ports allows every port", True, pp(None), web, db, 5432)
+case("a rule with an empty ports list allows every port", True, pp([]), web, db, 5432)
+case("a port allows that port", True, pp([{"protocol": "TCP", "port": 5432}]), web, db, 5432)
+case("and not another port", False, pp([{"protocol": "TCP", "port": 5432}]), web, db, 5433)
+case("the protocol is TCP when not given", True, pp([{"port": 5432}]), web, db, 5432, "TCP")
+case("and a UDP flow is not allowed by it", False, pp([{"port": 5432}]), web, db, 5432, "UDP")
+case("UDP is allowed when listed", True, pp([{"protocol": "UDP", "port": 53}]), web, db, 53, "UDP")
+case("endPort includes both ends of the range (start)", True, pp([{"protocol": "TCP", "port": 35672, "endPort": 35682}]), web, db, 35672)
+case("endPort includes both ends of the range (end)", True, pp([{"protocol": "TCP", "port": 35672, "endPort": 35682}]), web, db, 35682)
+case("endPort excludes the port after the range", False, pp([{"protocol": "TCP", "port": 35672, "endPort": 35682}]), web, db, 35683)
+case("a port entry without a number allows every port of the protocol", True, pp([{"protocol": "TCP"}]), web, db, 9999)
+
+# from and to lists
+fl = lambda rule: model([{"podSelector": {"matchLabels": {"app": "db"}}, "policyTypes": ["Ingress"], "ingress": [rule]}])
+case("a rule without from allows every peer", True, fl({"ports": [{"port": 80}]}), other, db)
+case("a rule with an empty from list allows every peer", True, fl({"from": [], "ports": [{"port": 80}]}), other, db)
+case("an empty rule allows everything", True, fl({}), lb, db, 1234)
+case("an empty rule list allows nothing", False, model([{"podSelector": {}, "policyTypes": ["Ingress"], "ingress": []}]), web, db)
+
+# unsupported input stops the check
+try:
+    pp([{"protocol": "TCP", "port": "http"}]).evaluate(web, db, 80, "TCP")
+    results.append("bad a named port is refused")
+except flows.ModelError:
+    results.append("ok a named port is refused")
+for line in results:
+    print(line)
+NPUNITPY
+  while IFS= read -r line; do
+    case "$line" in
+      "ok "*) ok "${line#ok }" ;;
+      "bad "*) bad "${line#bad }" ;;
+      *) bad "evaluator unit cases: $line" ;;
+    esac
+  done < "$work/npunit.out"
+fi
+
+echo "network-policy-flows.py (the real policies, mutated)"
+
+if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
+  echo "  skip  needs helm and a Python with PyYAML"
+else
+  # The local charts only (no downloaded dependencies): the services, and the two policy charts. The other pods are the
+  # ones the matrix declares.
+  npm="$work/npmut"
+  rm -rf "$npm"
+  mkdir -p "$npm"
+  for svc in gateway orders payments notifier; do
+    helm template "$svc" deploy/helm/service --namespace shop -f deploy/helm/values/images.yaml -f "deploy/helm/values/$svc.yaml" -f "deploy/helm/values/$svc-data.yaml" > "$npm/shop-$svc.yaml" 2> /dev/null || true
+  done
+  helm template data-network-policies platform/data/network-policies --namespace data -f platform/data/network-policies/ci/aws-params.yaml > "$npm/data.yaml" 2> /dev/null || true
+  helm template observability-network-policies platform/observability/network-policies --namespace observability -f platform/observability/network-policies/ci/aws-params.yaml > "$npm/observability.yaml" 2> /dev/null || true
+  "$contract_py" - "$npm" << 'NPMUTPY' > "$npm/results.out" 2>&1 || true
+import copy
+import importlib.util
+import sys
+
+import yaml
+
+d = sys.argv[1]
+spec = importlib.util.spec_from_file_location("flows", "scripts/network-policy-flows.py")
+flows = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(flows)
+matrix = yaml.safe_load(open("scripts/tests/fixtures/network-policies/flows.yaml", encoding="utf-8"))
+entries = [("shop", d + "/shop-" + s + ".yaml") for s in ("gateway", "orders", "payments", "notifier")]
+entries += [("data", d + "/data.yaml"), ("observability", d + "/observability.yaml")]
+base = flows.load_manifests(entries)
+results = []
+
+
+def policy(docs, name, namespace=None):
+    for doc in docs:
+        if doc["kind"] == "NetworkPolicy" and doc["metadata"]["name"] == name and namespace in (None, doc["metadata"]["namespace"]):
+            return doc
+    raise KeyError(name)
+
+
+def run(change):
+    docs = copy.deepcopy(base)
+    change(docs)
+    return flows.run(matrix, docs, "data")[0]
+
+
+def drop(name, namespace=None):
+    return lambda docs: docs.remove(policy(docs, name, namespace))
+
+
+def expect(label, change, *fragments):
+    problems = run(change)
+    text = "\n".join(problems)
+    good = bool(problems) and all(f in text for f in fragments)
+    results.append(("ok " if good else "bad ") + label + ("" if good else " (got: %s)" % (text.replace("\n", " | ")[:600] or "no problem")))
+
+
+problems = run(lambda docs: None)
+results.append(("ok " if not problems else "bad ") + "the rendered policies satisfy every flow of the matrix" + ("" if not problems else ": " + problems[0]))
+expect("removing the allow from orders to payments breaks an allowed flow", drop("orders-allow-to-payments"), "flow orders -> payments:8082/TCP should be allowed but is blocked", "egress of shop/orders")
+expect("removing the ingress allow of PostgreSQL breaks an allowed flow", drop("postgres-allow-from-services"), "flow orders -> postgres:5432/TCP should be allowed but is blocked", "ingress of data/platform-pg-1")
+expect("removing the DNS allow of the namespace breaks every DNS flow", drop("allow-dns", "observability"), "should be allowed but is blocked", "egress of observability/")
+expect("removing the Prometheus scrape allow of a service breaks the scrape", drop("gateway-allow-prometheus-scrape"), "flow prometheus -> gateway:8080/TCP should be allowed but is blocked", "ingress of shop/gateway")
+
+
+def open_valkey(docs):
+    del policy(docs, "valkey-allow-from-services")["spec"]["ingress"][0]["from"]
+
+
+expect("an allow rule without from breaks a denied flow (the source has no egress policy; the AND of both sides holds the others)", open_valkey, "flow internet -> valkey:6379/TCP should be denied but is allowed", "ingress of data/platform-valkey allowed by valkey-allow-from-services")
+
+
+def open_rabbitmq(docs):
+    policy(docs, "rabbitmq-allow-from-services")["spec"]["ingress"].append({})
+
+
+expect("an empty ingress rule breaks a denied flow", open_rabbitmq, "flow internet -> rabbitmq:5672/TCP should be denied but is allowed")
+expect("removing the default deny of the data namespace lets a new pod through", drop("default-deny", "data"), "flow internet -> data-stray:8080/TCP should be denied but is allowed", "ingress of data/stray open: no policy isolates it")
+expect("removing the default deny of the observability namespace lets a new pod through", drop("default-deny", "observability"), "flow vpc-client -> obs-stray:3000/TCP should be denied but is allowed", "ingress of observability/stray open: no policy isolates it")
+
+
+def change_port(docs):
+    policy(docs, "orders-allow-to-payments")["spec"]["egress"][0]["ports"][0]["port"] = 8083
+
+
+expect("changing the port of an allow breaks the allowed flow", change_port, "flow orders -> payments:8082/TCP should be allowed but is blocked")
+
+
+def wrong_namespace(docs):
+    policy(docs, "orders-allow-prometheus-scrape")["spec"]["ingress"][0]["from"][0]["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"] = "monitoring"
+
+
+expect("a namespace that does not exist breaks the allowed flow", wrong_namespace, "flow prometheus -> orders:8081/TCP should be allowed but is blocked")
+
+
+def everyone_to_internet(docs):
+    policy(docs, "allow-dns", "data")["spec"]["egress"].append({"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}]})
+
+
+expect("a rule open to every address breaks the denied flows to the internet", everyone_to_internet, "flow postgres -> internet:443/TCP should be denied but is allowed")
+for line in results:
+    print(line)
+NPMUTPY
+  while IFS= read -r line; do
+    case "$line" in
+      "ok "*) ok "${line#ok }" ;;
+      "bad "*) bad "${line#bad }" ;;
+      *) bad "mutation cases: $line" ;;
+    esac
+  done < "$npm/results.out"
 fi
 
 echo

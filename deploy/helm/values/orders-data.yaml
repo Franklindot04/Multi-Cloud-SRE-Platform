@@ -36,3 +36,5 @@ migration:
     DB_USER: {secret: orders-db, key: username}
   secretFiles:
     DB_PASSWORD_FILE: {secret: orders-db, key: password}
+networkPolicy:
+  egressToData: [postgres, valkey, rabbitmq]

@@ -1,0 +1,76 @@
+---
+# Network policies for the data namespace: PostgreSQL (CloudNativePG), Valkey and RabbitMQ.
+
+# Turn the policies off (nothing is rendered, and Argo CD prunes what it created). The way back if a policy blocks something that
+# must work; see docs/runbooks/network-policies.md.
+enabled: true
+
+namespace: data
+
+# The address range of the VPC. The Kubernetes API server of EKS is a set of network interfaces owned by the cluster and
+# placed in the VPC subnets, so a pod selector cannot name it and the only narrow rule is port 443 to the VPC range. Argo CD
+# passes it from the cluster secret (the annotation platform.example/vpc-cidr, written by scripts/bootstrap-argocd.sh from
+# the Terraform output vpc_cidr_block). It is never committed, and the chart refuses to render without it.
+vpcCidr: ""
+
+# The cluster DNS pods.
+dns:
+  namespace: kube-system
+  podLabels:
+    k8s-app: kube-dns
+
+# Pods of the sample services, which are the only clients of the data layer (namespace shop, label part-of sre-sample).
+services:
+  namespace: shop
+  # Services that open a connection to each component: orders and payments use PostgreSQL, orders the cache, orders and
+  # the notifier the broker (deploy/helm/values/*-data.yaml).
+  postgres: [orders, payments]
+  valkey: [orders]
+  rabbitmq: [orders, notifier]
+
+# Where Prometheus runs (the stack in platform/observability).
+prometheus:
+  namespace: observability
+  podLabels:
+    app.kubernetes.io/name: prometheus
+    operator.prometheus.io/name: kube-prometheus-stack-prometheus
+
+# The operators, which reach their instances over the pod network. Their namespaces are not covered by these policies.
+operators:
+  postgres:
+    namespace: cnpg-system
+    podLabels:
+      app.kubernetes.io/name: cloudnative-pg
+  rabbitmq:
+    namespace: rabbitmq-system
+    podLabels:
+      app.kubernetes.io/name: rabbitmq-cluster-operator
+
+# Pods of the data layer, as the charts and operators label them.
+pods:
+  postgres:
+    cnpg.io/cluster: platform-pg
+  valkey:
+    app.kubernetes.io/name: valkey
+  rabbitmq:
+    app.kubernetes.io/name: platform-mq
+    app.kubernetes.io/component: rabbitmq
+
+# Pods that call the Kubernetes API and so need TCP 443 to the VPC range: the PostgreSQL instance manager, the RabbitMQ
+# peer discovery, and the Jobs of the secrets and PostgreSQL charts (found by their Job names, which they carry as the label
+# batch.kubernetes.io/job-name).
+apiAccess:
+  - name: postgres
+    matchLabels:
+      cnpg.io/cluster: platform-pg
+  - name: rabbitmq
+    matchLabels:
+      app.kubernetes.io/name: platform-mq
+      app.kubernetes.io/component: rabbitmq
+  - name: jobs
+    matchExpressions:
+      - key: batch.kubernetes.io/job-name
+        operator: In
+        values:
+          - data-secrets-generator
+          - platform-pg-secrets-gate

@@ -26,3 +26,7 @@ resources:
   limits:
     cpu: 200m
     memory: 128Mi
+# The gateway forwards to orders and payments. Nothing outside the cluster calls it (port-forward and probes do not use
+# the pod network); the load balancer rule is added by the chart when the ingress is enabled.
+networkPolicy:
+  egressTo: [orders, payments]

@@ -80,6 +80,23 @@ aws eks describe-cluster --name "$(terraform output -raw cluster_name)" \
   --query 'cluster.resourcesVpcConfig.publicAccessCidrs'
 ```
 
+## Network policy enforcement
+
+The `vpc-cni` add-on enforces Kubernetes network policies when its configuration has `enableNetworkPolicy` set to `"true"`. The module sets it with `enable_network_policy` (default `true`); without it, NetworkPolicy objects are accepted and ignored. It needs add-on 1.14.0-eksbuild.3 or later (the module always uses the newest version compatible with the cluster), Kubernetes 1.25 or later, and nodes with Linux kernel 5.10 or later (the Amazon Linux 2023 nodes qualify).
+
+- **Fresh apply:** nothing extra. The add-on is created with the setting, and the `aws-node` pods start with the network policy agent.
+- **Existing cluster:** `terraform apply` updates the `vpc-cni` add-on in place with the new configuration. The `aws-node` DaemonSet rolls node by node and each pod gains a second container (`aws-network-policy-agent`). Policies already in the cluster start to be enforced once the agent runs on the node, so apply the policies after this, never before (the allow rules and the default deny are applied together by Argo CD). The update does not restart your pods, but expect a short pause in new pod networking on a node while its `aws-node` pod restarts.
+
+Verify:
+
+```bash
+kubectl -n kube-system get ds aws-node                                   # READY equals DESIRED
+kubectl -n kube-system get pods -l k8s-app=aws-node -o jsonpath='{.items[0].spec.containers[*].name}'; echo   # includes aws-network-policy-agent
+aws eks describe-addon --cluster-name "$(terraform output -raw cluster_name)" --addon-name vpc-cni --query addon.configurationValues --output text
+```
+
+The order to apply is: Terraform (this add-on setting), then `scripts/bootstrap-argocd.sh` again (it writes the VPC range the policy charts need), then the policy Applications sync, with every allow rule applied before the default deny. The checks to run afterwards, starting with DNS, and the rollback are in the [network policy runbook](network-policies.md). The policies, the VPC range they need (the cluster annotation `platform.example/vpc-cidr`, written by `scripts/bootstrap-argocd.sh`) and what they allow are in [`platform/data/network-policies`](../../platform/data/network-policies), [`platform/observability/network-policies`](../../platform/observability/network-policies) and the service chart ([`deploy/helm/service`](../../deploy/helm/README.md#network-policies)). Run `scripts/bootstrap-argocd.sh` again on an existing cluster so the annotation exists before the policy Applications sync.
+
 ## Destroy
 
 1. Delete anything created in the cluster that provisions AWS resources outside Terraform: load balancers (`Ingress` and `Service` of type `LoadBalancer`), the security groups the AWS Load Balancer Controller creates for them, and the volumes behind `PersistentVolumeClaim`s. Otherwise load balancers, volumes, security groups and network interfaces are left behind and block deletion of the subnets and the VPC. The order matters, and deleting Argo CD Applications by hand does not work (they come back). The script does the whole sequence with waits and stops at the first step that does not finish; read the dry run first:

@@ -1,0 +1,122 @@
+{{- if .Values.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-allow-to-services
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The metrics port of each sample service (the service port: 8080 gateway, 8081 orders, 8082 payments, 8083 notifier).
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.services.namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: sre-sample
+      ports:
+        - protocol: TCP
+          port: {{ .Values.services.metricsPortFirst }}
+          endPort: {{ .Values.services.metricsPortLast }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-allow-to-data
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The PostgreSQL instances (the PodMonitor) and the RabbitMQ metrics endpoint.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- include "np.peer" (dict "namespace" .Values.data.namespace "labels" .Values.data.postgres.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.data.postgres.metricsPort }}
+    - to:
+        {{- include "np.peer" (dict "namespace" .Values.data.namespace "labels" .Values.data.rabbitmq.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.data.rabbitmq.metricsPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-allow-to-coredns
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- include "np.peer" (dict "namespace" .Values.dns.namespace "labels" .Values.dns.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.coredns.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-allow-to-kubelets
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The kubelet and cAdvisor metrics are served on every node's address, which is in the VPC range.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.prometheus | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: {{ include "np.vpcCidr" . }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.kubeletPort }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: collector-allow-from-services
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # OTLP over gRPC from the four services in the shop namespace.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.collector | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.services.namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: sre-sample
+      ports:
+        - protocol: TCP
+          port: {{ .Values.services.collectorPort }}
+{{- end }}

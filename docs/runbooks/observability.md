@@ -272,6 +272,10 @@ The receivers are empty on purpose, and `scripts/chart-contract-check.py` (`aler
 
 **The Application says the Secret is not permitted.** The `platform-observability` AppProject must allow the kind Secret (it does since the Alertmanager was added). On a cluster bootstrapped earlier, run `scripts/bootstrap-argocd.sh` again so that the AppProject is updated.
 
+## Network policies
+
+The `observability` namespace has a default deny with explicit allows (the Application `observability-network-policies`, wave 17, EKS only; [ADR-0024](../adr/0024-network-policies.md)). If a target is down, a dashboard shows no data or logs and traces stop arriving after the policies were applied, follow the checks in the [network policy runbook](network-policies.md) (Prometheus targets, Loki, the Collector). The Application needs the cluster annotation `platform.example/vpc-cidr`, so run `scripts/bootstrap-argocd.sh` again before the policies sync. A real Alertmanager receiver needs an egress rule for its destination.
+
 ## Persistent volumes (optional, off)
 
 By default Prometheus, Grafana and Alertmanager keep their data in `emptyDir` and lose it when a pod is rescheduled (for Alertmanager that is the silences and the notification log). (Loki and Tempo have their own optional claims; see the logs and traces sections.) To keep it, add `values-persistent.yaml` after `values.yaml` in the `valueFiles` of `platform/argocd/apps/91-observability-stack.yaml`, merge that to `main`, and let Argo CD sync. It creates a 5 GiB claim for Prometheus, a 1 GiB claim for Grafana and a 1 GiB claim for Alertmanager on the cluster's default StorageClass.

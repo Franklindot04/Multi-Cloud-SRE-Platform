@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack integration-test smoke-test-integration data-up data-down data-check data-check-manifests observability-check deploy-check scripts-test docs
+.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack integration-test smoke-test-integration data-up data-down data-check data-check-manifests observability-check deploy-check network-policies-check scripts-test docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -83,6 +83,9 @@ data-check-manifests: ## Lint, render and schema-check the data layer manifests 
 
 observability-check: ## Lint, render and schema-check the metrics, logging and tracing stack, check its contracts, configs, LogQL and trace path (skips missing tools)
 	@./scripts/observability-check.sh
+
+network-policies-check: ## Render the network policies of shop, data and observability, check their contract and that every label they use is real (skips missing tools)
+	@./scripts/network-policies-check.sh
 
 deploy-check: ## Lint, render, schema-check and security-check the service chart under every profile and cloud (skips missing tools)
 	@./scripts/deploy-check.sh

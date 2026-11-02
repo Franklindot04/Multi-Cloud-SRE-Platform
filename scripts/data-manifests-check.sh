@@ -86,6 +86,8 @@ else
     grep -q '^dependencies:' "$chart/Chart.yaml" && continue
     args=()
     [ ! -f "$chart/values-aws.yaml" ] || args+=(-f "$chart/values-aws.yaml")
+    # Fixture values for what Argo CD supplies from the cluster secret (the VPC range of the network policies).
+    [ ! -f "$chart/ci/aws-params.yaml" ] || args+=(-f "$chart/ci/aws-params.yaml")
     if ! helm template "$(basename "$chart")" "$chart" --namespace data ${args[@]+"${args[@]}"} > "$contract_work/render.yaml" 2> "$contract_work/render.err"; then
       echo "    FAIL [$chart] helm template"
       cat "$contract_work/render.err"

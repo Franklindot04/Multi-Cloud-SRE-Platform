@@ -79,13 +79,22 @@ The observability charts (platform/observability) add checks on the rendered out
                       in a SOURCE (service code), leave the operational routes out of every gateway HTTP selector, leave
                       client errors out of the availability SLI, and use a histogram threshold (le) that is a bucket
                       boundary of the services' histogram
+  network-policies LABEL
+                      the rendered policies of a namespace or a release: every pod (Deployment, StatefulSet, Job) is
+                      selected by a default deny for Ingress and Egress that lists no rule, every allow has a sync wave
+                      lower than the deny it goes with, and no rule is empty, without ports, or open to a whole range
+  policy-labels LABEL NAMESPACE...
+                      read all the charts together (policies, services, data layer, stack, operators): every label a
+                      NetworkPolicy selects or names pods by is carried by a pod, Service or monitor selector in the
+                      manifests, and every namespace it names is one of NAMESPACE...
   project-fit LABEL PROJECT DEFAULT_NAMESPACE
                       every rendered resource is allowed by the AppProject file: its kind, and its namespace
                       (DEFAULT_NAMESPACE where the manifest names none)
 
 The per-chart checks read a multi-document YAML stream (the output of `helm template`) on stdin.
 
-Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned|loki|tempo|alertmanager|grafana-datasources|alloy LABEL
+Usage: helm template ... | chart-contract-check.py hooks|secret-jobs|postgres-gate|restricted|ephemeral|grafana-admin|digest-pinned|loki|tempo|alertmanager|grafana-datasources|alloy|network-policies LABEL
+       helm template ... | chart-contract-check.py policy-labels LABEL NAMESPACE...
        helm template ... | chart-contract-check.py project-fit LABEL PROJECT_FILE DEFAULT_NAMESPACE
        helm template ... --include-crds | chart-contract-check.py crds LABEL APPLICATIONSET_FILE
        helm template ... | chart-contract-check.py dashboards LABEL DASHBOARD_DIR STACK_VALUES SOURCE...
@@ -1294,6 +1303,9 @@ def check_waves(apps_dir, readme):
         ("observability-stack", "observability-loki"),
         ("observability-loki", "observability-alloy"),
         ("observability-tempo", "observability-collector"),
+        # The policies come after the workloads they cover.
+        ("data-rabbitmq-credentials", "data-network-policies"),
+        ("observability-alloy", "observability-network-policies"),
     ]
     for first, second in before:
         a, b = wave(first), wave(second)
@@ -1316,6 +1328,160 @@ def check_waves(apps_dir, readme):
     return problems
 
 
+def selects(selector, labels):
+    """True if a NetworkPolicy podSelector selects a pod with these labels (matchLabels and matchExpressions In)."""
+    for key, value in (selector.get("matchLabels") or {}).items():
+        if labels.get(key) != value:
+            return False
+    for expr in selector.get("matchExpressions") or []:
+        if expr.get("operator") == "In":
+            if labels.get(expr["key"]) not in (expr.get("values") or []):
+                return False
+        else:
+            return False
+    return True
+
+
+def check_network_policies(docs, label):
+    """Network policies: a deny for every pod, allows that come first, nothing open to the world.
+
+    Every pod template (Deployment, StatefulSet, Job) in the render with a policy-controlled namespace must be selected by
+    a policy that denies Ingress and Egress and lists no rule; every allow has a sync wave lower than the deny it goes
+    with; no rule opens a whole address range or allows everything.
+    """
+    problems = []
+    policies = [d for d in docs if d["kind"] == "NetworkPolicy"]
+    if not policies:
+        return ["{}: no NetworkPolicy is rendered".format(label)]
+
+    def wave(doc):
+        return int(annotations(doc).get(WAVE, "0"))
+
+    def is_deny(doc):
+        spec = doc.get("spec") or {}
+        return set(spec.get("policyTypes") or []) == {"Ingress", "Egress"} and not spec.get("ingress") and not spec.get("egress")
+
+    denies = [d for d in policies if is_deny(d)]
+    if not denies:
+        problems.append("{}: there is no default deny (a policy for Ingress and Egress with no rule)".format(label))
+    allows = [d for d in policies if not is_deny(d)]
+    for deny in denies:
+        for allow in allows:
+            if selects_same(deny, allow) and not wave(allow) < wave(deny):
+                problems.append(
+                    "{}: {} (wave {}) must have a lower sync wave than {} (wave {})".format(
+                        label, name_of(allow), wave(allow), name_of(deny), wave(deny)
+                    )
+                )
+
+    for d in policies:
+        spec = d.get("spec") or {}
+        for direction, peer_key in (("ingress", "from"), ("egress", "to")):
+            for rule in spec.get(direction) or []:
+                if not rule:
+                    problems.append("{}: {} has an empty {} rule, which allows everything".format(label, name_of(d), direction))
+                    continue
+                if not rule.get("ports"):
+                    problems.append("{}: {} has an {} rule without ports".format(label, name_of(d), direction))
+                if not rule.get(peer_key):
+                    problems.append("{}: {} has an {} rule without a {}, which allows every address".format(label, name_of(d), direction, peer_key))
+                for peer in rule.get(peer_key) or []:
+                    cidr = (peer.get("ipBlock") or {}).get("cidr", "")
+                    if cidr in ("0.0.0.0/0", "::/0"):
+                        problems.append("{}: {} allows {}".format(label, name_of(d), cidr))
+                    if cidr and cidr.endswith("/0"):
+                        problems.append("{}: {} allows the whole range {}".format(label, name_of(d), cidr))
+
+    namespaces = {(d.get("metadata") or {}).get("namespace") for d in policies}
+    for d in docs:
+        if d["kind"] not in ("Deployment", "StatefulSet", "Job"):
+            continue
+        template = (d.get("spec") or {}).get("template") or {}
+        pod_labels = (template.get("metadata") or {}).get("labels") or {}
+        namespace = (d.get("metadata") or {}).get("namespace")
+        if namespaces != {None} and namespace not in namespaces and None not in namespaces:
+            continue
+        if not any(selects(deny["spec"].get("podSelector") or {}, pod_labels) for deny in denies):
+            problems.append("{}: the pods of {} are not covered by a default deny".format(label, name_of(d)))
+    return problems
+
+
+def selects_same(deny, allow):
+    """True if the allow policy applies to pods that the deny policy also selects (same namespace, overlapping labels)."""
+    if (deny.get("metadata") or {}).get("namespace") != (allow.get("metadata") or {}).get("namespace"):
+        return False
+    deny_sel = (deny.get("spec") or {}).get("podSelector") or {}
+    allow_sel = (allow.get("spec") or {}).get("podSelector") or {}
+    if not deny_sel.get("matchLabels") and not deny_sel.get("matchExpressions"):
+        return True
+    return all((allow_sel.get("matchLabels") or {}).get(k) == v for k, v in (deny_sel.get("matchLabels") or {}).items())
+
+
+def pod_label_sets(docs):
+    """Label sets that real pods (or the Services and monitors that select them) carry, from rendered manifests."""
+    sets = []
+    for d in docs:
+        kind = d["kind"]
+        name = (d.get("metadata") or {}).get("name")
+        spec = d.get("spec") or {}
+        if kind in ("Deployment", "StatefulSet", "DaemonSet", "Job"):
+            labels = dict(((spec.get("template") or {}).get("metadata") or {}).get("labels") or {})
+            if kind == "Job":
+                # The Job controller adds this label to its pods.
+                labels["batch.kubernetes.io/job-name"] = name
+            sets.append(labels)
+        elif kind == "Service":
+            if spec.get("selector"):
+                sets.append(dict(spec["selector"]))
+        elif kind in ("ServiceMonitor", "PodMonitor"):
+            match = (spec.get("selector") or {}).get("matchLabels")
+            if match:
+                sets.append(dict(match))
+    return sets
+
+
+def check_policy_labels(docs, label, namespaces):
+    """Every label a NetworkPolicy uses to select or name a pod is carried by a pod in the rendered manifests, and every
+    namespace it names is one of NAMESPACES. The manifests are all the charts together (the policies, the services, the data
+    layer, the observability stack and the operators), so a guessed or outdated label fails here instead of silently
+    selecting nothing (a policy that selects no pod denies nothing, and a peer that matches no pod allows nothing).
+    """
+    problems = []
+    sets = pod_label_sets(docs)
+
+    def usable(selector):
+        return bool(selector.get("matchLabels") or selector.get("matchExpressions"))
+
+    def carried(selector):
+        return any(selects(selector, labels) for labels in sets)
+
+    for d in docs:
+        if d["kind"] != "NetworkPolicy":
+            continue
+        spec = d.get("spec") or {}
+        selectors = [("selects", spec.get("podSelector") or {})]
+        namespace_names = []
+        for direction, key in (("ingress", "from"), ("egress", "to")):
+            for rule in spec.get(direction) or []:
+                for peer in rule.get(key) or []:
+                    if peer.get("podSelector") is not None:
+                        selectors.append(("names", peer["podSelector"]))
+                    ns = (peer.get("namespaceSelector") or {}).get("matchLabels") or {}
+                    if ns:
+                        namespace_names.append(ns.get("kubernetes.io/metadata.name"))
+        for role, selector in selectors:
+            if usable(selector) and not carried(selector):
+                problems.append(
+                    "{}: {} {} pods with labels {} that no pod in the manifests has".format(
+                        label, name_of(d), role, selector.get("matchLabels") or selector.get("matchExpressions")
+                    )
+                )
+        for ns in namespace_names:
+            if ns not in namespaces:
+                problems.append("{}: {} names the namespace {}, which is not one of {}".format(label, name_of(d), ns, sorted(namespaces)))
+    return problems
+
+
 def main(argv):
     per_chart = {
         "hooks": check_hooks,
@@ -1330,6 +1496,7 @@ def main(argv):
         "alertmanager": check_alertmanager,
         "grafana-datasources": check_grafana_datasources,
         "alloy": check_alloy,
+        "network-policies": check_network_policies,
     }
     if len(argv) == 3 and argv[1] in per_chart:
         problems = per_chart[argv[1]](load_stdin(), argv[2])
@@ -1337,6 +1504,8 @@ def main(argv):
         problems = check_dashboards(load_stdin(), argv[2], argv[3], argv[4], argv[5:])
     elif len(argv) >= 4 and argv[1] == "slo-rules":
         problems = check_slo_rules(load_stdin(), argv[2], argv[3:])
+    elif len(argv) >= 4 and argv[1] == "policy-labels":
+        problems = check_policy_labels(load_stdin(), argv[2], set(argv[3:]))
     elif len(argv) == 4 and argv[1] == "crds":
         problems = check_crds(load_stdin(), argv[2], argv[3])
     elif len(argv) == 5 and argv[1] == "project-fit":

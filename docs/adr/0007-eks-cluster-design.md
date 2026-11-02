@@ -34,6 +34,7 @@ Identity for workloads
 Add-ons
 
 - `vpc-cni`, `kube-proxy`, `eks-pod-identity-agent`, `coredns` and `aws-ebs-csi-driver` are managed EKS add-ons at the newest version compatible with the cluster, resolved at plan time instead of being hard-coded. Self-managed bootstrap add-ons are disabled. Networking add-ons are installed before the node group, and add-ons that run as Deployments after it.
+- Network policy enforcement is on in the `vpc-cni` add-on (`enable_network_policy`, default true), set through the add-on's configuration values (`enableNetworkPolicy`). It needs add-on 1.14.0-eksbuild.3 or later and nodes with kernel 5.10 or later, which the newest compatible add-on and the Amazon Linux 2023 nodes meet. Without it, NetworkPolicy objects are accepted and not enforced. The default enforcement mode is kept: a new pod's traffic is open for the moment before its policies are programmed.
 
 Secrets and logging
 

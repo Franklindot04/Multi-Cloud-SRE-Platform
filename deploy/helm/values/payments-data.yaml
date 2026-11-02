@@ -34,3 +34,5 @@ migration:
     limits:
       cpu: 500m
       memory: 512Mi
+networkPolicy:
+  egressToData: [postgres]

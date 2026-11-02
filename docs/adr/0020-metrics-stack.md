@@ -67,7 +67,7 @@ Teardown
 - **No long-term or cross-cluster storage.** One Prometheus per cluster, two days, and only the EKS cluster exists.
 - **No RabbitMQ broker metrics in a dashboard**, no Valkey metrics (the chart has no exporter enabled), and the CloudNativePG and RabbitMQ operators are not scraped.
 - **No node-level metrics** (node-exporter), and no control-plane metrics (EKS and GKE do not expose them).
-- **No network policies** on the namespace and no authentication in front of Grafana beyond its own login; access is by port-forward through the Kubernetes API. TLS, SSO and RBAC for Grafana belong to the security phase.
+- **No authentication in front of Grafana beyond its own login** (the namespace has network policies since the network policy change: default deny with explicit allows, on EKS only); access is by port-forward through the Kubernetes API. TLS, SSO and RBAC for Grafana belong to the security phase.
 - **The services are not instrumented** with OpenTelemetry.
 - **The CRD schemas used offline** for the custom resources come from a pinned catalog commit that may lag the operator.
 

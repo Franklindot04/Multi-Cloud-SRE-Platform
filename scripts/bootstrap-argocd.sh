@@ -6,7 +6,7 @@
 # the AppProjects and the root Application, which deploys everything else from Git.
 #
 # Identifiers come from the Terraform outputs of infra/terraform/environments/aws:
-#   cluster_name, region, account_id, vpc_id, aws_load_balancer_controller_role_arn
+#   cluster_name, region, account_id, vpc_id, vpc_cidr_block, aws_load_balancer_controller_role_arn
 # and, when present, external_dns_role_arn, cert_manager_role_arn and dns_zone_id.
 #
 # Nothing is written to disk except a temporary Helm cache that is removed on exit, and no secret
@@ -220,6 +220,7 @@ CLUSTER_NAME=""
 REGION=""
 ACCOUNT_ID=""
 VPC_ID=""
+VPC_CIDR=""
 LBC_ROLE_ARN=""
 EXTERNAL_DNS_ROLE_ARN=""
 CERT_MANAGER_ROLE_ARN=""
@@ -240,6 +241,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   REGION="<region>"
   ACCOUNT_ID="<account_id>"
   VPC_ID="<vpc_id>"
+  VPC_CIDR="<vpc_cidr_block>"
   LBC_ROLE_ARN="<aws_load_balancer_controller_role_arn>"
   EXTERNAL_DNS_ROLE_ARN="<external_dns_role_arn>"
   CERT_MANAGER_ROLE_ARN="<cert_manager_role_arn>"
@@ -252,6 +254,7 @@ else
   REGION="$(tf_value region)"
   ACCOUNT_ID="$(tf_value account_id)"
   VPC_ID="$(tf_value vpc_id)"
+  VPC_CIDR="$(tf_value vpc_cidr_block)"
   LBC_ROLE_ARN="$(tf_value aws_load_balancer_controller_role_arn)"
   EXTERNAL_DNS_ROLE_ARN="$(tf_value external_dns_role_arn)"
   CERT_MANAGER_ROLE_ARN="$(tf_value cert_manager_role_arn)"
@@ -261,12 +264,14 @@ else
   [ -n "$REGION" ] || die "Terraform output region is empty"
   [ -n "$ACCOUNT_ID" ] || die "Terraform output account_id is empty"
   [ -n "$VPC_ID" ] || die "Terraform output vpc_id is empty"
+  [ -n "$VPC_CIDR" ] || die "Terraform output vpc_cidr_block is empty (apply the network stack first)"
   [ -n "$LBC_ROLE_ARN" ] || die "Terraform output aws_load_balancer_controller_role_arn is empty (is enable_load_balancer_controller_iam true?)"
 
   require_match cluster_name "$CLUSTER_NAME" '^[a-z][a-z0-9-]{1,38}[a-z0-9]$'
   require_match region "$REGION" '^[a-z]{2}(-[a-z]+)+-[0-9]$'
   require_match account_id "$ACCOUNT_ID" '^[0-9]{12}$'
   require_match vpc_id "$VPC_ID" '^vpc-[0-9a-f]+$'
+  require_match vpc_cidr_block "$VPC_CIDR" '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$'
   role_re='^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$'
   require_match aws_load_balancer_controller_role_arn "$LBC_ROLE_ARN" "$role_re"
   [ -z "$EXTERNAL_DNS_ROLE_ARN" ] || require_match external_dns_role_arn "$EXTERNAL_DNS_ROLE_ARN" "$role_re"
@@ -346,6 +351,7 @@ build_cluster_secret() {
     --arg region "$REGION" \
     --arg account_id "$ACCOUNT_ID" \
     --arg vpc_id "$VPC_ID" \
+    --arg vpc_cidr "$VPC_CIDR" \
     --arg lbc_role "$LBC_ROLE_ARN" \
     --arg extdns_role "$EXTERNAL_DNS_ROLE_ARN" \
     --arg certmgr_role "$CERT_MANAGER_ROLE_ARN" \
@@ -375,6 +381,7 @@ build_cluster_secret() {
           "platform.example/region": $region,
           "platform.example/account-id": $account_id,
           "platform.example/vpc-id": $vpc_id,
+          "platform.example/vpc-cidr": $vpc_cidr,
           "platform.example/lbc-role-arn": $lbc_role,
           "platform.example/external-dns-role-arn": $extdns_role,
           "platform.example/cert-manager-role-arn": $certmgr_role,

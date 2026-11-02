@@ -104,6 +104,12 @@ variable "node_disk_size_gb" {
   default     = 30
 }
 
+variable "enable_network_policy" {
+  description = "Enforce Kubernetes network policies in the VPC CNI add-on. The policies themselves are deployed by Argo CD from the repository."
+  type        = bool
+  default     = true
+}
+
 variable "domain_name" {
   description = "Domain for the Route 53 hosted zone, for example example.com. Empty (the default) creates no DNS resources."
   type        = string

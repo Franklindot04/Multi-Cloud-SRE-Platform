@@ -1,0 +1,104 @@
+{{- if .Values.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-allow-from-services
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # SQL from the services that have a database (this includes their migration Jobs, which carry the same labels).
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.postgres | nindent 6 }}
+      cnpg.io/podRole: instance
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.services" (dict "root" . "names" .Values.services.postgres) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-allow-from-operator
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # The CloudNativePG operator asks each instance for its status (8000) and runs SQL for the managed roles and databases.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.postgres | nindent 6 }}
+      cnpg.io/podRole: instance
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.peer" (dict "namespace" .Values.operators.postgres.namespace "labels" .Values.operators.postgres.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-allow-between-instances
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # Streaming replication (5432) and the instance status endpoint (8000) between the instances of the cluster.
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.postgres | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.pods.postgres | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.pods.postgres | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-allow-prometheus-scrape
+  namespace: {{ .Values.namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml .Values.pods.postgres | nindent 6 }}
+      cnpg.io/podRole: instance
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- include "np.peer" (dict "namespace" .Values.prometheus.namespace "labels" .Values.prometheus.podLabels) | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 9187
+{{- end }}
