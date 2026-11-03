@@ -736,6 +736,23 @@ PYEND
   lint_fails any-pod-without-drain chaos/experiments/gateway-pod-kill.yaml "blastRadius.anyPodInNamespaces: only a drain-node experiment evicts pods it did not select" "anyPodInNamespaces outside a drain is named"
 fi
 
+echo "scripts/chaos-promtool.sh"
+
+# The container runs as an unprivileged user: what it is given must be readable by someone who is not the owner, even when the user who runs
+# this has a umask of 077 (the directory mktemp -d makes is 0700 and a Linux runner enforces that; Docker Desktop does not).
+printf 'groups:\n  - name: probes\n    rules:\n      - record: probe:a\n        expr: sum(up)\n' > "$work/probes-in.yaml"
+promtool_run() {
+  rc=0
+  : > "$work/docker.log"
+  (umask 077 && PATH="$fakes:$PATH" FAKE_DOCKER_LOG="$work/docker.log" ./scripts/chaos-promtool.sh "$work/probes-in.yaml") > "$work/out" 2>&1 || rc=$?
+}
+promtool_run
+expect 0 "promtool notices a probe query that does not parse" "the promtool check runs against the probes and against a broken copy"
+check "the directory given to the container can be read and searched by others" test "$(grep -c '^dir ..[57]$' "$work/docker.log")" = 2
+check "and so can each file in it" test "$(grep -c '^file ' "$work/docker.log")" = 4 -a "$(grep '^file ' "$work/docker.log" | grep -c '^file [^ ]* ..[4567]$')" = 4
+check "it is not the directory mktemp made, which would also hold the rest" test "$(grep -c '^file promtool.out' "$work/docker.log")" = 0
+rm -f "$work/probes-in.yaml" "$work/docker.log"
+
 # --- the load helper ----------------------------------------------------------------------------------------------------------------
 
 echo "chaos-load.sh"
