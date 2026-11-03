@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# A poison for scripts/chaos-tests.sh: the chaos runner must never call aws. Any call is recorded and fails.
+echo "aws $*" >> "${FORBIDDEN_LOG:-/dev/null}"
+echo "error: the chaos runner must not call aws" >&2
+exit 97

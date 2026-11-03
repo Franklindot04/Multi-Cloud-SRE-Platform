@@ -20,7 +20,9 @@
 #      or externalsecret-validate) is left; scripts/teardown-prep.sh removes them
 #   4. delete the namespaces data, shop and observability, if they exist, and wait until they are gone
 #   5. delete the storage class platform-data, if it exists
-#   6. delete the Application platform-root, then the ApplicationSets in the argocd namespace
+#   6. remove the annotation argocd.argoproj.io/skip-reconcile from every Application that has it (the application controller ignores a
+#      paused Application, deletion included: Argo CD v3.5.6 does not queue it, so its finalizer would never be cleared; an Application
+#      without the annotation is left alone), then delete the Application platform-root, then the ApplicationSets in the argocd namespace
 #   7. wait until no Application is left in the argocd namespace
 #   8. helm uninstall argocd (a release that is not found is fine; the Argo CD CRDs are kept, they go with
 #      the cluster)
@@ -370,7 +372,35 @@ else
   echo "  no storage class $STORAGE_CLASS: nothing to delete"
 fi
 
-step "Delete the Application $ROOT_APP, then the ApplicationSets, in the $ARGO_NS namespace"
+# paused_apps: the name of each Application whose annotation argocd.argoproj.io/skip-reconcile has a true value (a chaos experiment sets it
+# to pause an Application). Argo CD v3.5.6 does not queue such an Application, so a deletion with the resources finalizer is not processed.
+paused_apps() {
+  local out name value
+  out="$(k -n "$ARGO_NS" get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}{"\n"}{end}' 2> /dev/null)" || return 0
+  while IFS="$(printf '\t')" read -r name value; do
+    case "$name:$value" in
+      : | *:'' | *:false | *:False | *:FALSE | *:0 | *:f | *:F) continue ;;
+    esac
+    printf '%s\n' "$name"
+  done << LIST
+$out
+LIST
+}
+
+step "Remove the skip-reconcile annotation from the Applications, then delete the Application $ROOT_APP and the ApplicationSets, in the $ARGO_NS namespace"
+if crd_present applications.argoproj.io; then
+  paused="$(paused_apps)"
+  if [ -n "$paused" ]; then
+    echo "  these Applications carry argocd.argoproj.io/skip-reconcile; the controller would not process their deletion until it is gone:"
+    while IFS= read -r app; do
+      run k -n "$ARGO_NS" annotate "application.argoproj.io/$app" argocd.argoproj.io/skip-reconcile-
+    done << LIST
+$paused
+LIST
+  else
+    echo "  no Application carries the annotation argocd.argoproj.io/skip-reconcile"
+  fi
+fi
 if crd_present applications.argoproj.io; then
   root="$(k -n "$ARGO_NS" get "application.argoproj.io/$ROOT_APP" --ignore-not-found -o name)" || fail "could not query the Application $ROOT_APP"
   if [ -n "$root" ]; then

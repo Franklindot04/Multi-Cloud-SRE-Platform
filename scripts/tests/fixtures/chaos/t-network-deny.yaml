@@ -1,0 +1,39 @@
+---
+# A fixture for scripts/chaos-tests.sh: one gateway pod cut off from the network.
+name: t-network-deny
+hypothesis: A gateway pod cut off from the network does not take the gateway availability below the objective.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [shop]
+  selectors: [app.kubernetes.io/name=gateway]
+  workloads: []
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 2
+  noPageAlerts: true
+injection:
+  action: apply-network-deny
+  target:
+    namespace: shop
+    selector: app.kubernetes.io/name=gateway
+  count: 1
+  direction: both
+rollback:
+  action: remove-network-deny
+  timeoutSeconds: 20
+expectedObservations: []
+steadyState:
+  - name: gateway-availability
+    description: The share of gateway requests that are not server errors (a scripted answer in the tests)
+    query: fake_availability{service="gateway"}
+    comparator: ">="
+    threshold: 0.99
+    noData: fail
+duration: 2
+abort:
+  probeFailureGraceSeconds: 0
+  onPageAlert: true

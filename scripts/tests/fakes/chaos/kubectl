@@ -1,0 +1,367 @@
+#!/usr/bin/env python3
+"""A fake kubectl for scripts/chaos-tests.sh. It simulates a small cluster (nodes, Deployments, pods, network policies) held in
+$FAKE_STATE/cluster.json, answers only the calls scripts/chaos-run.py is expected to make and exits 99 for anything else, so a new or
+changed call shows up as a test failure. Every call is appended to $FAKE_STATE/kubectl.log, one JSON line each.
+
+The cluster file (scripts/tests/fixtures/chaos/cluster.json) lists the context, nodes, Deployments and network policies; the pods are made
+from the Deployments. A pod made after the start is not Ready for the next `readyDelay` reads of the pod list, which is how a rollback that
+has to wait is tested. Markers, as files in $FAKE_STATE:
+  leak-pods       a read of pods by label also returns a pod that matches nothing: one of the namespace in the file, or of `other` when the
+                  file is empty (the blast radius is checked in code)
+  never-ready     new pods never become Ready (a rollback that cannot finish)
+  fail-drain      `drain` fails after cordoning
+  fail-restore    `scale` to more than zero replicas fails (a rollback that cannot finish)
+  revert-scale    a read of a Deployment puts back the replica count an experiment took away (what Argo CD self-heal does)
+The fake also stands in for the real thing in one more way: it announces itself with FAKE_KUBECTL=1 in `kubectl version --client` so the
+tests can check that the fake, and not a real kubectl, is the one found on the PATH.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+STATE = os.environ.get("FAKE_STATE")
+if not STATE:
+    sys.stderr.write("fake kubectl: FAKE_STATE is not set\n")
+    sys.exit(98)
+FILE = os.path.join(STATE, "cluster.json")
+
+
+def load():
+    with open(FILE, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def save(state):
+    tmp = FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, indent=1)
+    os.replace(tmp, FILE)
+
+
+def marker(name):
+    return os.path.exists(os.path.join(STATE, name))
+
+
+def die(message, code=1):
+    sys.stderr.write("Error from server: {}\n".format(message))
+    sys.exit(code)
+
+
+def match(selector, labels):
+    for pair in [p for p in (selector or "").split(",") if p]:
+        key, _, value = pair.partition("=")
+        if labels.get(key) != value:
+            return False
+    return True
+
+
+def match_dict(selector, labels):
+    return all(labels.get(k) == v for k, v in (selector or {}).items())
+
+
+def schedule(state):
+    nodes = [n for n in state["nodes"] if n.get("ready", True) and not n.get("unschedulable")]
+    if not nodes:
+        return None
+    counts = {n["name"]: 0 for n in nodes}
+    for p in state["pods"]:
+        if p.get("node") in counts:
+            counts[p["node"]] += 1
+    return sorted(counts, key=lambda k: (counts[k], k))[0]
+
+
+def new_pod(state, dep, node=None):
+    state["seq"] = state.get("seq", 0) + 1
+    ready_in = 0 if node else state.get("readyDelay", 1)
+    labels = dict(dep.get("podLabels") or dep["selector"])
+    if dep.get("roleLabel"):
+        labels[dep["roleLabel"]] = "replica"
+    return {
+        "name": "{}-{}".format(dep["name"], state["seq"]), "ns": dep["ns"], "labels": labels,
+        "node": node or schedule(state), "owner": dep["name"], "readyIn": ready_in, "annotations": {},
+    }
+
+
+def reconcile(state):
+    for dep in state["deployments"]:
+        mine = [p for p in state["pods"] if p.get("owner") == dep["name"] and p["ns"] == dep["ns"]]
+        for p in mine:
+            if not match_dict(dep["selector"], p["labels"]):
+                p["owner"] = None
+        owned = [p for p in state["pods"] if p.get("owner") == dep["name"] and p["ns"] == dep["ns"]]
+        while len(owned) < dep["replicas"]:
+            p = new_pod(state, dep)
+            if marker("never-ready"):
+                p["readyIn"] = 10 ** 6
+            state["pods"].append(p)
+            owned.append(p)
+        while len(owned) > dep["replicas"]:
+            state["pods"].remove(owned.pop())
+        if dep.get("roleLabel") and owned and not any(p["labels"].get(dep["roleLabel"]) == "primary" for p in owned):
+            # A database cluster promotes a replica when its primary is gone.
+            sorted(owned, key=lambda p: p["name"])[0]["labels"][dep["roleLabel"]] = "primary"
+
+
+def init(state):
+    if "pods" not in state:
+        state["pods"] = []
+        for dep in state["deployments"]:
+            dep.setdefault("annotations", {})
+            dep.setdefault("labels", {})
+            dep.setdefault("env", {})
+            for _ in range(dep["replicas"]):
+                state["pods"].append(new_pod(state, dep, node=dep.get("pin") or state["nodes"][len(state["pods"]) % len(state["nodes"])]["name"]))
+        for ds in state.get("daemonPods", []):
+            state["pods"].append({"name": ds["name"], "ns": ds["ns"], "labels": {"app": "daemon"}, "node": ds["node"], "owner": None, "daemon": True, "readyIn": 0, "annotations": {}})
+        state.setdefault("networkpolicies", [])
+        reconcile(state)
+        save(state)
+
+
+def pod_json(p):
+    ready = p.get("readyIn", 0) <= 0
+    meta = {"name": p["name"], "namespace": p["ns"], "labels": p["labels"], "annotations": p.get("annotations", {})}
+    if p.get("daemon"):
+        meta["ownerReferences"] = [{"kind": "DaemonSet", "name": "daemon"}]
+    elif p.get("owner"):
+        meta["ownerReferences"] = [{"kind": "ReplicaSet", "name": p["owner"] + "-rs"}]
+    return {"apiVersion": "v1", "kind": "Pod", "metadata": meta, "spec": {"nodeName": p["node"]},
+            "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True" if ready else "False"}]}}
+
+
+def dep_json(state, d):
+    kind = d.get("kind", "Deployment")
+    ready = len([p for p in state["pods"] if p.get("owner") == d["name"] and p["ns"] == d["ns"] and p.get("readyIn", 0) <= 0])
+    return {"apiVersion": "apps/v1", "kind": kind if kind != "Cluster" else "Deployment", "metadata": {"name": d["name"], "namespace": d["ns"], "labels": d.get("labels", {}), "annotations": d.get("annotations", {})},
+            "spec": {"replicas": d["replicas"], "selector": {"matchLabels": d["selector"]},
+                     "template": {"spec": {"containers": [{"name": d["name"], "env": [{"name": k, "value": v} for k, v in sorted(d.get("env", {}).items())]}]}}},
+            "status": {"readyReplicas": ready, "replicas": d["replicas"]}}
+
+
+def node_json(n):
+    return {"apiVersion": "v1", "kind": "Node", "metadata": {"name": n["name"], "labels": n.get("labels", {})}, "spec": {"unschedulable": bool(n.get("unschedulable"))},
+            "status": {"conditions": [{"type": "Ready", "status": "True" if n.get("ready", True) else "False"}]}}
+
+
+def np_json(n):
+    return {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": n["name"], "namespace": n["ns"], "labels": n.get("labels", {})}, "spec": n["spec"]}
+
+
+def parse(argv):
+    opts = {"ns": None, "all": False, "sel": None, "field": None, "out": None, "pos": [], "flags": []}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-n", "--namespace"):
+            opts["ns"] = argv[i + 1]
+            i += 2
+        elif a == "-A":
+            opts["all"] = True
+            i += 1
+        elif a == "-l":
+            opts["sel"] = argv[i + 1]
+            i += 2
+        elif a == "--field-selector":
+            opts["field"] = argv[i + 1]
+            i += 2
+        elif a == "-o":
+            opts["out"] = argv[i + 1]
+            i += 2
+        elif a == "-f":
+            opts["file"] = argv[i + 1]
+            i += 2
+        elif a.startswith("--"):
+            opts["flags"].append(a)
+            i += 1
+        else:
+            opts["pos"].append(a)
+            i += 1
+    return opts
+
+
+def listing(items):
+    print(json.dumps({"apiVersion": "v1", "kind": "List", "items": items}))
+
+
+def find(state, collection, name, ns=None):
+    for o in state[collection]:
+        if o["name"] == name and (ns is None or o.get("ns") == ns):
+            return o
+    die('{} "{}" not found'.format(collection, name))
+
+
+def apply_labels(obj_labels, items):
+    for item in items:
+        if item.endswith("-") and "=" not in item:
+            obj_labels.pop(item[:-1], None)
+        else:
+            k, _, v = item.partition("=")
+            obj_labels[k] = v
+
+
+def main():
+    argv = sys.argv[1:]
+    context = None
+    if argv[:1] == ["--context"]:
+        context, argv = argv[1], argv[2:]
+    stdin_text = sys.stdin.read() if "-f" in argv and argv[argv.index("-f") + 1] == "-" else None
+    with open(os.path.join(STATE, "kubectl.log"), "a", encoding="utf-8") as log:
+        log.write(json.dumps({"context": context, "args": argv, "input": stdin_text}) + "\n")
+    if argv[:2] == ["version", "--client"]:
+        print("FAKE_KUBECTL=1")
+        return
+    state = load()
+    init(state)
+    state = load()
+    if context is not None and context != state["context"]:
+        die('context "{}" does not exist'.format(context))
+    if argv[:1] in (["-n"], ["--namespace"]) and len(argv) > 2:
+        argv = argv[2:3] + argv[0:2] + argv[3:]  # `kubectl -n shop get ...` is `kubectl get ... -n shop`
+    verb = argv[0] if argv else ""
+    o = parse(argv[1:])
+    pos = o["pos"]
+    if verb == "config" and pos[:1] == ["current-context"]:
+        print(state["context"])
+        return
+    if verb == "get":
+        kind = pos[0]
+        name = pos[1] if len(pos) > 1 else None
+        if kind in ("pods", "pod"):
+            items = [p for p in state["pods"] if (o["all"] or p["ns"] == o["ns"]) and match(o["sel"], p["labels"])]
+            if name:
+                items = [p for p in items if p["name"] == name]
+                if not items:
+                    die('pods "{}" not found'.format(name))
+            if o["field"]:
+                key, _, value = o["field"].partition("=")
+                items = [p for p in items if key == "spec.nodeName" and p["node"] == value]
+            result = [pod_json(p) for p in items]
+            if marker("leak-pods") and o["sel"] and "chaos" not in o["sel"]:
+                result.append(pod_json({"name": "orders-leak", "ns": open(os.path.join(STATE, "leak-pods"), encoding="utf-8").read().strip() or "other", "labels": {"app.kubernetes.io/name": "orders"}, "node": "node-a", "owner": None, "readyIn": 0}))
+            for p in state["pods"]:
+                if p.get("readyIn", 0) > 0 and not marker("never-ready"):
+                    p["readyIn"] -= 1
+            save(state)
+            listing(result)
+        elif kind in ("nodes", "node"):
+            if name:
+                print(json.dumps(node_json(find(state, "nodes", name))))
+            else:
+                listing([node_json(n) for n in state["nodes"] if match(o["sel"], n.get("labels", {}))])
+        elif kind in ("deployments", "deployment", "statefulset", "statefulsets", "rollout", "rollouts"):
+            if marker("revert-scale"):
+                # Something (Argo CD self-heal) puts the replica count back as soon as it looks.
+                for d in state["deployments"]:
+                    saved = d.get("annotations", {}).get("chaos.platform.example/original-replicas")
+                    if saved is not None and d["replicas"] == 0:
+                        d["replicas"] = int(saved)
+                reconcile(state)
+                save(state)
+            if name:
+                print(json.dumps(dep_json(state, find(state, "deployments", name, o["ns"]))))
+            else:
+                listing([dep_json(state, d) for d in state["deployments"] if (o["all"] or d["ns"] == o["ns"]) and match(o["sel"], d.get("labels", {}))])
+        elif kind == "hpa":
+            listing([{"metadata": {"name": h["name"]}, "spec": {"scaleTargetRef": {"name": h["target"]}}} for h in state.get("hpas", []) if h["ns"] == o["ns"]])
+        elif kind in ("application.argoproj.io", "application"):
+            app = find(state, "applications", name, o["ns"])
+            print(json.dumps({"apiVersion": "argoproj.io/v1alpha1", "kind": "Application", "metadata": {"name": app["name"], "namespace": app["ns"], "annotations": app.get("annotations", {})}, "spec": app["spec"]}))
+        elif kind in ("networkpolicy", "networkpolicies"):
+            listing([np_json(n) for n in state["networkpolicies"] if (o["all"] or n["ns"] == o["ns"]) and match(o["sel"], n.get("labels", {}))])
+        else:
+            die("unexpected kind {}".format(kind), 99)
+        return
+    if verb == "delete" and o["sel"]:
+        kind = pos[0]
+        if kind == "pod":
+            state["pods"] = [p for p in state["pods"] if not (p["ns"] == o["ns"] and match(o["sel"], p["labels"]))]
+        elif kind == "networkpolicy":
+            state["networkpolicies"] = [n for n in state["networkpolicies"] if not (n["ns"] == o["ns"] and match(o["sel"], n.get("labels", {})))]
+        else:
+            die("unexpected delete of {} by label".format(kind), 99)
+        reconcile(state)
+        save(state)
+        print("deleted")
+        return
+    if verb == "delete":
+        kind, name = pos[0], pos[1]
+        if kind == "pod":
+            p = find(state, "pods", name, o["ns"])
+            state["pods"].remove(p)
+            reconcile(state)
+        elif kind == "networkpolicy":
+            state["networkpolicies"].remove(find(state, "networkpolicies", name, o["ns"]))
+        else:
+            die("unexpected delete of {}".format(kind), 99)
+        save(state)
+        print('{} "{}" deleted'.format(kind, name))
+        return
+    if verb == "scale":
+        d = find(state, "deployments", pos[1], o["ns"])
+        wanted = int(next(f for f in o["flags"] if f.startswith("--replicas=")).split("=")[1])
+        if wanted > 0 and marker("fail-restore"):
+            die("scale failed", 1)
+        d["replicas"] = wanted
+        reconcile(state)
+        save(state)
+        print("scaled")
+        return
+    if verb in ("label", "annotate"):
+        kind, name = pos[0], pos[1]
+        items = pos[2:]
+        field = "labels" if verb == "label" else "annotations"
+        if kind in ("deployment", "statefulset", "rollout"):
+            obj = find(state, "deployments", name, o["ns"])
+        elif kind == "pod":
+            obj = find(state, "pods", name, o["ns"])
+        elif kind == "node":
+            obj = find(state, "nodes", name)
+        else:
+            die("unexpected {} of {}".format(verb, kind), 99)
+        apply_labels(obj.setdefault(field, {}), items)
+        reconcile(state)
+        save(state)
+        print("{} {}d".format(kind, verb))
+        return
+    if verb in ("cordon", "uncordon"):
+        find(state, "nodes", pos[0])["unschedulable"] = verb == "cordon"
+        save(state)
+        print("node/{} {}ed".format(pos[0], verb))
+        return
+    if verb == "drain":
+        node = find(state, "nodes", pos[0])
+        node["unschedulable"] = True
+        save(state)
+        if marker("fail-drain"):
+            die("drain failed", 1)
+        for p in [p for p in state["pods"] if p["node"] == pos[0] and not p.get("daemon")]:
+            state["pods"].remove(p)
+        reconcile(state)
+        save(state)
+        print("node/{} drained".format(pos[0]))
+        return
+    if verb == "apply" and o.get("file") == "-":
+        manifest = json.loads(stdin_text)
+        meta = manifest["metadata"]
+        if manifest["kind"] == "Pod":
+            state["pods"].append({"name": meta["name"], "ns": meta["namespace"], "labels": meta.get("labels", {}), "node": schedule(state), "owner": None, "readyIn": 0, "annotations": {}})
+            save(state)
+            print("pod/{} created".format(meta["name"]))
+            return
+        if manifest["kind"] != "NetworkPolicy":
+            die("unexpected apply of {}".format(manifest["kind"]), 99)
+        state["networkpolicies"].append({"name": meta["name"], "ns": meta["namespace"], "labels": meta.get("labels", {}), "spec": manifest["spec"]})
+        save(state)
+        print("networkpolicy/{} created".format(meta["name"]))
+        return
+    if verb == "port-forward":
+        here = os.path.dirname(os.path.abspath(__file__))
+        os.execvp(sys.executable, [sys.executable, os.path.join(here, "fake_prometheus.py")])
+    sys.stderr.write("fake kubectl: unexpected call: {}\n".format(" ".join(argv)))
+    sys.exit(99)
+
+
+if __name__ == "__main__":
+    main()

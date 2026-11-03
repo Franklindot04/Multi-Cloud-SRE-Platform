@@ -1,0 +1,96 @@
+---
+# Delete the primary pod of the PostgreSQL cluster.
+#
+# Claim: docs/adr/0026-resilience-and-autoscaling.md ("PostgreSQL": two instances; the replica is promoted when the primary is lost;
+# the services
+# use platform-pg-rw, which points at whichever instance is the primary) and docs/runbooks/resilience.md. Stated here: the replica
+# is promoted
+# and the services reconnect within two minutes, during which up to five in a hundred requests in a two minute window may fail (the
+# threshold below is that budget, and it is a guess: the ADR gives no figure). The alert PostgresInstancesNotReady is a ticket after
+# 10 minutes
+# below two ready instances.
+#
+# What a failure would mean: a failover takes longer than two minutes, or the services do not reconnect without a restart, or the
+# budget of
+# five percent is too tight for a database that is gone for a minute. All three are findings.
+#
+# What is and is not measured about data loss. Replication is asynchronous (minSyncReplicas 0, ADR-0026): a transaction the primary
+# acknowledged and had not sent to the replica is lost when the replica is promoted. Nothing here measures that. What is measured is the
+# availability of the gateway, that two instances are Ready before and after, and that the alert behaves. A run that holds proves
+# that the failover
+# is quick enough, and says nothing about how many acknowledged writes were lost; that needs a writer that records what was
+# acknowledged and
+# compares it with the rows after the failover, which does not exist.
+#
+# PostgresInstancesNotReady waits 10 minutes (its `for`). If the replica is rebuilt sooner, the alert never fires, and that is the
+# better
+# outcome: it is recorded as "expected but not seen". The run lasts 11 minutes to give it the chance.
+name: postgres-primary-failover
+hypothesis: >-
+  Deleting the PostgreSQL primary promotes the replica within two minutes and keeps the gateway availability above 0.95;
+  the alert fires only if the replica is not back in ten.
+relatesTo:
+  - type: alert
+    name: PostgresInstancesNotReady
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [data]
+  selectors:
+    - cnpg.io/cluster=platform-pg
+  workloads: []
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server
+  # errors. The threshold here is
+  # the stated budget of the failover (0.95), not the objective: a failover cannot keep 0.995.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.95
+    noData: fail
+  # The query of the alert PostgresInstancesNotReady: Ready instances of the cluster. Before and after only: it is one during the
+  # failover.
+  - name: postgres-instances-ready
+    description: Ready instances of the PostgreSQL cluster
+    query: >-
+      sum(kube_pod_status_ready{namespace="data", pod=~"platform-pg-[0-9]+", condition="true"})
+    comparator: ">="
+    threshold: 2
+    noData: fail
+    phases: [before, after]
+injection:
+  action: delete-pod
+  target:
+    namespace: data
+    selector: cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary
+  count: 1
+  readySelector: cnpg.io/cluster=platform-pg
+duration: 660
+rollback:
+  action: wait-for-ready
+  timeoutSeconds: 900
+abort:
+  probeFailureGraceSeconds: 150
+  onPageAlert: true
+expectedObservations:
+  - alert: PostgresInstancesNotReady
+    note: only if the second instance is not back within its 10 minutes of waiting
+mustNotFire:
+  - SLOBurnRatePageSlow

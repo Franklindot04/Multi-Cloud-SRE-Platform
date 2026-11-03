@@ -1,0 +1,89 @@
+---
+# Delete one gateway pod while the load helper sends requests.
+#
+# Claim: docs/adr/0026-resilience-and-autoscaling.md ("Replicas, budgets and spread": the gateway keeps no state and runs two or more
+# replicas, spread over nodes, with a budget of maxUnavailable 1) and docs/adr/0016-service-deployment-model.md (a pod fails /readyz
+# on SIGTERM,
+# waits the drain period and finishes the requests in flight, behind a preStop sleep). Together: the Service stops sending to the
+# pod before it
+# dies, and the other replica serves meanwhile, so the availability SLO stays inside its budget.
+#
+# What a failure would mean: requests are lost when a gateway pod goes, so the shutdown sequence or the readiness gate does not do
+# what the ADRs
+# say, or one replica cannot carry the load. Look at the preStop sleep, the drain period and the endpoints of the Service during the
+# window.
+#
+# With --enable-progressive-delivery the gateway is a Rollout, so the precondition names a Rollout; on a cluster without it, change
+# the kind to
+# Deployment.
+name: gateway-pod-kill
+hypothesis: >-
+  Deleting one gateway pod under load keeps the gateway availability and latency inside the SLO objectives, because the
+  other replica serves and the Service stops sending to the dying pod.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+  - type: slo
+    name: gateway-latency
+blastRadius:
+  namespaces: [shop]
+  selectors:
+    - app.kubernetes.io/name=gateway
+  workloads: []
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: shop
+      kind: Rollout
+      name: gateway
+      count: 2
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # The gateway-latency SLO (objective 0.95): the share of requests that took 0.5 s or less.
+  - name: gateway-fast
+    description: Share of gateway requests answered within 0.5 s
+    query: >-
+      sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[2m]))
+      / sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[2m]))
+    comparator: ">="
+    threshold: 0.95
+    noData: fail
+injection:
+  action: delete-pod
+  target:
+    namespace: shop
+    selector: app.kubernetes.io/name=gateway
+  count: 1
+duration: 180
+rollback:
+  action: wait-for-ready
+  timeoutSeconds: 300
+abort:
+  probeFailureGraceSeconds: 60
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - PodDisruptionBudgetBlocked
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow
+  - ServiceTargetDown

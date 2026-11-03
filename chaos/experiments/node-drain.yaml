@@ -1,0 +1,134 @@
+---
+# Drain one node, with the budgets in place.
+#
+# Claim: docs/adr/0026-resilience-and-autoscaling.md ("Capacity" and the budgets) and docs/runbooks/resilience.md ("Drain test": one
+# pod of
+# each budgeted service is evicted, the next waits for its replacement; the notifier, Valkey and RabbitMQ are down until they start
+# elsewhere;
+# the PostgreSQL primary makes the drain wait). With four nodes (docs/runbooks/resilience.md, "Capacity": three are tight when one
+# is lost,
+# four are comfortable) every pod finds room, none stays Pending and no budget blocks.
+#
+# NEEDS FOUR NODES: node_desired_size = 4. The precondition is four schedulable ready nodes, so the run refuses with three.
+#
+# What a failure would mean: the capacity numbers are wrong and pods stay Pending (PodsPending fires after 10 minutes), or a budget
+# blocks the
+# drain, or the gateway loses requests while its pods move.
+#
+# Which node. The runner picks a node that runs a gateway pod, skips the node of Prometheus (the probes read it, and its data is on
+# an emptyDir),
+# and refuses a node on which a pod would be evicted that is outside the namespaces of the blast radius. Everything the drain evicts
+# is listed
+# in the result. If the PostgreSQL primary is on the node, the drain waits for the operator's budget and times out: the run is
+# aborted, the
+# node is uncordoned, and that is a finding too (use a switchover first, docs/runbooks/resilience.md).
+name: node-drain
+hypothesis: >-
+  With four nodes, draining one leaves room for every pod: none stays Pending, no budget blocks the drain, and the gateway
+  availability stays inside the SLO objective.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+  - type: alert
+    name: PodsPending
+blastRadius:
+  namespaces:
+    - shop
+    - data
+    - observability
+    - argocd
+    - kube-system
+    - kyverno
+    - external-secrets
+    - argo-rollouts
+    - cert-manager
+    - external-dns
+    - cnpg-system
+    - rabbitmq-system
+  anyPodInNamespaces:
+    - shop
+    - data
+    - observability
+    - argocd
+    - kube-system
+    - kyverno
+    - external-secrets
+    - argo-rollouts
+    - cert-manager
+    - external-dns
+    - cnpg-system
+    - rabbitmq-system
+  selectors:
+    - app.kubernetes.io/name=gateway
+  workloads: []
+  maxPods: 0
+  maxNodes: 1
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 4
+  minReplicas:
+    - namespace: shop
+      kind: Rollout
+      name: gateway
+      count: 2
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # The gateway-latency SLO (objective 0.95): the share of requests that took 0.5 s or less.
+  - name: gateway-fast
+    description: Share of gateway requests answered within 0.5 s
+    query: >-
+      sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[2m]))
+      / sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[2m]))
+    comparator: ">="
+    threshold: 0.95
+    noData: fail
+  # Pods waiting for room, in the namespaces of the platform. After the drain and the rollback every pod has to have found one.
+  - name: no-pending-pods
+    description: Pending pods in shop and data
+    query: >-
+      sum(kube_pod_status_phase{namespace=~"shop|data", phase="Pending"}) or vector(0)
+    comparator: "=="
+    threshold: 0
+    noData: fail
+    phases: [before, after]
+injection:
+  action: drain-node
+  target:
+    namespace: shop
+    selector: app.kubernetes.io/name=gateway
+  count: 1
+  timeoutSeconds: 300
+  avoid:
+    - namespace: observability
+      selector: app.kubernetes.io/name=prometheus
+duration: 600
+rollback:
+  action: uncordon
+  timeoutSeconds: 600
+abort:
+  probeFailureGraceSeconds: 120
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - PodsPending
+  - PodDisruptionBudgetBlocked
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow
+  - ServiceTargetDown

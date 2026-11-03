@@ -1,0 +1,46 @@
+---
+# A fixture for scripts/chaos-tests.sh (the example experiment, with short times and a scripted probe).
+name: t-delete-pod
+hypothesis: Deleting one gateway pod does not take the gateway availability below the objective.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [shop]
+  selectors: [app.kubernetes.io/name=gateway]
+  workloads:
+    - kind: Deployment
+      name: gateway
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 2
+  minReplicas:
+    - namespace: shop
+      kind: Deployment
+      name: gateway
+      count: 2
+  noPageAlerts: true
+injection:
+  action: delete-pod
+  target:
+    namespace: shop
+    selector: app.kubernetes.io/name=gateway
+  count: 1
+rollback:
+  action: wait-for-ready
+  timeoutSeconds: 20
+expectedObservations:
+  - alert: ServiceTargetDown
+steadyState:
+  - name: gateway-availability
+    description: The share of gateway requests that are not server errors (a scripted answer in the tests)
+    query: fake_availability{service="gateway"}
+    comparator: ">="
+    threshold: 0.99
+    noData: fail
+duration: 2
+abort:
+  probeFailureGraceSeconds: 0
+  onPageAlert: true

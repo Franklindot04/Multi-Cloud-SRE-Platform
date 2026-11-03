@@ -1,0 +1,113 @@
+---
+# Delete one orders pod while the load helper is creating orders.
+#
+# Claim: docs/adr/0015-service-data-integration.md and docs/adr/0014-data-layer.md ("Outbox": orders writes the order and its event to
+# PostgreSQL in one transaction and a relay publishes it, at least once; the notifier drops duplicates). An order that was accepted
+# is not lost
+# and is not notified twice, and the events that were waiting when the pod died are published by the other pod (the relay claims its
+# rows with
+# SKIP LOCKED, docs/adr/0026).
+#
+# What a failure would mean: an order is accepted and its event never published (the transaction and the relay do not agree), or the
+# outbox
+# does not drain after the pod is gone.
+#
+# What is measured, and what is not. The series that exist are: the oldest unpublished event in the outbox
+# (outbox_oldest_unpublished_age_seconds,
+# which must come back to a few seconds), and a proxy for "no order is lost or duplicated": the orders created (201 on POST /orders)
+# against the
+# events the notifier recorded (messages_consumed_total, processed or duplicate), over five minutes. The proxy can be fooled: an
+# order lost
+# and a duplicate delivered cancel out, and in-flight events make it differ by a few. A proper check needs per-order accounting that
+# does not
+# exist yet: a counter of orders accepted and a counter of events recorded by outcome (and the duplicates dropped) that can be
+# compared over
+# a window, or a reconciliation job that compares order ids in PostgreSQL with the notifier's store. Until then a failure here is a
+# finding and
+# a pass is weak evidence.
+name: orders-pod-kill-under-load
+hypothesis: >-
+  Deleting one orders pod while orders are being created loses no order and notifies none twice, because the outbox holds
+  the events until the other pod publishes them.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+  - type: slo
+    name: notifier-delivery
+  - type: alert
+    name: OutboxBacklog
+blastRadius:
+  namespaces: [shop]
+  selectors:
+    - app.kubernetes.io/name=orders
+  workloads: []
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: shop
+      kind: Deployment
+      name: orders
+      count: 2
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # The oldest event not yet published, in seconds. The alert OutboxBacklog fires above 300; this wants far less. Before and after
+  # only: during
+  # the window the age may grow for as long as the pod that was publishing is gone.
+  - name: outbox-age
+    description: Age of the oldest unpublished event, in seconds
+    query: >-
+      max(outbox_oldest_unpublished_age_seconds{job="orders"}) or vector(0)
+    comparator: "<="
+    threshold: 30
+    noData: fail
+    phases: [before, after]
+  # Orders created minus events recorded by the notifier, over five minutes. See the header: a proxy, not a proof.
+  - name: orders-against-notifications
+    description: Orders created minus events recorded by the notifier, over five minutes (absolute value)
+    query: >-
+      abs((sum(increase(http_requests_total{service="orders", method="POST", route="/orders", status="201"}[5m])) or vector(0))
+      - (sum(increase(messages_consumed_total{job="notifier", result=~"processed|duplicate"}[5m])) or vector(0)))
+    comparator: "<="
+    threshold: 25
+    noData: fail
+    phases: [before, after]
+injection:
+  action: delete-pod
+  target:
+    namespace: shop
+    selector: app.kubernetes.io/name=orders
+  count: 1
+duration: 300
+rollback:
+  action: wait-for-ready
+  timeoutSeconds: 300
+abort:
+  probeFailureGraceSeconds: 90
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - OutboxBacklog
+  - NotifierBrokerDisconnected
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow
+  - ServiceTargetDown

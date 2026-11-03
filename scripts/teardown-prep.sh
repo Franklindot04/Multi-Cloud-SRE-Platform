@@ -11,7 +11,9 @@
 #       platform.example/observability, platform.example/policy, platform.example/external-secrets and
 #       platform.example/progressive-delivery (the label keys are deleted, not set to false), so the ApplicationSets stop recreating
 #       Applications
-#    2. wait until the apps-*, data-*, observability-*, policy-*, eso-* and delivery-* Applications are gone (this also removes the
+#    2. remove the annotation argocd.argoproj.io/skip-reconcile from every Application that carries it (a chaos experiment sets it to pause
+#       an Application; the application controller ignores such an Application, deletion included, so its finalizer would never be
+#       cleared), then wait until the apps-*, data-*, observability-*, policy-*, eso-* and delivery-* Applications are gone (this also removes the
 #       CloudNativePG, RabbitMQ Cluster, Prometheus, Kyverno, External Secrets and Argo Rollouts controllers; a Rollout needs no step of
 #       its own: it has no finalizer that outlives the controller, the CRDs go with the Application, and the ReplicaSets it made are
 #       deleted by the garbage collector, which step 5 waits for)
@@ -22,7 +24,8 @@
 #       the validating webhook configurations of the External Secrets Operator (secretstore-validate and
 #       externalsecret-validate, and no other), and wait until they are gone; the webhooks fail open, but an object that the
 #       operator can no longer reconcile should not outlive it
-#    5. wait until the shop namespace holds no workloads
+#    5. delete the pod and the NetworkPolicy of the chaos load helper (scripts/chaos-load.sh, label chaos.platform.example/managed-by=chaos-load)
+#       in the shop namespace, then wait until the shop namespace holds no workloads
 #    6. if the observability namespace exists, wait until it holds no pods
 #    7. if it exists, delete its PersistentVolumeClaims (there are none unless values-persistent.yaml was used)
 #    8. delete the CloudNativePG Database objects in the data namespace and wait for them
@@ -37,8 +40,13 @@
 #   15. AWS: confirm no load balancer created by the AWS Load Balancer Controller remains
 #   16. AWS: confirm no security group created by the AWS Load Balancer Controller remains
 #
+# Before step 1 the script also looks for what an unfinished chaos run left (the label chaos.platform.example/managed-by=chaos-run on
+# workloads, pods and policies of shop, data, observability, kyverno, external-secrets and argo-rollouts, and on nodes: what
+# scripts/chaos-run.sh --cleanup finds) and prints a warning that names that command. It only reads; it never fails because of it.
+#
 # Deletions name the resource and the namespace (argocd, shop, data and observability are the only namespaces
-# changed; cnpg-system and rabbitmq-system are only read, to see whether an operator is still running). The
+# changed; cnpg-system, rabbitmq-system, kyverno, external-secrets and argo-rollouts are only read, to see whether an operator is still
+# running or a chaos run left something). The
 # cluster-scoped kinds steps 3 and 4 delete are Kyverno's (its policies and the webhook configurations whose names
 # start with kyverno, and no other) and the External Secrets Operator's (its cluster-scoped objects and the two
 # webhook configurations secretstore-validate and externalsecret-validate, and no other). Nothing is
@@ -482,6 +490,44 @@ $names
 EOF
 }
 
+# paused_apps: the name of each Application whose annotation argocd.argoproj.io/skip-reconcile has a true value (a paused Application:
+# Argo CD v3.5.6 does not enqueue it, so a deletion with the resources finalizer is not processed until the annotation is gone).
+paused_apps() {
+  local out name value
+  out="$(k -n "$ARGO_NS" get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}{"\n"}{end}' 2> /dev/null)" || return 0
+  while IFS="$(printf '\t')" read -r name value; do
+    case "$name:$value" in
+      : | *:'' | *:false | *:False | *:FALSE | *:0 | *:f | *:F) continue ;;
+    esac
+    printf '%s\n' "$name"
+  done << LIST
+$out
+LIST
+}
+
+# warn_chaos_leftovers: what scripts/chaos-run.sh --cleanup would find. Reads only, and a read that fails is not an error here.
+CHAOS_SELECTOR="chaos.platform.example/managed-by=chaos-run"
+warn_chaos_leftovers() {
+  local ns out found="" flags="" node_out
+  for ns in "$SHOP_NS" "$DATA_NS" "$OBS_NS" kyverno external-secrets argo-rollouts; do
+    out="$(k -n "$ns" get deployments,statefulsets,pods,networkpolicies -l "$CHAOS_SELECTOR" -o name 2> /dev/null || true)"
+    if [ -n "$out" ]; then
+      found="$found$(printf '%s\n' "$out" | sed "s|^|    $ns: |")
+"
+      flags="$flags --namespace $ns"
+    fi
+  done
+  node_out="$(k get nodes -l "$CHAOS_SELECTOR" -o name 2> /dev/null || true)"
+  [ -z "$node_out" ] || found="$found$(printf '%s\n' "$node_out" | sed 's|^|    |')
+"
+  [ -n "$found" ] || return 0
+  echo "warning: an earlier chaos run left something behind (label $CHAOS_SELECTOR):"
+  printf '%s' "$found"
+  echo "  It is not removed here. Run: scripts/chaos-run.sh --cleanup${flags} --execute"
+  echo "  (a workload at zero replicas, a deny policy, an isolated pod or a cordoned node would also block or confuse the steps below)"
+  echo
+}
+
 echo "Teardown preparation for the cluster in kubectl context: $CONTEXT"
 [ "$DRY_RUN" -eq 0 ] || echo "DRY RUN: no change is made and no AWS call is made."
 
@@ -490,6 +536,8 @@ k config get-contexts -o name > /dev/null 2>&1 || usage_error "kubectl could not
 if ! k config get-contexts -o name 2> /dev/null | grep -Fxq -- "$CONTEXT"; then
   usage_error "kubectl context '$CONTEXT' does not exist (see: kubectl config get-contexts)"
 fi
+
+warn_chaos_leftovers
 
 step "Remove the cluster Secret labels, so the ApplicationSets stop recreating Applications"
 if k -n "$ARGO_NS" get secret "$CLUSTER_SECRET" -o name > /dev/null 2>&1; then
@@ -500,6 +548,16 @@ else
 fi
 
 step "Wait for the apps-*, data-*, observability-*, policy-*, eso-* and delivery-* Applications to be deleted"
+paused="$(paused_apps)"
+if [ -n "$paused" ]; then
+  echo "  warning: an unfinished chaos run left Applications paused with the annotation argocd.argoproj.io/skip-reconcile."
+  echo "  Argo CD does not process a paused Application, not even its deletion, so it would wait here for ever. Removing the annotation from:"
+  while IFS= read -r app; do
+    run k -n "$ARGO_NS" annotate "application.argoproj.io/$app" argocd.argoproj.io/skip-reconcile-
+  done << LIST
+$paused
+LIST
+fi
 wait_for "no apps-*, data-*, observability-*, policy-*, eso-* or delivery-* Application remains" apps_gone
 
 step "Delete the Kyverno policies and webhook configurations (a webhook with no controller can block the deletions that follow)"
@@ -570,7 +628,10 @@ EOF
 fi
 wait_for "no webhook configuration of the External Secrets Operator remains" no_eso_webhooks
 
-step "Wait for the $SHOP_NS namespace to empty"
+step "Wait for the $SHOP_NS namespace to empty (after deleting the pod and the policy of the chaos load helper)"
+# scripts/chaos-load.sh makes a pod and a NetworkPolicy in this namespace; no Application owns them, so nothing else removes them.
+run k -n "$SHOP_NS" delete pod -l chaos.platform.example/managed-by=chaos-load --wait=false
+run k -n "$SHOP_NS" delete networkpolicy -l chaos.platform.example/managed-by=chaos-load
 wait_for "the $SHOP_NS namespace has no workloads" shop_empty
 
 step "Wait for the pods in the $OBS_NS namespace to be gone (if the namespace exists)"

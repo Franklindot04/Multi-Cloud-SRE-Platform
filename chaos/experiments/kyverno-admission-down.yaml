@@ -1,0 +1,81 @@
+---
+# Scale the Kyverno admission controller to zero.
+#
+# Claim: docs/adr/0025-admission-policies.md ("Fail open": every policy has failurePolicy Ignore and Kyverno forces it, so a dead
+# Kyverno cannot
+# block the cluster) and docs/runbooks/kyverno.md (the webhooks fail open). Pods and rollouts are still created, and the services
+# are unaffected.
+#
+# What a failure would mean: a webhook fails closed after all, and nothing can be created while Kyverno is down. That would block the
+# autoscaler, a drain and every deploy.
+#
+# What this file measures: that the running services are unaffected and the policy engine's absence changes nothing on the request
+# path. The
+# runner has no action that creates a pod, so the other half of the claim, that a pod is admitted, is a manual step of
+# docs/runbooks/chaos.md
+# during the window (create a pod in shop and see it start).
+#
+# Argo CD puts a replica count back within seconds when the Application self-heals, so the Application policy-kyverno-* has to be
+# paused first
+# (chaos/README.md, "Argo CD").
+name: kyverno-admission-down
+hypothesis: >-
+  With the Kyverno admission controller scaled to zero the webhooks fail open, so nothing is blocked and the gateway
+  availability stays inside the SLO objective.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [kyverno]
+  selectors:
+    - app.kubernetes.io/component=admission-controller
+  workloads:
+    - kind: Deployment
+      name: kyverno-admission-controller
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: kyverno
+      kind: Deployment
+      name: kyverno-admission-controller
+      count: 1
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+injection:
+  action: scale-to-zero
+  target:
+    namespace: kyverno
+    kind: Deployment
+    name: kyverno-admission-controller
+duration: 300
+rollback:
+  action: restore-replicas
+  timeoutSeconds: 300
+abort:
+  probeFailureGraceSeconds: 60
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - ServiceTargetDown
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow

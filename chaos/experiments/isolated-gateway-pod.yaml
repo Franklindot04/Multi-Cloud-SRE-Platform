@@ -1,0 +1,106 @@
+---
+# Cut one gateway pod off the network.
+#
+# Claim: docs/adr/0024-network-policies.md and docs/adr/0026-resilience-and-autoscaling.md. A gateway pod that can reach nothing
+# fails its
+# readiness check (the gateway's /readyz calls orders and payments), is left out of the Service, and the other replica serves.
+#
+# How it is done (chaos/README.md, "The actions"): a deny policy first, then the pod loses its labels. That takes it out of its
+# ReplicaSet (a new
+# pod starts), out of the Service and out of every allow rule. So the pod leaves the Service at once, whatever its readiness says;
+# the readiness
+# claim is therefore measured by the pod's own Ready condition (kube-state-metrics) while the policy is in place. The start of the
+# replacement
+# pod is not ready for a while either, so the probe cannot tell the two apart; read `kubectl get pod` for the isolated pod in the window
+# (docs/runbooks/chaos.md).
+#
+# What a failure would mean: traffic still reaches the cut-off pod (the Service keeps it), or the other replica cannot carry the load.
+name: isolated-gateway-pod
+hypothesis: >-
+  With one gateway pod cut off from the network the others keep the availability and latency inside the SLO objectives,
+  and the cut-off pod is not Ready.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+  - type: slo
+    name: gateway-latency
+blastRadius:
+  namespaces: [shop]
+  selectors:
+    - app.kubernetes.io/name=gateway
+  workloads: []
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: shop
+      kind: Rollout
+      name: gateway
+      count: 2
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # The gateway-latency SLO (objective 0.95): the share of requests that took 0.5 s or less.
+  - name: gateway-fast
+    description: Share of gateway requests answered within 0.5 s
+    query: >-
+      sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[2m]))
+      / sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[2m]))
+    comparator: ">="
+    threshold: 0.95
+    noData: fail
+  # The claim about readiness: while the pod is cut off, at least one gateway pod is not Ready (the isolated one, and for a while
+  # its replacement).
+  - name: a-gateway-pod-is-not-ready
+    description: Gateway pods whose Ready condition is false
+    query: >-
+      sum(kube_pod_status_ready{namespace="shop", pod=~"gateway-.*", condition="false"})
+    comparator: ">="
+    threshold: 1
+    noData: fail
+    phases: [during]
+  - name: gateway-pods-ready
+    description: Gateway pods that are Ready
+    query: >-
+      sum(kube_pod_status_ready{namespace="shop", pod=~"gateway-.*", condition="true"})
+    comparator: ">="
+    threshold: 2
+    noData: fail
+    phases: [before, after]
+injection:
+  action: apply-network-deny
+  target:
+    namespace: shop
+    selector: app.kubernetes.io/name=gateway
+  count: 1
+  direction: both
+duration: 240
+rollback:
+  action: remove-network-deny
+  timeoutSeconds: 300
+abort:
+  probeFailureGraceSeconds: 90
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow
+  - ServiceTargetDown

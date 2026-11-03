@@ -1,0 +1,96 @@
+---
+# Scale the Argo Rollouts controller to zero for twelve minutes.
+#
+# Claim: docs/adr/0028-progressive-delivery.md ("Consequences": a new thing that can be down; existing rollouts keep running, one in
+# progress
+# stops) and the alert RolloutsControllerDown (platform/observability/monitors, ticket, after 10 minutes). Running pods and traffic
+# do not need
+# the controller, so the gateway is unaffected, and the alert fires.
+#
+# What a failure would mean: the traffic depends on the controller after all (the Service selector or the replica sets are changed
+# by it), or
+# the alert does not notice a controller that is gone.
+#
+# Not exercised: the other half of the claim, that a rollout in flight stalls. That needs a release while the controller is down,
+# which is a
+# manual step of docs/runbooks/chaos.md.
+#
+# Argo CD puts a replica count back within seconds when the Application self-heals, so the Application delivery-argo-rollouts-* has
+# to be paused
+# first (chaos/README.md, "Argo CD"). If it is not, the run stops and says the injection was undone.
+name: rollouts-controller-down
+hypothesis: >-
+  With the Argo Rollouts controller scaled to zero the gateway keeps serving and the alert RolloutsControllerDown fires,
+  because running pods and traffic do not depend on the controller.
+relatesTo:
+  - type: alert
+    name: RolloutsControllerDown
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [argo-rollouts]
+  selectors:
+    - app.kubernetes.io/name=argo-rollouts
+  workloads:
+    - kind: Deployment
+      name: argo-rollouts
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: argo-rollouts
+      kind: Deployment
+      name: argo-rollouts
+      count: 1
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # The metric of the controller (documented in its controller-metrics page): a Rollout in the phase Completed. Read before and
+  # after only,
+  # because the controller is the one that exports it.
+  - name: rollouts-complete
+    description: Rollouts of the shop namespace that are complete
+    query: >-
+      sum(rollout_info{namespace="shop", phase="Completed"})
+    comparator: ">="
+    threshold: 1
+    noData: fail
+    phases: [before, after]
+injection:
+  action: scale-to-zero
+  target:
+    namespace: argo-rollouts
+    kind: Deployment
+    name: argo-rollouts
+duration: 720
+rollback:
+  action: restore-replicas
+  timeoutSeconds: 300
+abort:
+  probeFailureGraceSeconds: 60
+  onPageAlert: true
+expectedObservations:
+  - alert: RolloutsControllerDown
+    note: after its 10 minutes of waiting, so the run lasts twelve
+mustNotFire:
+  - ServiceTargetDown
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow

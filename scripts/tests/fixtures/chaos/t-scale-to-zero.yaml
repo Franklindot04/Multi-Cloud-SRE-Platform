@@ -1,0 +1,45 @@
+---
+# A fixture for scripts/chaos-tests.sh: the notifier scaled to zero.
+name: t-scale-to-zero
+hypothesis: With the notifier gone the gateway keeps its availability, because nothing on the request path calls it.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [shop]
+  selectors: [app.kubernetes.io/name=notifier]
+  workloads:
+    - kind: Deployment
+      name: notifier
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 2
+  minReplicas:
+    - namespace: shop
+      kind: Deployment
+      name: notifier
+      count: 1
+  noPageAlerts: true
+injection:
+  action: scale-to-zero
+  target:
+    namespace: shop
+    kind: Deployment
+    name: notifier
+rollback:
+  action: restore-replicas
+  timeoutSeconds: 20
+expectedObservations: []
+steadyState:
+  - name: gateway-availability
+    description: The share of gateway requests that are not server errors (a scripted answer in the tests)
+    query: fake_availability{service="gateway"}
+    comparator: ">="
+    threshold: 0.99
+    noData: fail
+duration: 2
+abort:
+  probeFailureGraceSeconds: 0
+  onPageAlert: true

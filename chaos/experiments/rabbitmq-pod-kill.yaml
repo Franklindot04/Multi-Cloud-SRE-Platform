@@ -1,0 +1,97 @@
+---
+# Delete the RabbitMQ pod.
+#
+# Claim: docs/adr/0015-service-data-integration.md ("Readiness": RabbitMQ is degraded, not required, for orders) and
+# docs/runbooks/resilience.md
+# (drain test: "Valkey, RabbitMQ ... are down until their pods start elsewhere. The orders outbox keeps events meanwhile"). While
+# the broker is
+# gone orders still accepts orders and the outbox holds the events; when it is back the relay publishes them and the notifier
+# records them.
+# Notifications are delayed, not lost, so nothing is dead-lettered and the notifier delivery SLO holds.
+#
+# RabbitMQ is a single instance (docs/adr/0026: quorum queues and three nodes are future work), so the broker is down for as long as
+# its pod
+# takes to start, and its queues are on a volume that stays.
+#
+# What a failure would mean: events are lost or dead-lettered when the broker goes (a publish that is acknowledged and then lost, or
+# a queue that
+# is not durable), or orders stops accepting orders without the broker.
+name: rabbitmq-pod-kill
+hypothesis: >-
+  Deleting the RabbitMQ pod delays notifications and loses none, because the outbox keeps the events until the broker is
+  back, so nothing is dead-lettered and orders keeps accepting orders.
+relatesTo:
+  - type: slo
+    name: notifier-delivery
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [data]
+  selectors:
+    - app.kubernetes.io/name=platform-mq
+  workloads: []
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: data
+      kind: StatefulSet
+      name: platform-mq-server
+      count: 1
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # Nothing is dead-lettered: the numerator of the notifier-delivery SLO (messages_consumed_total, result dead_letter).
+  - name: notifier-dead-letters
+    description: Events the notifier dead-lettered over ten minutes
+    query: >-
+      sum(increase(messages_consumed_total{job="notifier", result="dead_letter"}[10m])) or vector(0)
+    comparator: "=="
+    threshold: 0
+    noData: fail
+  # The outbox drains again once the broker is back. Before and after only: during the window it grows, by design.
+  - name: outbox-age
+    description: Age of the oldest unpublished event, in seconds
+    query: >-
+      max(outbox_oldest_unpublished_age_seconds{job="orders"}) or vector(0)
+    comparator: "<="
+    threshold: 30
+    noData: fail
+    phases: [before, after]
+injection:
+  action: delete-pod
+  target:
+    namespace: data
+    selector: app.kubernetes.io/name=platform-mq,app.kubernetes.io/component=rabbitmq
+  count: 1
+duration: 300
+rollback:
+  action: wait-for-ready
+  timeoutSeconds: 600
+abort:
+  probeFailureGraceSeconds: 120
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - OutboxBacklog
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow
+  - ServiceTargetDown

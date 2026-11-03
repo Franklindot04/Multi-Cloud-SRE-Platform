@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# A poison for scripts/chaos-tests.sh: the chaos runner must never call terraform. Any call is recorded and fails.
+echo "terraform $*" >> "${FORBIDDEN_LOG:-/dev/null}"
+echo "error: the chaos runner must not call terraform" >&2
+exit 97
