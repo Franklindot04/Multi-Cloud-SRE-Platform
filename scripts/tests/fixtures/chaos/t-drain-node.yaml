@@ -1,0 +1,39 @@
+---
+# A fixture for scripts/chaos-tests.sh: one node drained. The blast radius covers every pod of the sample services.
+name: t-drain-node
+hypothesis: Draining one node does not take the gateway availability below the objective, because the budgets keep a pod up.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [shop]
+  selectors: [app.kubernetes.io/part-of=sre-sample]
+  workloads: []
+  maxPods: 0
+  maxNodes: 1
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 2
+  noPageAlerts: true
+injection:
+  action: drain-node
+  target:
+    namespace: shop
+    selector: app.kubernetes.io/name=gateway,app.kubernetes.io/part-of=sre-sample
+  count: 1
+  timeoutSeconds: 30
+rollback:
+  action: uncordon
+  timeoutSeconds: 20
+expectedObservations: []
+steadyState:
+  - name: gateway-availability
+    description: The share of gateway requests that are not server errors (a scripted answer in the tests)
+    query: fake_availability{service="gateway"}
+    comparator: ">="
+    threshold: 0.99
+    noData: fail
+duration: 2
+abort:
+  probeFailureGraceSeconds: 0
+  onPageAlert: true

@@ -1,0 +1,103 @@
+---
+# Scale the External Secrets Operator controller to zero.
+#
+# Claim: docs/adr/0027-external-secrets.md ("Consequences" and the threat model: the Secrets are ordinary Kubernetes Secrets owned
+# by their
+# ExternalSecret; when the operator is gone, nothing deletes them, and what is mounted keeps working; only a change of a parameter stops
+# arriving). Nothing restarts, and the services keep serving.
+#
+# ONLY VALID IN THE EXTERNAL SECRETS MODE (--enable-external-secrets, the passwords in Parameter Store). In the generated mode there
+# is no
+# operator and the precondition below fails: the number of ExternalSecret series is under nine.
+#
+# What a failure would mean: a pod depends on the operator at run time (a Secret that is deleted with the controller, a webhook that
+# blocks), or
+# a consumer restarts when its Secret is touched.
+#
+# Argo CD puts a replica count back within seconds when the Application self-heals, so the Application eso-operator-* has to be
+# paused first
+# (chaos/README.md, "Argo CD").
+name: eso-down
+hypothesis: >-
+  With the External Secrets Operator controller scaled to zero the existing Secrets keep working: no pod restarts and the
+  gateway availability stays inside the SLO objective.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [external-secrets]
+  selectors:
+    - app.kubernetes.io/instance=external-secrets
+  workloads:
+    - kind: Deployment
+      name: external-secrets
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: external-secrets
+      kind: Deployment
+      name: external-secrets
+      count: 1
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # One series for each ExternalSecret: nine are expected (docs/runbooks/secrets.md, "Check after an apply"). The metric name is in the
+  # operator's metrics page (docs/api/metrics.md at v2.14.0); the page does not list its labels, so the probe counts series and
+  # nothing else.
+  # Read before and after only, because the controller is the one that exports it. It is what makes the experiment valid in the
+  # external mode only.
+  - name: external-secrets-synced
+    description: ExternalSecret series exported by the operator
+    query: >-
+      count(externalsecret_status_condition)
+    comparator: ">="
+    threshold: 9
+    noData: fail
+    phases: [before, after]
+  # Nothing restarts: a restart of any container in the three namespaces over five minutes fails the probe. It is checked before the
+  # injection
+  # too, so a restart that has nothing to do with the experiment refuses the run instead of blaming it.
+  - name: no-restarts
+    description: Container restarts in shop, data and observability over five minutes
+    query: >-
+      sum(increase(kube_pod_container_status_restarts_total{namespace=~"shop|data|observability"}[5m])) or vector(0)
+    comparator: "=="
+    threshold: 0
+    noData: fail
+injection:
+  action: scale-to-zero
+  target:
+    namespace: external-secrets
+    kind: Deployment
+    name: external-secrets
+duration: 300
+rollback:
+  action: restore-replicas
+  timeoutSeconds: 300
+abort:
+  probeFailureGraceSeconds: 60
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - ServiceTargetDown
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow

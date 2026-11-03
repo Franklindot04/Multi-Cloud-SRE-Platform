@@ -125,3 +125,6 @@ apps/payments/.mvn/wrapper/maven-wrapper.jar
 # Local scratch
 tmp/
 *.log
+
+# Results of chaos experiment runs (chaos/README.md): kept on the machine that ran them
+chaos/results/

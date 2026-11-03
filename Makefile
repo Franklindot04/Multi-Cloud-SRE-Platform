@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 TF_DIR := infra/terraform
 
-.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack integration-test smoke-test-integration data-up data-down data-check data-check-manifests observability-check deploy-check network-policies-check policy-check external-secrets-check delivery-check scripts-test docs
+.PHONY: help fmt lint validate test addons-check argocd-check apps-test apps-build apps-lint smoke-test smoke-test-stack integration-test smoke-test-integration data-up data-down data-check data-check-manifests observability-check deploy-check network-policies-check policy-check external-secrets-check delivery-check chaos-check scripts-test docs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -89,6 +89,9 @@ policy-check: ## Lint, render, schema-check and contract-check the Kyverno insta
 
 external-secrets-check: ## Lint, render, schema-check and contract-check the External Secrets Operator, its store and the network policies of its namespace (skips missing tools)
 	@./scripts/external-secrets-check.sh
+
+chaos-check: ## Validate the chaos experiments and test the runner against a fake kubectl and a fake Prometheus (no cluster)
+	@./scripts/chaos-check.sh
 
 delivery-check: ## Lint, render, schema-check and contract-check the Argo Rollouts controller and the network policies of its namespace (skips missing tools)
 	@./scripts/delivery-check.sh

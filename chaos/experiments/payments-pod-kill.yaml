@@ -1,0 +1,80 @@
+---
+# Delete one of the two payments pods while the load helper creates orders.
+#
+# Claim: docs/adr/0026-resilience-and-autoscaling.md (payments is fixed at two replicas in the data profile, has a budget, and
+# PostgreSQL arbitrates
+# the idempotency key, so a second replica is safe). Creating an order calls payments, so if one pod is enough to carry the calls,
+# the gateway
+# availability stays inside the budget while the other restarts.
+#
+# What a failure would mean: payments is a single point of failure in practice. A pod that takes a while to be ready (the JVM start,
+# see the
+# startup probe in deploy/helm/service) leaves one pod to take every authorisation, or the orders in flight when the pod died are lost.
+name: payments-pod-kill
+hypothesis: >-
+  Deleting one of the two payments pods under load keeps the gateway availability inside the SLO objective, because the
+  other pod authorises the payments meanwhile.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+blastRadius:
+  namespaces: [shop]
+  selectors:
+    - app.kubernetes.io/name=payments
+  workloads: []
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: shop
+      kind: Deployment
+      name: payments
+      count: 2
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # The gateway-latency SLO (objective 0.95): the share of requests that took 0.5 s or less.
+  - name: gateway-fast
+    description: Share of gateway requests answered within 0.5 s
+    query: >-
+      sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[2m]))
+      / sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[2m]))
+    comparator: ">="
+    threshold: 0.95
+    noData: fail
+injection:
+  action: delete-pod
+  target:
+    namespace: shop
+    selector: app.kubernetes.io/name=payments
+  count: 1
+duration: 240
+rollback:
+  action: wait-for-ready
+  timeoutSeconds: 300
+abort:
+  probeFailureGraceSeconds: 60
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow
+  - ServiceTargetDown

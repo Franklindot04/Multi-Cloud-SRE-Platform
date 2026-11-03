@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# A fake docker for scripts/chaos-tests.sh, to test scripts/chaos-promtool.sh without Docker. `docker info` succeeds. `docker run` records the
+# mode of the directory mounted with -v and of the files in it (a container that runs as an unprivileged user needs the others' read and
+# search bits), then plays promtool: it accepts probes.yaml and rejects broken.yaml.
+set -euo pipefail
+case "${1:-}" in
+  info) exit 0 ;;
+  run) ;;
+  *) echo "fake docker: unexpected '$*'" >&2; exit 98 ;;
+esac
+src=""
+prev=""
+for arg in "$@"; do
+  [ "$prev" = "-v" ] && src="${arg%%:*}"
+  prev="$arg"
+done
+if [ -n "$src" ]; then
+  python3 - "$src" >> "${FAKE_DOCKER_LOG:?}" << 'PYEND'
+import os
+import stat
+import sys
+
+d = sys.argv[1]
+print("dir %o" % stat.S_IMODE(os.stat(d).st_mode))
+for n in sorted(os.listdir(d)):
+    print("file %s %o" % (n, stat.S_IMODE(os.stat(os.path.join(d, n)).st_mode)))
+PYEND
+fi
+case " $* " in
+  *" broken.yaml "*) echo "  FAILED: parse error" >&2; exit 1 ;;
+  *" probes.yaml "*) echo "  SUCCESS: 12 rules found" ;;
+esac

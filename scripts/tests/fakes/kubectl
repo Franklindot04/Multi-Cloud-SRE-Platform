@@ -10,6 +10,11 @@
 #   no-secret           the Argo CD cluster Secret does not exist
 #   stuck-apps          Applications never go away
 #   stuck-shop          the shop namespace never empties
+#   chaos-load          the pod chaos-load is in the shop namespace until the pod and the policy of the load helper are deleted by label
+#   skip-annotated      a file: one Application name on each line carries argocd.argoproj.io/skip-reconcile=true; such an Application is not
+#                       deleted (the controller ignores it) until its annotation is removed
+#   chaos-leftovers     a deny policy of a chaos run is left in the shop namespace; chaos-leftovers-kyverno: a Deployment in kyverno;
+#                       chaos-node: a node is cordoned and labelled
 #   stuck-pods          a pod in the data namespace never goes away
 #   stuck-pv            a PersistentVolume never goes away
 #   mq-survives         the RabbitMQ StatefulSet outlives the RabbitmqCluster
@@ -176,6 +181,28 @@ case "$*" in
     mark labels-removed
     echo "secret/cluster-in-cluster unlabeled"
     ;;
+  "-n argocd get applications.argoproj.io -o jsonpath="*)
+    if [ -s "$state/skip-annotated" ]; then while IFS= read -r a; do printf '%s\ttrue\n' "$a"; done < "$state/skip-annotated"; fi
+    printf 'plain-app\t\n'
+    ;;
+  "-n argocd annotate application.argoproj.io/"*" argocd.argoproj.io/skip-reconcile-")
+    if [ -s "$state/skip-annotated" ]; then grep -Fxv -- "${4#application.argoproj.io/}" "$state/skip-annotated" > "$state/skip-annotated.new" || true; mv "$state/skip-annotated.new" "$state/skip-annotated"; fi
+    echo "$4 annotated"
+    ;;
+  "-n shop delete pod -l chaos.platform.example/managed-by=chaos-load --wait=false")
+    mark chaos-load-deleted
+    echo "pod \"chaos-load\" deleted"
+    ;;
+  "-n shop delete networkpolicy -l chaos.platform.example/managed-by=chaos-load")
+    echo "networkpolicy.networking.k8s.io \"chaos-load-to-gateway\" deleted"
+    ;;
+  "-n "*" get deployments,statefulsets,pods,networkpolicies -l chaos.platform.example/managed-by=chaos-run -o name")
+    if [ "$2" = shop ] && flag chaos-leftovers; then echo networkpolicy.networking.k8s.io/chaos-deny-20261103T101010Z-ab12; fi
+    if [ "$2" = kyverno ] && flag chaos-leftovers-kyverno; then echo deployment.apps/kyverno-admission-controller; fi
+    ;;
+  "get nodes -l chaos.platform.example/managed-by=chaos-run -o name")
+    if flag chaos-node; then echo node/ip-10-0-1-10.example.internal; fi
+    ;;
   "-n argocd get applications.argoproj.io -o name")
     if flag argocd-script; then
       for a in platform-root argocd cert-manager-in-cluster unmanaged; do
@@ -183,6 +210,7 @@ case "$*" in
       done
     elif flag labels-removed && ! flag stuck-apps; then
       echo "application.argoproj.io/cert-manager-in-cluster"
+      if [ -s "$state/skip-annotated" ]; then sed 's#^#application.argoproj.io/#' "$state/skip-annotated"; fi
     else
       printf '%s\n' application.argoproj.io/apps-orders-in-cluster application.argoproj.io/data-postgres-in-cluster \
         application.argoproj.io/observability-stack-in-cluster application.argoproj.io/policy-kyverno-in-cluster \
@@ -252,6 +280,7 @@ case "$*" in
     if ! flag labels-removed || flag stuck-shop; then
       printf '%s\n' deployment.apps/orders pod/orders-0
     fi
+    if flag chaos-load && ! flag chaos-load-deleted; then echo pod/chaos-load; fi
     ;;
   "get crd clusters.postgresql.cnpg.io -o name" | "get crd rabbitmqclusters.rabbitmq.com -o name" | "get crd databases.postgresql.cnpg.io -o name" | \
     "get crd applications.argoproj.io -o name" | "get crd applicationsets.argoproj.io -o name" | "get crd appprojects.argoproj.io -o name" | \

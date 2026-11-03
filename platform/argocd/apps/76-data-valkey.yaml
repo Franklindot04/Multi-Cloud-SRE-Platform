@@ -10,6 +10,10 @@ metadata:
 spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
+  # chaos/README.md, "Argo CD": a chaos experiment that scales this workload to zero pauses the Application with this annotation, and the
+  # ApplicationSet would remove it again (it overwrites what is not in the template) unless it is listed here. It is never set in Git.
+  preservedFields:
+    annotations: [argocd.argoproj.io/skip-reconcile]
   generators:
     - clusters:
         selector:

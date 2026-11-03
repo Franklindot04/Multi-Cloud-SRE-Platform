@@ -5,7 +5,7 @@
 # scripts/verify-image.sh (against a fake cosign) and scripts/seed-secrets.sh (against a fake aws that keeps a small Parameter Store);
 # the fakes are in scripts/tests/fakes. It also tests the
 # --enable-observability flag of scripts/bootstrap-argocd.sh (dry run only) and the observability checks of
-# scripts/chart-contract-check.py.
+# scripts/chart-contract-check.py, and runs the chaos framework tests (scripts/chaos-tests.sh).
 # Plain bash (3.2 compatible), no framework, no network. Fixtures are in scripts/tests/fixtures.
 #
 #   scripts/test-scripts.sh
@@ -170,6 +170,7 @@ run_teardown() {
 }
 
 line_of() { grep -n -m1 -e "$1" "$state/kubectl.log" | cut -d: -f1; }
+out_line() { grep -n -m1 -e "$1" "$work/tdout" | cut -d: -f1; }
 
 new_cluster
 touch "$state/mq-survives"
@@ -189,10 +190,10 @@ check "kubectl get pv is checked after the claims are deleted" test "$(line_of '
 check "the AWS checks run after kubectl get pv: volumes, load balancers, security groups" test "$(sed -n 's/^--region eu-north-1 \([a-z0-9]*\) \([a-z-]*\).*/\2/p' "$state/aws.log" | tr '\n' ' ')" = "describe-volumes get-resources describe-security-groups "
 check "the volume query uses the pvc name tag" grep -q 'Name=tag-key,Values=kubernetes.io/created-for/pvc/name' "$state/aws.log"
 check "the load balancer query uses the controller tag" grep -q 'Key=elbv2.k8s.aws/cluster ' "$state/aws.log"
-check "every deletion names its namespace" test "$(grep ' delete ' "$state/kubectl.log" | grep -vc -e '-n data delete')" = 0
+check "every deletion names its namespace, and the only ones outside data are the load helper's, by label, in shop" test "$(grep ' delete ' "$state/kubectl.log" | grep -vc -e '-n data delete' -e '-n shop delete pod -l chaos.platform.example/managed-by=chaos-load ' -e '-n shop delete networkpolicy -l chaos.platform.example/managed-by=chaos-load$')" = 0
 check "no call uses --force" test "$(cat "$state/kubectl.log" "$state/aws.log" | grep -c -e '--force')" = 0
-check "it changes nothing outside argocd, shop, data and observability, and only lists operator pods elsewhere" test "$(grep -e '-n ' "$state/kubectl.log" | grep -v -e '-n argocd' -e '-n shop' -e '-n data' -e '-n observability' | grep -vc -e '^-n cnpg-system get pods -l ' -e '^-n rabbitmq-system get pods -l ')" = 0
-check "without an observability namespace nothing is read or deleted in it" test "$(grep -c -e '-n observability' "$state/kubectl.log")" = 0
+check "it changes nothing outside argocd, shop, data and observability, and only lists operator pods elsewhere" test "$(grep -e '-n ' "$state/kubectl.log" | grep -v -e '-n argocd' -e '-n shop' -e '-n data' -e '-n observability' | grep -vc -e '^-n cnpg-system get pods -l ' -e '^-n rabbitmq-system get pods -l ' -e ' get deployments,statefulsets,pods,networkpolicies -l chaos.platform.example/managed-by=chaos-run -o name$')" = 0
+check "without an observability namespace nothing is read or deleted in it, except the look for chaos leftovers" test "$(grep -v 'managed-by=chaos-run' "$state/kubectl.log" | grep -c -e '-n observability')" = 0
 check "and the output says the metrics foundation was not deployed" grep -q 'no observability namespace: the metrics foundation was not deployed here' "$work/tdout"
 check "the Database objects are deleted before the Cluster" test "$(line_of 'delete database.postgresql.cnpg.io/platform-pg-payments')" -lt "$(line_of 'delete cluster.postgresql')"
 check "the output says it finished" grep -q 'Teardown preparation finished' "$work/tdout"
@@ -278,7 +279,7 @@ touch "$state/stuck-shop"
 run_teardown --context test-cluster --region eu-north-1 --timeout 2
 check "a step that times out exits 1" test "$rc" -eq 1
 check "the timeout message names the step and what remains" grep -q 'timed out after 2s waiting until the shop namespace has no workloads' "$work/tdout"
-check "nothing is deleted after a timeout" test "$(grep -c ' delete ' "$state/kubectl.log")" = 0
+check "nothing is deleted before or after the wait that timed out, except the load helper's pod and policy at its start" test "$(grep ' delete ' "$state/kubectl.log" | grep -vc 'chaos-load')" = 0
 check "no AWS call is made after a timeout" test ! -e "$state/aws.log"
 
 new_cluster
@@ -299,7 +300,7 @@ new_cluster
 touch "$state/obs-namespace" "$state/mq-survives"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "with the observability namespace and no claims the run exits 0" test "$rc" -eq 0
-check "the observability pods are checked after the shop namespace and before the Databases" test "$(line_of '-n observability get pods')" -gt "$(line_of '-n shop get')" -a "$(line_of '-n observability get pods')" -lt "$(line_of 'delete database.postgresql.cnpg.io/platform-pg-orders')"
+check "the observability pods are checked after the shop namespace and before the Databases" test "$(line_of '-n observability get pods')" -gt "$(line_of '-n shop get deployments,statefulsets,jobs')" -a "$(line_of '-n observability get pods')" -lt "$(line_of 'delete database.postgresql.cnpg.io/platform-pg-orders')"
 check "the output says there are no claims in it" grep -q 'no claims in the observability namespace' "$work/tdout"
 check "nothing is deleted in the observability namespace" test "$(grep -c -e '-n observability delete' "$state/kubectl.log")" = 0
 check "no observability resource is patched or force-deleted" test "$(grep -e '-n observability' "$state/kubectl.log" | grep -c -e ' patch ' -e '--force' -e 'grace-period')" = 0
@@ -423,7 +424,7 @@ check "every kind of Kyverno policy is deleted: ClusterPolicy, Policy, Validatin
 check "the two Kyverno webhook configurations are deleted by name" test "$(grep -c -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-resource-validating-webhook-cfg ' -e 'delete mutatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-policy-mutating-webhook-cfg ' "$state/kubectl.log")" = 2
 check "no other webhook configuration is deleted" test "$(grep ' delete ' "$state/kubectl.log" | grep -c -e 'cert-manager-webhook' -e 'aws-load-balancer-webhook')" = 0
 check "the policies go before the webhook configurations" test "$(line_of 'delete policies.kyverno.io')" -lt "$(line_of 'delete validatingwebhookconfiguration')"
-check "Kyverno is dealt with after the labels and before the shop, data and observability namespaces are read" test "$(line_of 'label secret')" -lt "$(line_of 'delete clusterpolicies.kyverno.io')" -a "$(line_of 'delete mutatingwebhookconfiguration')" -lt "$(line_of '-n shop get')"
+check "Kyverno is dealt with after the labels and before the shop, data and observability namespaces are read" test "$(line_of 'label secret')" -lt "$(line_of 'delete clusterpolicies.kyverno.io')" -a "$(line_of 'delete mutatingwebhookconfiguration')" -lt "$(line_of '-n shop get deployments,statefulsets,jobs')"
 check "the output waits for the webhook configurations to be gone" grep -q 'ok: no webhook configuration whose name starts with kyverno remains' "$work/tdout"
 check "the Applications of the policy engine and of the External Secrets Operator are waited for" grep -q 'no apps-\*, data-\*, observability-\*, policy-\*, eso-\* or delivery-\* Application remains' "$work/tdout"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
@@ -443,7 +444,7 @@ check "the ExternalSecrets go before the stores" test "$(line_of 'delete externa
 check "the two webhook configurations are deleted by name" test "$(grep -c -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/secretstore-validate ' -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/externalsecret-validate ' "$state/kubectl.log")" = 2
 check "no other webhook configuration is deleted by that step" test "$(grep ' delete ' "$state/kubectl.log" | grep -c 'cert-manager-webhook')" = 0
 check "the objects go before the webhook configurations" test "$(line_of 'delete clustersecretstores.external-secrets.io')" -lt "$(line_of 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/secretstore-validate')"
-check "and everything goes before the shop namespace is waited for" test "$(line_of 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/externalsecret-validate')" -lt "$(line_of '-n shop get')"
+check "and everything goes before the shop namespace is waited for" test "$(line_of 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/externalsecret-validate')" -lt "$(line_of '-n shop get deployments,statefulsets,jobs')"
 new_cluster
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "without the CRDs the step finds nothing to delete and the run exits 0" test "$rc" -eq 0 && grep -q 'the externalsecrets.external-secrets.io CRD is not installed: nothing to delete' "$work/tdout"
@@ -478,6 +479,56 @@ check "a dry run with Kyverno exits 0 and deletes nothing" test "$rc" -eq 0 -a "
 check "it prints the Kyverno deletions it would run" grep -q '+ kubectl --context test-cluster delete validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-resource-validating-webhook-cfg --wait=true' "$work/tdout"
 check "and the policy deletions" grep -q '+ kubectl --context test-cluster delete clusterpolicies.kyverno.io --all --wait=true' "$work/tdout"
 check "and that it would wait for the webhook configurations" grep -q 'dry run: would wait until no webhook configuration whose name starts with kyverno remains' "$work/tdout"
+
+echo "teardown-prep.sh: the chaos load helper, chaos leftovers and paused Applications"
+
+new_cluster
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "a clean cluster: no chaos warning" test "$(grep -c 'earlier chaos run left something' "$work/tdout")" = 0
+check "a clean cluster: no Application is annotated, because none carries the annotation" test "$(grep -c ' annotate ' "$state/kubectl.log")" = 0
+check "the pod and the policy of the load helper are deleted by label in shop before the wait for the namespace" test "$(line_of 'delete pod -l chaos.platform.example/managed-by=chaos-load')" -lt "$(line_of 'delete networkpolicy -l chaos.platform.example/managed-by=chaos-load')" -a "$(line_of 'delete networkpolicy -l chaos.platform.example/managed-by=chaos-load')" -lt "$(line_of '-n shop get deployments,statefulsets,jobs')"
+check "they are the only deletions by label" test "$(grep ' delete ' "$state/kubectl.log" | grep -c ' -l ')" = 2
+check "the step count is still 16" grep -q '^\[16/16\]' "$work/tdout"
+
+new_cluster
+touch "$state/chaos-load"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "a load pod in shop does not block the teardown: it exits 0" test "$rc" -eq 0
+check "the shop namespace wait passes after the pod is deleted" grep -q 'ok: the shop namespace has no workloads' "$work/tdout"
+
+new_cluster
+touch "$state/chaos-load" "$state/stuck-shop"
+run_teardown --context test-cluster --region eu-north-1 --timeout 2
+check "a load pod is not the only thing that can keep the shop namespace full: other workloads still time the wait out" test "$rc" -eq 1
+check "and the load helper's objects were deleted first anyway" test "$(line_of 'delete pod -l chaos.platform.example/managed-by=chaos-load')" -lt "$(line_of '-n shop get deployments,statefulsets,jobs')"
+
+new_cluster
+touch "$state/chaos-leftovers" "$state/chaos-leftovers-kyverno" "$state/chaos-node"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "chaos leftovers: the script still exits 0, because the warning does not fail it" test "$rc" -eq 0
+check "the warning says what was found, by label, in each namespace and on the node" test "$(grep -c -e 'warning: an earlier chaos run left something behind (label chaos.platform.example/managed-by=chaos-run)' -e 'shop: networkpolicy.networking.k8s.io/chaos-deny-' -e 'kyverno: deployment.apps/kyverno-admission-controller' -e 'node/ip-10-0-1-10' "$work/tdout")" = 4
+check "and names the command, with the namespaces" grep -q 'Run: scripts/chaos-run.sh --cleanup --namespace shop --namespace kyverno --execute' "$work/tdout"
+check "the warning comes before step 1" test "$(out_line 'earlier chaos run left something')" -lt "$(out_line '^\[1/16\]')"
+check "nothing it found is deleted, patched, scaled or uncordoned by the teardown" test "$(grep -e ' delete ' -e ' patch ' -e ' scale ' -e uncordon "$state/kubectl.log" | grep -c -e 'chaos-deny' -e 'kyverno-admission' -e 'ip-10-0-1-10')" = 0
+
+new_cluster
+printf '%s\n' data-valkey-in-cluster eso-operator-in-cluster > "$state/skip-annotated"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5
+check "paused Applications: the teardown exits 0, which it could not if the controller ignored them (the fake keeps them until the annotation is gone)" test "$rc" -eq 0
+check "the warning says why, and names the annotation" grep -q 'left Applications paused with the annotation argocd.argoproj.io/skip-reconcile' "$work/tdout"
+check "the annotation is removed from each of the two Applications, by name" test "$(grep -c -e '-n argocd annotate application.argoproj.io/data-valkey-in-cluster argocd.argoproj.io/skip-reconcile-$' -e '-n argocd annotate application.argoproj.io/eso-operator-in-cluster argocd.argoproj.io/skip-reconcile-$' "$state/kubectl.log")" = 2
+check "and from no other: the Application without the annotation is left alone" test "$(grep -c ' annotate ' "$state/kubectl.log")" = 2
+check "the annotations are removed before the wait for the Applications" test "$(line_of ' annotate ')" -lt "$(line_of 'get applications.argoproj.io -o name')"
+
+new_cluster
+printf '%s\n' data-valkey-in-cluster > "$state/skip-annotated"
+touch "$state/chaos-load" "$state/chaos-leftovers"
+run_teardown --context test-cluster --region eu-north-1 --timeout 5 --dry-run
+check "a dry run exits 0" test "$rc" -eq 0
+check "it prints the annotation removal, and does not run it" grep -q -A1 '^  + kubectl --context test-cluster -n argocd annotate application.argoproj.io/data-valkey-in-cluster argocd.argoproj.io/skip-reconcile-$' "$work/tdout"
+check "it prints the deletion of the load helper's pod and policy, and does not run them" test "$(grep -c -e '^  + kubectl --context test-cluster -n shop delete pod -l chaos.platform.example/managed-by=chaos-load --wait=false$' -e '^  + kubectl --context test-cluster -n shop delete networkpolicy -l chaos.platform.example/managed-by=chaos-load$' "$work/tdout")" = 2
+check "it still warns about the chaos leftovers" grep -q 'earlier chaos run left something behind' "$work/tdout"
+check "and nothing was annotated or deleted" test "$(grep -c -e ' annotate ' -e ' delete ' -e ' label ' "$state/kubectl.log")" = 0
 
 echo "teardown-argocd.sh"
 
@@ -520,6 +571,7 @@ check "with the controller running no finalizer is patched" test "$(grep -c ' pa
 check "the CRDs are not deleted" test "$(grep -c 'delete crd' "$state/kubectl.log")" = 0
 check "waiting is bounded: every wait line shows its limit" test "$(grep 'waiting (' "$work/tdout" | grep -vc 's of 5s)')" = 0
 check "the commands are echoed with a plus sign" grep -q '^  + kubectl --context test-cluster delete namespace data --wait=false$' "$work/tdout"
+check "no Application carries the skip-reconcile annotation: the output says so and nothing is annotated" test "$(grep -c 'no Application carries the annotation argocd.argoproj.io/skip-reconcile' "$work/tdout")" = 1 -a "$(grep -c ' annotate ' "$state/kubectl.log")" = 0
 check "the output ends with the next step" grep -q 'Next: terraform destroy' "$work/tdout"
 check "no call uses --force or a grace period" test "$(cat "$state/kubectl.log" "$state/helm.log" | grep -c -e '--force' -e 'grace-period')" = 0
 
@@ -533,6 +585,23 @@ check "a repeat run finds no storage class" grep -q 'no storage class platform-d
 check "a repeat run tolerates the missing release" grep -q 'the release argocd is not installed: nothing to uninstall' "$work/tdout"
 
 # Argo CD removed itself: no controller, and the Applications and AppProjects are stuck on its finalizer.
+
+new_argo_cluster
+printf '%s\n' data-valkey-in-cluster > "$state/skip-annotated"
+run_argocd --context test-cluster --timeout 5
+check "a paused Application: the script exits 0" test "$rc" -eq 0
+check "the annotation is removed from it, by name" test "$(grep -c -e '-n argocd annotate application.argoproj.io/data-valkey-in-cluster argocd.argoproj.io/skip-reconcile-$' "$state/kubectl.log")" = 1
+check "and only from it" test "$(grep -c ' annotate ' "$state/kubectl.log")" = 1
+check "the annotation is removed before platform-root is deleted" test "$(line_of ' annotate ')" -lt "$(line_of 'delete application.argoproj.io/platform-root')"
+check "the output says why" grep -q 'carry argocd.argoproj.io/skip-reconcile; the controller would not process their deletion until it is gone' "$work/tdout"
+check "the step count is still 11" grep -q '^\[11/11\]' "$work/tdout"
+
+new_argo_cluster
+printf '%s\n' data-valkey-in-cluster eso-operator-in-cluster > "$state/skip-annotated"
+run_argocd --context test-cluster --timeout 5 --dry-run
+check "a dry run with paused Applications exits 0" test "$rc" -eq 0
+check "it prints the removal for each, and does not run it" test "$(grep -c -e '^  + kubectl --context test-cluster -n argocd annotate application.argoproj.io/data-valkey-in-cluster argocd.argoproj.io/skip-reconcile-$' -e '^  + kubectl --context test-cluster -n argocd annotate application.argoproj.io/eso-operator-in-cluster argocd.argoproj.io/skip-reconcile-$' "$work/tdout")" = 2 -a "$(grep -c -e ' annotate ' -e ' delete ' "$state/kubectl.log")" = 0
+
 new_argo_cluster
 rm "$state/argo-controller-up"
 touch "$state/stuck-argo-apps" "$state/stuck-projects"
@@ -4088,6 +4157,16 @@ SECPY
     contract "$sc/default.yaml" hooks "$chart"
   done
   check "the default mode of each chart still renders ordinary resources next to its hooks" test "$rc" -eq 0
+fi
+
+echo "chaos framework (scripts/chaos-tests.sh)"
+
+chaos_log="$work/chaos-tests.log"
+if ./scripts/chaos-tests.sh > "$chaos_log" 2>&1; then
+  ok "the chaos framework tests pass ($(tail -1 "$chaos_log"))"
+else
+  bad "the chaos framework tests fail:"
+  grep -E 'FAIL' "$chaos_log" | head -10 >&2 || true
 fi
 
 echo

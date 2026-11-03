@@ -1,0 +1,88 @@
+---
+# Scale Valkey to zero.
+#
+# Claim: docs/adr/0015-service-data-integration.md ("Readiness": Valkey is degraded, not required, when it is down; orders reads are
+# cache-aside
+# with a fall back to PostgreSQL) and docs/adr/0014-data-layer.md. The cache is a Deployment of one pod (platform-valkey in data,
+# with a kept
+# volume claim). With it gone, orders still answers, from the database: the availability holds and the latency may rise.
+#
+# What a failure would mean: Valkey is on the request path after all. Orders waits for a connection that never comes (a client
+# timeout that is
+# longer than the gateway's), or /readyz of orders fails, which would take the gateway out of the Service.
+#
+# Argo CD puts a replica count back within seconds when the Application self-heals, so the Application data-valkey-* has to be
+# paused first
+# (chaos/README.md, "Argo CD").
+name: valkey-down
+hypothesis: >-
+  With Valkey scaled to zero orders falls back to PostgreSQL, so the gateway availability and latency stay inside the SLO
+  objectives.
+relatesTo:
+  - type: slo
+    name: gateway-availability
+  - type: slo
+    name: gateway-latency
+blastRadius:
+  namespaces: [data]
+  selectors:
+    - app.kubernetes.io/name=valkey
+  workloads:
+    - kind: Deployment
+      name: platform-valkey
+  maxPods: 1
+  maxNodes: 0
+preconditions:
+  clusterNamePattern: "^[a-z0-9-]+-dev$"
+  minReadyNodes: 3
+  minReplicas:
+    - namespace: data
+      kind: Deployment
+      name: platform-valkey
+      count: 1
+  noPageAlerts: true
+steadyState:
+  # The load helper has to be running (scripts/chaos-load.sh start): without requests there is no availability to measure.
+  - name: load-running
+    description: The load helper is sending requests to the gateway
+    query: >-
+      sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[1m]))
+    comparator: ">="
+    threshold: 1
+    noData: fail
+  # The gateway-availability SLO (platform/observability/monitors, objective 0.995): the share of requests that are not server errors.
+  - name: gateway-availability
+    description: Share of gateway requests that are not server errors
+    query: >-
+      1 - (sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status=~"5.."}[2m])) or vector(0))
+      / sum(rate(http_requests_total{service="gateway", route!~"/healthz|/readyz|/metrics|/version", status!~"4.."}[2m]))
+    comparator: ">="
+    threshold: 0.995
+    noData: fail
+  # The gateway-latency SLO (objective 0.95): the share of requests that took 0.5 s or less.
+  - name: gateway-fast
+    description: Share of gateway requests answered within 0.5 s
+    query: >-
+      sum(rate(http_request_duration_seconds_bucket{service="gateway", route!~"/healthz|/readyz|/metrics|/version", le="0.5"}[2m]))
+      / sum(rate(http_request_duration_seconds_count{service="gateway", route!~"/healthz|/readyz|/metrics|/version"}[2m]))
+    comparator: ">="
+    threshold: 0.95
+    noData: fail
+injection:
+  action: scale-to-zero
+  target:
+    namespace: data
+    kind: Deployment
+    name: platform-valkey
+duration: 300
+rollback:
+  action: restore-replicas
+  timeoutSeconds: 300
+abort:
+  probeFailureGraceSeconds: 60
+  onPageAlert: true
+expectedObservations: []
+mustNotFire:
+  - ServiceTargetDown
+  - SLOBurnRatePageFast
+  - SLOBurnRatePageSlow

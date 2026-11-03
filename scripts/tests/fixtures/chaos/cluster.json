@@ -1,0 +1,35 @@
+{
+  "context": "multi-cloud-sre-dev",
+  "readyDelay": 1,
+  "nodes": [
+    {"name": "node-a", "ready": true, "unschedulable": false, "labels": {}},
+    {"name": "node-b", "ready": true, "unschedulable": false, "labels": {}},
+    {"name": "node-c", "ready": true, "unschedulable": false, "labels": {}}
+  ],
+  "deployments": [
+    {"name": "gateway", "ns": "shop", "replicas": 2, "kind": "Deployment",
+     "selector": {"app.kubernetes.io/name": "gateway", "app.kubernetes.io/instance": "gateway"},
+     "podLabels": {"app.kubernetes.io/name": "gateway", "app.kubernetes.io/instance": "gateway", "app.kubernetes.io/part-of": "sre-sample"},
+     "labels": {"app.kubernetes.io/name": "gateway"}, "env": {"LOG_LEVEL": "info"}, "annotations": {}},
+    {"name": "orders", "ns": "shop", "replicas": 2, "kind": "Deployment",
+     "selector": {"app.kubernetes.io/name": "orders", "app.kubernetes.io/instance": "orders"},
+     "podLabels": {"app.kubernetes.io/name": "orders", "app.kubernetes.io/instance": "orders", "app.kubernetes.io/part-of": "sre-sample"},
+     "labels": {"app.kubernetes.io/name": "orders"}, "env": {}, "annotations": {}},
+    {"name": "notifier", "ns": "shop", "replicas": 1, "kind": "Deployment",
+     "selector": {"app.kubernetes.io/name": "notifier", "app.kubernetes.io/instance": "notifier"},
+     "podLabels": {"app.kubernetes.io/name": "notifier", "app.kubernetes.io/instance": "notifier", "app.kubernetes.io/part-of": "sre-sample"},
+     "labels": {"app.kubernetes.io/name": "notifier"}, "env": {}, "annotations": {}}
+  ],
+  "hpas": [
+    {"name": "gateway", "ns": "shop", "target": "gateway"}
+  ],
+  "daemonPods": [
+    {"name": "aws-node-a", "ns": "kube-system", "node": "node-a"},
+    {"name": "aws-node-b", "ns": "kube-system", "node": "node-b"},
+    {"name": "aws-node-c", "ns": "kube-system", "node": "node-c"}
+  ],
+  "networkpolicies": [
+    {"name": "gateway-default-deny", "ns": "shop", "labels": {"app.kubernetes.io/name": "gateway"},
+     "spec": {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "gateway", "app.kubernetes.io/instance": "gateway"}}, "policyTypes": ["Ingress", "Egress"]}}
+  ]
+}

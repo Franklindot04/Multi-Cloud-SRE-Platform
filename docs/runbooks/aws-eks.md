@@ -126,7 +126,7 @@ The checks to run afterwards, starting with DNS and then the API server, and the
    scripts/teardown-prep.sh --context <EKS_CONTEXT> --region <REGION> --cluster-name <CLUSTER_NAME>
    ```
 
-   What it does, and the commands to run by hand, are in the [data layer teardown](data-layer.md#teardown): remove the cluster Secret labels (`kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-`, deleting the keys, not setting them to `false`), delete the Kyverno policies and webhook configurations if the policy engine was deployed, wait for the `shop` namespace to empty, delete the `Cluster` and the `RabbitmqCluster` and then the RabbitMQ StatefulSet if its pod survives, delete the remaining claims including `platform-valkey`, confirm `kubectl get pv` is empty, and confirm with the AWS CLI that only the node root volumes remain. Then check for load balancers and for security groups created by the load balancer controller:
+   What it does, and the commands to run by hand, are in the [data layer teardown](data-layer.md#teardown): remove the cluster Secret labels (`kubectl -n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy-`, deleting the keys, not setting them to `false`), delete the Kyverno policies and webhook configurations if the policy engine was deployed, remove the `argocd.argoproj.io/skip-reconcile` annotation from any Application that carries it (a chaos run pauses Applications with it, and Argo CD does not process the deletion of a paused one), delete the pod and the policy of the chaos load helper in `shop`, wait for the `shop` namespace to empty (it warns first about anything `scripts/chaos-run.sh --cleanup` would find), delete the `Cluster` and the `RabbitmqCluster` and then the RabbitMQ StatefulSet if its pod survives, delete the remaining claims including `platform-valkey`, confirm `kubectl get pv` is empty, and confirm with the AWS CLI that only the node root volumes remain. Then check for load balancers and for security groups created by the load balancer controller:
 
    ```bash
    aws resourcegroupstaggingapi get-resources --region <REGION> --resource-type-filters elasticloadbalancing:loadbalancer \
@@ -142,7 +142,7 @@ The checks to run afterwards, starting with DNS and then the API server, and the
    scripts/teardown-argocd.sh --context <EKS_CONTEXT>
    ```
 
-   The order is `scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`. Why the second script exists is in the [Argo CD teardown](argocd.md#teardown). Do not rely on `kubectl delete pvc --all -A` alone: a claim stays `Bound` while a pod still uses it.
+   The order is `scripts/teardown-prep.sh`, then `scripts/teardown-argocd.sh`, then `terraform destroy`. After a chaos game day, stopping the load and running `scripts/chaos-run.sh --cleanup` first is still the right order ([chaos runbook](chaos.md#teardown)); the scripts also remove the annotation from the Applications again, so that a deletion cannot be left waiting. Why the second script exists is in the [Argo CD teardown](argocd.md#teardown). Do not rely on `kubectl delete pvc --all -A` alone: a claim stays `Bound` while a pod still uses it.
 
 2. Destroy the stack:
 

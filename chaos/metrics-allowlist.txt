@@ -1,0 +1,8 @@
+# Metric names that a chaos probe may use and that appear in none of the other sources scripts/chaos-lint.py reads: the rules of the monitors
+# chart (their expressions and recording rules), platform/observability/dashboards/confirmed-upstream.txt, and the dashboards. One name on a
+# line, and a comment above it that says where the name was confirmed. A name that is not here or there fails the lint.
+#
+# The External Secrets Operator exports a gauge for each ExternalSecret. The name is in the project's metrics page (docs/api/metrics.md at
+# v2.14.0, the version the platform deploys, read on 2026-11-03). The page does not list the labels, so a probe may count series and may not
+# select on a label. Not seen on a cluster.
+externalsecret_status_condition

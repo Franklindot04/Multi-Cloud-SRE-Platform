@@ -1,0 +1,480 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "chaos/schema/experiment.schema.json",
+  "title": "Chaos experiment",
+  "description": "One chaos experiment (chaos/README.md). Checked by scripts/chaos-run.py with the small validator in that script, which understands exactly the keywords used here: type, enum, const, required, properties, additionalProperties, items, minItems, maxItems, minimum, maximum, minLength, maxLength, pattern, oneOf (chosen by the const of the property named in x-discriminator) and local $ref. The rules that cross fields (the rollback must undo the injection, the injection must stay inside the blast radius) are in the runner, not here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "hypothesis",
+    "relatesTo",
+    "blastRadius",
+    "preconditions",
+    "steadyState",
+    "injection",
+    "duration",
+    "rollback",
+    "abort",
+    "expectedObservations"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,62}$"
+    },
+    "example": {
+      "type": "boolean"
+    },
+    "hypothesis": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 200,
+      "pattern": "^[^\\n]+$"
+    },
+    "relatesTo": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "name"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "slo",
+              "alert"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9-]*$"
+          }
+        }
+      }
+    },
+    "blastRadius": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespaces",
+        "selectors",
+        "workloads",
+        "maxPods",
+        "maxNodes"
+      ],
+      "properties": {
+        "namespaces": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/dnsLabel"
+          }
+        },
+        "selectors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/selector"
+          }
+        },
+        "workloads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "name"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "Deployment",
+                  "StatefulSet"
+                ]
+              },
+              "name": {
+                "$ref": "#/$defs/dnsLabel"
+              }
+            }
+          }
+        },
+        "maxPods": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "maxNodes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "anyPodInNamespaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dnsLabel"
+          }
+        }
+      }
+    },
+    "preconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clusterNamePattern",
+        "minReadyNodes",
+        "noPageAlerts"
+      ],
+      "properties": {
+        "clusterNamePattern": {
+          "type": "string",
+          "minLength": 3,
+          "pattern": "dev"
+        },
+        "minReadyNodes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minReplicas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "namespace",
+              "kind",
+              "name",
+              "count"
+            ],
+            "properties": {
+              "namespace": {
+                "$ref": "#/$defs/dnsLabel"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "Deployment",
+                  "StatefulSet",
+                  "Rollout"
+                ]
+              },
+              "name": {
+                "$ref": "#/$defs/dnsLabel"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "noPageAlerts": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "steadyState": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "query",
+          "comparator",
+          "threshold"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,62}$"
+          },
+          "description": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string",
+            "minLength": 3
+          },
+          "comparator": {
+            "type": "string",
+            "enum": [
+              "<",
+              "<=",
+              ">",
+              ">=",
+              "==",
+              "!="
+            ]
+          },
+          "threshold": {
+            "type": "number"
+          },
+          "noData": {
+            "type": "string",
+            "enum": [
+              "fail",
+              "pass"
+            ]
+          },
+          "phases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "before",
+                "during",
+                "after"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "injection": {
+      "x-discriminator": "action",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "target",
+            "count"
+          ],
+          "properties": {
+            "action": {
+              "const": "delete-pod"
+            },
+            "target": {
+              "$ref": "#/$defs/podTarget"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "readySelector": {
+              "$ref": "#/$defs/selector"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "target",
+            "count",
+            "timeoutSeconds"
+          ],
+          "properties": {
+            "action": {
+              "const": "drain-node"
+            },
+            "target": {
+              "$ref": "#/$defs/podTarget"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2
+            },
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 900
+            },
+            "avoid": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/podTarget"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "target"
+          ],
+          "properties": {
+            "action": {
+              "const": "scale-to-zero"
+            },
+            "target": {
+              "$ref": "#/$defs/workloadTarget"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "target",
+            "count",
+            "direction"
+          ],
+          "properties": {
+            "action": {
+              "const": "apply-network-deny"
+            },
+            "target": {
+              "$ref": "#/$defs/podTarget"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "ingress",
+                "egress",
+                "both"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "duration": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1800
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "timeoutSeconds"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "wait-for-ready",
+            "uncordon",
+            "restore-replicas",
+            "remove-network-deny"
+          ]
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1800
+        }
+      }
+    },
+    "abort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probeFailureGraceSeconds",
+        "onPageAlert"
+      ],
+      "properties": {
+        "probeFailureGraceSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600
+        },
+        "onPageAlert": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "expectedObservations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "alert"
+        ],
+        "properties": {
+          "alert": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9]*$"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "mustNotFire": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z][A-Za-z0-9]*$"
+      }
+    }
+  },
+  "$defs": {
+    "dnsLabel": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+      "maxLength": 63
+    },
+    "selector": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9./_-]+=[A-Za-z0-9._-]+(,[A-Za-z0-9./_-]+=[A-Za-z0-9._-]+)*$"
+    },
+    "podTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "selector"
+      ],
+      "properties": {
+        "namespace": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "selector": {
+          "$ref": "#/$defs/selector"
+        }
+      }
+    },
+    "workloadTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "namespace": {
+          "$ref": "#/$defs/dnsLabel"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "Deployment",
+            "StatefulSet"
+          ]
+        },
+        "name": {
+          "$ref": "#/$defs/dnsLabel"
+        }
+      }
+    }
+  }
+}
