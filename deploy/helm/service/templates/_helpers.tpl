@@ -128,3 +128,43 @@ Secret files become NAME=/var/run/secrets/<secret>/<key>.
       {{- end }}
 {{- end }}
 {{- end -}}
+
+{{- /*
+The label that tells the pods of one revision from another: the Deployment controller sets pod-template-hash, the Rollout controller
+sets rollouts-pod-template-hash. The topology spread uses it so the pods of the stable and the canary revision are spread on their own.
+*/ -}}
+{{- define "service.podHashLabel" -}}
+{{- ternary "rollouts-pod-template-hash" "pod-template-hash" (eq (include "service.rolloutEnabled" .) "true") -}}
+{{- end -}}
+
+{{- /* "true" when the workload is rendered as an Argo Rollout and not as a Deployment. */ -}}
+{{- define "service.rolloutEnabled" -}}
+{{- if .Values.rollout.enabled -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{- /* Refuses rollout values that would render something that cannot work or that does not mean what it says. */ -}}
+{{- define "service.validateRollout" -}}
+{{- if .Values.rollout.enabled -}}
+{{- if not .Values.rollout.steps -}}
+{{- fail "rollout.steps must list at least one step: a canary without steps is promoted at once" -}}
+{{- end -}}
+{{- if lt (int .Values.rollout.progressDeadlineSeconds) 1 -}}
+{{- fail "rollout.progressDeadlineSeconds must be set: a rollout without a deadline can hang for ever" -}}
+{{- end -}}
+{{- if and (not (kindIs "string" .Values.rollout.maxUnavailable)) (gt (float64 .Values.rollout.maxUnavailable) (float64 .Values.podDisruptionBudget.maxUnavailable)) -}}
+{{- fail "rollout.maxUnavailable must not be above podDisruptionBudget.maxUnavailable" -}}
+{{- end -}}
+{{- if .Values.rollout.analysis.enabled -}}
+{{- $a := .Values.rollout.analysis -}}
+{{- if or (le (float64 $a.successRatio) 0.0) (gt (float64 $a.successRatio) 1.0) (le (float64 $a.fastRatio) 0.0) (gt (float64 $a.fastRatio) 1.0) -}}
+{{- fail "rollout.analysis.successRatio and fastRatio must be above 0 and at most 1" -}}
+{{- end -}}
+{{- if not $a.service -}}
+{{- fail "rollout.analysis.service must name the service label of the series, as the SLO rules do (the values file of the service sets it)" -}}
+{{- end -}}
+{{- if lt (int $a.minRequests) 1 -}}
+{{- fail "rollout.analysis.minRequests must be at least 1: with no minimum an idle canary would be measured on nothing" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

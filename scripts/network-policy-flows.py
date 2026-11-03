@@ -50,7 +50,7 @@ import yaml
 # A bare "=" in a CRD (an enum value) is the YAML 1.1 "value" tag, which PyYAML cannot construct. Read it as text.
 yaml.SafeLoader.add_constructor("tag:yaml.org,2002:value", lambda loader, node: loader.construct_scalar(node))
 
-WORKLOADS = ("Deployment", "StatefulSet", "DaemonSet", "Job")
+WORKLOADS = ("Deployment", "Rollout", "StatefulSet", "DaemonSet", "Job")
 METADATA_NAME = "kubernetes.io/metadata.name"
 
 

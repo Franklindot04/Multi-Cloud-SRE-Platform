@@ -1,0 +1,3 @@
+---
+# Nothing in this chart comes from the cluster Secret; the file exists so that every chart of platform/delivery is rendered the same way.
+{}

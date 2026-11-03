@@ -175,7 +175,7 @@ new_cluster
 touch "$state/mq-survives"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "the happy path exits 0" test "$rc" -eq 0
-check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets-$' "$state/kubectl.log"
+check "it removes the label keys, not sets them to false" grep -q 'label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets- platform.example/progressive-delivery-$' "$state/kubectl.log"
 check "labels come before the Cluster deletion" test "$(line_of 'label secret')" -lt "$(line_of 'delete cluster.postgresql')"
 check "the Cluster is deleted before the RabbitmqCluster" test "$(line_of 'delete cluster.postgresql')" -lt "$(line_of 'delete rabbitmqcluster')"
 check "the surviving StatefulSet is deleted after the RabbitmqCluster" test "$(line_of 'delete rabbitmqcluster')" -lt "$(line_of 'delete statefulset')"
@@ -292,6 +292,8 @@ touch "$state/stuck-apps"
 run_teardown --context test-cluster --region eu-north-1 --timeout 2
 check "an observability Application that does not go away stops the script" test "$rc" -eq 1
 check "and is named" grep -q 'observability-stack-in-cluster' "$work/tdout"
+check "the Argo Rollouts Application is waited for in the same list" grep -q 'delivery-argo-rollouts-in-cluster' "$work/tdout"
+check "and the wait names the delivery Applications" grep -q 'delivery-\*' "$work/tdout"
 
 new_cluster
 touch "$state/obs-namespace" "$state/mq-survives"
@@ -416,14 +418,14 @@ run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "with Kyverno policies and webhooks the run exits 0" test "$rc" -eq 0
 check "the steps are numbered 1 to 16" grep -q -e '^\[1/16\]' -e '^\[16/16\]' "$work/tdout"
 check "the step for Kyverno is the third" grep -q '^\[3/16\] Delete the Kyverno policies and webhook configurations' "$work/tdout"
-check "the cluster Secret label of the policy engine is removed with the others" grep -q 'platform.example/observability- platform.example/policy- platform.example/external-secrets-$' "$state/kubectl.log"
+check "the cluster Secret label of the policy engine is removed with the others" grep -q 'platform.example/observability- platform.example/policy- platform.example/external-secrets- platform.example/progressive-delivery-$' "$state/kubectl.log"
 check "every kind of Kyverno policy is deleted: ClusterPolicy, Policy, ValidatingPolicy and ImageValidatingPolicy" test "$(grep -c -e 'delete clusterpolicies.kyverno.io --all --wait=true' -e 'delete policies.kyverno.io --all -A --wait=true' -e 'delete validatingpolicies.policies.kyverno.io --all --wait=true' -e 'delete imagevalidatingpolicies.policies.kyverno.io --all --wait=true' "$state/kubectl.log")" = 4
 check "the two Kyverno webhook configurations are deleted by name" test "$(grep -c -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-resource-validating-webhook-cfg ' -e 'delete mutatingwebhookconfiguration.admissionregistration.k8s.io/kyverno-policy-mutating-webhook-cfg ' "$state/kubectl.log")" = 2
 check "no other webhook configuration is deleted" test "$(grep ' delete ' "$state/kubectl.log" | grep -c -e 'cert-manager-webhook' -e 'aws-load-balancer-webhook')" = 0
 check "the policies go before the webhook configurations" test "$(line_of 'delete policies.kyverno.io')" -lt "$(line_of 'delete validatingwebhookconfiguration')"
 check "Kyverno is dealt with after the labels and before the shop, data and observability namespaces are read" test "$(line_of 'label secret')" -lt "$(line_of 'delete clusterpolicies.kyverno.io')" -a "$(line_of 'delete mutatingwebhookconfiguration')" -lt "$(line_of '-n shop get')"
 check "the output waits for the webhook configurations to be gone" grep -q 'ok: no webhook configuration whose name starts with kyverno remains' "$work/tdout"
-check "the Applications of the policy engine and of the External Secrets Operator are waited for" grep -q 'no apps-\*, data-\*, observability-\*, policy-\* or eso-\* Application remains' "$work/tdout"
+check "the Applications of the policy engine and of the External Secrets Operator are waited for" grep -q 'no apps-\*, data-\*, observability-\*, policy-\*, eso-\* or delivery-\* Application remains' "$work/tdout"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "a repeat run finds no Kyverno policy and no webhook configuration" grep -q 'no object of clusterpolicies.kyverno.io' "$work/tdout" -a "$rc" -eq 0
 check "and says so for the webhook configurations" grep -q 'no webhook configuration whose name starts with kyverno' "$work/tdout"
@@ -435,7 +437,7 @@ touch "$state/eso-objects" "$state/eso-webhooks"
 run_teardown --context test-cluster --region eu-north-1 --timeout 5
 check "with External Secrets objects and webhooks the run exits 0" test "$rc" -eq 0
 check "the step for External Secrets is the fourth, after Kyverno's" grep -q '^\[4/16\] Delete the External Secrets objects and webhook configurations' "$work/tdout"
-check "the label of the operator is removed with the others, in the first step" grep -q 'label secret cluster-in-cluster .* platform.example/external-secrets-$' "$state/kubectl.log"
+check "the label of the operator is removed with the others, in the first step" grep -q 'label secret cluster-in-cluster .* platform.example/progressive-delivery-$' "$state/kubectl.log"
 check "every kind is deleted: ExternalSecret and SecretStore in every namespace, ClusterExternalSecret and ClusterSecretStore" test "$(grep -c -e 'delete externalsecrets.external-secrets.io --all -A --wait=true' -e 'delete secretstores.external-secrets.io --all -A --wait=true' -e 'delete clusterexternalsecrets.external-secrets.io --all --wait=true' -e 'delete clustersecretstores.external-secrets.io --all --wait=true' "$state/kubectl.log")" = 4
 check "the ExternalSecrets go before the stores" test "$(line_of 'delete externalsecrets.external-secrets.io')" -lt "$(line_of 'delete clustersecretstores.external-secrets.io')" -a "$(line_of 'delete externalsecrets.external-secrets.io')" -lt "$(line_of 'delete secretstores.external-secrets.io')"
 check "the two webhook configurations are deleted by name" test "$(grep -c -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/secretstore-validate ' -e 'delete validatingwebhookconfiguration.admissionregistration.k8s.io/externalsecret-validate ' "$state/kubectl.log")" = 2
@@ -995,7 +997,7 @@ check "and says how to reach Grafana" test "$(sed -n '/--enable-observability/,/
 
 # The label the script writes must be the one the ApplicationSets select on, or the flag deploys nothing.
 check "every observability ApplicationSet selects the label the flag sets" test "$(grep -l 'platform.example/observability: "true"' platform/argocd/apps/9*-observability-*.yaml | wc -l | tr -d ' ')" = 9
-check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/observability' platform/argocd/apps/*.yaml | grep -vc '/9[0-9]-observability-')" = 0
+check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/observability' platform/argocd/apps/*.yaml | grep -vc -e '/9[0-9]-observability-' -e '/83-apps-gateway')" = 0
 
 run_bootstrap
 check "the policy engine is off by default" grep -q '"platform.example/policy": "false"' "$work/bout"
@@ -1052,6 +1054,28 @@ check "and where the values come from" test "$(sed -n '/--enable-external-secret
 check "the script reads both outputs, checks their format and refuses an empty one when the flag is set" test "$(grep -c -e 'tf_value external_secrets_role_arn' -e 'tf_value secrets_parameter_prefix' -e 'require_match external_secrets_role_arn' -e 'require_match secrets_parameter_prefix' -e 'needs the external_secrets_role_arn Terraform output' -e 'needs the secrets_parameter_prefix Terraform output' scripts/bootstrap-argocd.sh)" = 6
 check "the three ApplicationSets of the operator select the label the flag sets" test "$(grep -l 'platform.example/external-secrets: "true"' platform/argocd/apps/8[789]-eso-*.yaml | wc -l | tr -d ' ')" = 3
 check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/external-secrets:' platform/argocd/apps/*.yaml | grep -vc '/8[789]-eso-')" = 0
+
+echo "bootstrap-argocd.sh --enable-progressive-delivery"
+
+run_bootstrap
+check "progressive delivery is off by default" grep -q '"platform.example/progressive-delivery": "false"' "$work/bout"
+check "and nothing says it is enabled" test "$(grep -c 'progressive delivery enabled' "$work/bout")" = 0
+run_bootstrap --enable-progressive-delivery
+check "the flag exits 0 on its own" test "$rc" -eq 0
+check "it sets the label to true, once" test "$(grep -c '"platform.example/progressive-delivery": "true"' "$work/bout")" = 1
+check "the output says what the flag deploys and what it asks for" grep -q 'progressive delivery enabled: the Argo Rollouts controller (one replica, requests 50m CPU and 64Mi of memory, no dashboard, no notifications) in the argo-rollouts namespace' "$work/bout"
+check "and that the controller deploys no Rollout itself, that the gateway becomes one in the data profile and that the network policies need the Service range" grep -q 'the controller deploys no Rollout itself (with --enable-apps and --apps-profile data the gateway becomes a canary Rollout, with its analysis when observability is enabled too); the network policies need the Service range from the cluster Secret' "$work/bout"
+check "the other layers stay off" test "$(grep -c -e '"platform.example/policy": "false"' -e '"platform.example/external-secrets": "false"' -e '"platform.example/data": "false"' "$work/bout")" = 3
+check "the dry run with the flag called no tool" test ! -e "$stubs/calls.log"
+run_bootstrap --enable-progressive-delivery --enable-policy --enable-external-secrets --enable-data --enable-observability
+check "with the other flags every label is set on the same run" test "$(grep -c -e '"platform.example/progressive-delivery": "true"' -e '"platform.example/policy": "true"' -e '"platform.example/external-secrets": "true"' -e '"platform.example/data": "true"' -e '"platform.example/observability": "true"' "$work/bout")" = 5
+run_bootstrap --enable-progressive-delivery extra
+check "the flag takes no value" test "$rc" -eq 1 -a "$(grep -c 'unknown argument: extra' "$work/bout")" = 1
+"$bootstrap" --help > "$work/bout" 2>&1
+check "the help lists the flag and says it is off by default" test "$(sed -n '/--enable-progressive-delivery/,/^  --enable-apps/p' "$work/bout" | grep -c 'Off by')" -ge 1
+check "and what it asks for" test "$(sed -n '/--enable-progressive-delivery/,/^  --enable-apps/p' "$work/bout" | grep -c '50m CPU and 64Mi')" -ge 1
+check "the two ApplicationSets of the controller select the label the flag sets" test "$(grep -l 'platform.example/progressive-delivery: "true"' platform/argocd/apps/99-delivery-argo-rollouts.yaml platform/argocd/apps/100-delivery-network-policies.yaml | wc -l | tr -d ' ')" = 2
+check "no other ApplicationSet selects it" test "$(grep -l 'platform.example/progressive-delivery:' platform/argocd/apps/*.yaml | grep -vc -e '/99-delivery-' -e '/100-delivery-' -e '/83-apps-gateway')" = 0
 
 echo "chart-contract-check.py (observability checks)"
 
@@ -1939,6 +1963,7 @@ else
   helm template observability-network-policies platform/observability/network-policies --namespace observability -f platform/observability/network-policies/ci/aws-params.yaml > "$npm/observability.yaml" 2> /dev/null || true
   helm template policy-network-policies platform/security/network-policies --namespace kyverno -f platform/security/network-policies/ci/aws-params.yaml > "$npm/kyverno.yaml" 2> /dev/null || true
   helm template eso-network-policies platform/security/external-secrets-network-policies --namespace external-secrets -f platform/security/external-secrets-network-policies/ci/aws-params.yaml > "$npm/external-secrets.yaml" 2> /dev/null || true
+  helm template delivery-network-policies platform/delivery/argo-rollouts-network-policies --namespace argo-rollouts -f platform/delivery/argo-rollouts-network-policies/ci/aws-params.yaml > "$npm/argo-rollouts.yaml" 2> /dev/null || true
   "$contract_py" - "$npm" << 'NPMUTPY' > "$npm/results.out" 2>&1 || true
 import copy
 import importlib.util
@@ -1952,7 +1977,7 @@ flows = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(flows)
 matrix = yaml.safe_load(open("scripts/tests/fixtures/network-policies/flows.yaml", encoding="utf-8"))
 entries = [("shop", d + "/shop-" + s + ".yaml") for s in ("gateway", "orders", "payments", "notifier")]
-entries += [("data", d + "/data.yaml"), ("observability", d + "/observability.yaml"), ("kyverno", d + "/kyverno.yaml"), ("external-secrets", d + "/external-secrets.yaml")]
+entries += [("data", d + "/data.yaml"), ("observability", d + "/observability.yaml"), ("kyverno", d + "/kyverno.yaml"), ("external-secrets", d + "/external-secrets.yaml"), ("argo-rollouts", d + "/argo-rollouts.yaml")]
 base = flows.load_manifests(entries)
 results = []
 
@@ -2387,6 +2412,7 @@ case("subresource", lambda x: spec(x, "restrict-image-registries")["matchConstra
 case("ephemeral", lambda x: spec(x, "require-image-digest")["validations"].append({"expression": "object.spec.ephemeralContainers.all(c, c.image.matches('@sha256:'))", "message": "x"}))
 case("nocronjobs", lambda x: spec(x, "require-resources")["autogen"]["podControllers"].update(controllers=["deployments", "jobs"]))
 case("probes-jobs", lambda x: spec(x, "require-probes")["matchConstraints"]["resourceRules"][0].update(resources=["deployments", "jobs"]))
+case("probes-norollout", lambda x: spec(x, "require-probes")["matchConstraints"].update(resourceRules=spec(x, "require-probes")["matchConstraints"]["resourceRules"][:1]))
 case("registry", lambda x: spec(x, "restrict-image-registries")["validations"][0].update(expression="variables.containers.all(c, c.image.startsWith('docker.io/'))"))
 case("missing", lambda x: x.remove(policy(x, "require-probes")))
 case("wrong-issuer", lambda x: keyless(x)["keyless"]["identities"][0].update(issuer="https://accounts.example.test"))
@@ -2428,7 +2454,8 @@ APPY
   pol_fails subresource audit "restrict-image-registries must match pods and no subresource, so the ephemeral debug container is not stopped" "a policy that matches pods/ephemeralcontainers is refused"
   pol_fails ephemeral audit "looks at ephemeral containers" "a policy that looks at ephemeral containers is refused"
   pol_fails nocronjobs audit "require-resources has no autogen for cronjobs" "missing autogen for CronJobs is named"
-  pol_fails probes-jobs audit "require-probes must match deployments, statefulsets and daemonsets only (Jobs are exempt)" "a probe policy that matches Jobs is refused"
+  pol_fails probes-jobs audit "require-probes must match deployments, statefulsets, daemonsets and rollouts only (Jobs are exempt)" "a probe policy that matches Jobs is refused"
+  pol_fails probes-norollout audit "require-probes must match deployments, statefulsets, daemonsets and rollouts only (Jobs are exempt), not ['deployments', 'statefulsets', 'daemonsets']" "a probe policy that leaves out Argo Rollouts is named"
   pol_fails registry audit "restrict-image-registries does not use the registry ghcr.io/franklindot04 of deploy/helm/values/images.yaml" "a registry that is not the one of images.yaml is named"
   pol_fails missing audit "the policy require-probes is not rendered" "a missing policy is named"
   pol_fails wrong-issuer audit "must accept one identity: issuer https://token.actions.githubusercontent.com" "a different OIDC issuer is refused"
@@ -2618,6 +2645,265 @@ SCPY
   check "the platform-apps project allows the autoscaler" grep -q 'kind: HorizontalPodAutoscaler' platform/argocd/bootstrap/appproject-platform-apps.yaml
 fi
 
+echo "Argo Rollouts mode of the service chart (the gateway)"
+
+rl_apps="platform/argocd/apps"
+check "only the gateway ApplicationSet passes rollout.enabled" test "$(grep -l 'rollout.enabled' "$rl_apps"/*.yaml | wc -l | tr -d ' ')" = 1 -a "$(grep -c 'name: rollout.enabled' "$rl_apps/83-apps-gateway.yaml")" = 1
+check "it sets it from the cluster label platform.example/progressive-delivery and only in the data profile" test "$(sed -n '/name: rollout.enabled/,/name: rollout.analysis.enabled/p' "$rl_apps/83-apps-gateway.yaml" | grep -c -e 'platform.example/progressive-delivery' -e '"data"')" = 2
+check "the analysis also needs the observability label" test "$(sed -n '/name: rollout.analysis.enabled/,/name: networkPolicy.serviceCidr/p' "$rl_apps/83-apps-gateway.yaml" | grep -c -e 'platform.example/progressive-delivery' -e 'platform.example/observability' -e '"data"')" = 3
+check "neither value is forced to a string, because a string \"false\" would be true for Helm" test "$(sed -n '/name: rollout.enabled/,/name: networkPolicy.serviceCidr/p' "$rl_apps/83-apps-gateway.yaml" | grep -c 'forceString')" = 0
+check "the gateway lists its rollout values file, and no other service has one" test "$(grep -c 'gateway-rollout.yaml' "$rl_apps/83-apps-gateway.yaml")" = 1 -a "$(find deploy/helm/values -name '*-rollout.yaml' | wc -l | tr -d ' ')" = 1
+check "the rollout values file does not switch the Rollout on" test "$(grep -v '^ *#' deploy/helm/values/gateway-rollout.yaml | grep -c 'enabled')" = 0
+check "and rollout.enabled is false there" test "$(sed -n '/^rollout:/,/^  revisionHistoryLimit/p' deploy/helm/service/values.yaml | grep -c 'enabled: false')" = 1
+check "the platform-apps AppProject allows Rollout and AnalysisTemplate of argoproj.io, and nothing else of the group" test "$(grep -c 'group: argoproj.io' platform/argocd/bootstrap/appproject-platform-apps.yaml)" = 2 -a "$(grep -A1 'group: argoproj.io' platform/argocd/bootstrap/appproject-platform-apps.yaml | grep -c -e 'kind: Rollout$' -e 'kind: AnalysisTemplate$')" = 2
+check "the orders ApplicationSet has no rollout setting" test "$(grep -c -i 'rollout' "$rl_apps/82-apps-orders.yaml")" = 0
+
+if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
+  echo "  skip  needs helm and a Python with PyYAML"
+else
+  ro="$work/rollout-mode"
+  rm -rf "$ro"
+  mkdir -p "$ro"
+  rv="deploy/helm/values"
+  # ro_render PROFILE [HELM ARGS]: the gateway with the real values files, as the ApplicationSet gives them.
+  ro_render() {
+    local profile="$1"
+    shift
+    helm template gateway deploy/helm/service --namespace shop -f "$rv/images.yaml" -f "$rv/gateway.yaml" -f "$rv/gateway-$profile.yaml" \
+      -f "$rv/cloud-aws.yaml" -f "$rv/gateway-rollout.yaml" --set networkPolicy.serviceCidr=203.0.113.0/24 "$@"
+  }
+  ro_render data > "$ro/dep.yaml" 2> /dev/null || true
+  ro_render data --set rollout.enabled=true --set rollout.analysis.enabled=true > "$ro/roa.yaml" 2> /dev/null || true
+  ro_render data --set rollout.enabled=true > "$ro/ron.yaml" 2> /dev/null || true
+  ro_render memory > "$ro/dep-memory.yaml" 2> /dev/null || true
+  ro_render memory --set rollout.enabled=true > "$ro/rom.yaml" 2> /dev/null || true
+  mon="platform/observability/monitors/values.yaml"
+
+  check "the default render has a Deployment and no Rollout, no AnalysisTemplate" test "$(grep -c '^kind: Deployment' "$ro/dep.yaml")" = 1 -a "$(grep -c -e '^kind: Rollout' -e '^kind: AnalysisTemplate' "$ro/dep.yaml")" = 0
+  check "the rollout render has a Rollout and no Deployment" test "$(grep -c '^kind: Rollout' "$ro/roa.yaml")" = 1 -a "$(grep -c '^kind: Deployment' "$ro/roa.yaml")" = 0
+  check "the AnalysisTemplate is rendered only with the analysis" test "$(grep -c '^kind: AnalysisTemplate' "$ro/roa.yaml")" = 1 -a "$(grep -c '^kind: AnalysisTemplate' "$ro/ron.yaml")" = 0
+  check "every service in both profiles still renders a Deployment and nothing of Argo Rollouts" test "$(for s in gateway orders payments notifier; do for p in memory data; do helm template "$s" deploy/helm/service --namespace shop -f "$rv/images.yaml" -f "$rv/$s.yaml" -f "$rv/$s-$p.yaml" --set networkPolicy.serviceCidr=203.0.113.0/24 2> /dev/null; done; done | grep -c -e '^kind: Rollout' -e '^kind: AnalysisTemplate' -e 'apiVersion: argoproj.io')" = 0
+  check "the Rollout has no replicas field next to the autoscaler" test "$(awk '/^kind: Rollout/,/^  strategy:/' "$ro/roa.yaml" | grep -c '^  replicas:')" = 0
+  check "without the autoscaler (memory profile) it has two" test "$(awk '/^kind: Rollout/,/^  strategy:/' "$ro/rom.yaml" | grep -c '^  replicas: 2')" = 1
+  check "the autoscaler targets the Rollout" test "$(sed -n '/scaleTargetRef:/,/name:/p' "$ro/roa.yaml" | grep -c -e 'apiVersion: argoproj.io/v1alpha1' -e 'kind: Rollout')" = 2
+  check "the Rollout is a canary with no traffic router, a progress deadline that aborts and no abort delay" test "$(grep -c -e '^  progressDeadlineSeconds: 600' -e '^  progressDeadlineAbort: true' -e '^    canary:' "$ro/roa.yaml")" = 3 -a "$(grep -c -e 'trafficRouting' -e 'abortScaleDownDelaySeconds' "$ro/roa.yaml")" = 0
+  check "the topology spread tells the revisions apart with the label the Rollout controller sets" test "$(grep -c 'rollouts-pod-template-hash' "$ro/roa.yaml")" = 2 -a "$(grep -c '^ *- pod-template-hash' "$ro/roa.yaml")" = 0
+  check "and a Deployment with the one the Deployment controller sets" test "$(grep -c '^ *- pod-template-hash' "$ro/dep.yaml")" = 2
+
+  contract "$ro/roa.yaml" rollout t "$ro/dep.yaml" analysis "$mon"
+  check "the gateway as a Rollout with the analysis passes: the same pod template, selector and objects as the Deployment" test "$rc" -eq 0
+  contract "$ro/ron.yaml" rollout t "$ro/dep.yaml" no-analysis "$mon"
+  check "and without the analysis" test "$rc" -eq 0
+  contract "$ro/rom.yaml" rollout t "$ro/dep-memory.yaml" no-analysis "$mon"
+  check "and in the memory profile, with fixed replicas" test "$rc" -eq 0
+  for f in roa ron; do
+    contract "$ro/$f.yaml" scaling t hpa
+    check "the scaling contract holds for the Rollout render ($f): autoscaler on the Rollout, budget, spread, canary without unavailable pods" test "$rc" -eq 0
+    contract "$ro/$f.yaml" network-policies t
+    check "the pods of the Rollout ($f) are covered by the default deny" test "$rc" -eq 0
+    contract "$ro/$f.yaml" project-fit t platform/argocd/bootstrap/appproject-platform-apps.yaml shop
+    check "everything the Rollout render ($f) holds is allowed by the platform-apps AppProject" test "$rc" -eq 0
+  done
+  contract "$ro/rom.yaml" scaling t replicas=2
+  check "the memory profile Rollout keeps its two fixed replicas and its budget" test "$rc" -eq 0
+  contract "$ro/roa.yaml" rollout t "$ro/dep.yaml" no-analysis "$mon"
+  check "a render with the analysis is refused when none is wanted" grep -q 'asked to have no analysis' "$work/cout"
+  contract "$ro/ron.yaml" rollout t "$ro/dep.yaml" analysis "$mon"
+  check "and a render without it is refused when it is wanted" grep -q 'expected one AnalysisTemplate, found 0' "$work/cout"
+
+  rr_refused() {
+    local what="$1"
+    shift
+    if ro_render data --set rollout.enabled=true "$@" > /dev/null 2> "$ro/refused.err"; then bad "the chart rendered a Rollout with $what"; else ok "the chart refuses a Rollout with $what"; fi
+  }
+  rr_refused "no steps" --set 'rollout.steps=null'
+  check "and says why" grep -q 'rollout.steps must list at least one step' "$ro/refused.err"
+  rr_refused "no progress deadline" --set rollout.progressDeadlineSeconds=0
+  check "and says why (the deadline)" grep -q 'rollout.progressDeadlineSeconds must be set' "$ro/refused.err"
+  rr_refused "an analysis that does not name its service" --set rollout.analysis.enabled=true --set rollout.analysis.service=""
+  check "and says why (the service)" grep -q 'rollout.analysis.service must name the service label' "$ro/refused.err"
+  rr_refused "no minimum request count" --set rollout.analysis.enabled=true --set rollout.analysis.service=gateway --set rollout.analysis.minRequests=0
+  check "and says why (the minimum)" grep -q 'rollout.analysis.minRequests must be at least 1' "$ro/refused.err"
+  rr_refused "a threshold above 1" --set rollout.analysis.enabled=true --set rollout.analysis.service=gateway --set rollout.analysis.fastRatio=1.5
+  check "and says why (the threshold)" grep -q 'must be above 0 and at most 1' "$ro/refused.err"
+  rr_refused "maxUnavailable above the budget" --set rollout.maxUnavailable=2
+  check "and says why (the budget)" grep -q 'rollout.maxUnavailable must not be above podDisruptionBudget.maxUnavailable' "$ro/refused.err"
+  if ro_render data --set rollout.enabled=true --set replicas=3 > /dev/null 2>&1; then bad "a Rollout rendered with replicas next to the autoscaler"; else ok "replicas next to the autoscaler is refused in Rollout mode too"; fi
+
+  cat > "$ro/mutate.py" << 'ROPY'
+import copy
+import sys
+
+import yaml
+
+src, dst, how = sys.argv[1:4]
+docs = [d for d in yaml.safe_load_all(open(src, encoding="utf-8")) if d]
+
+
+def one(kind):
+    return next(d for d in docs if d["kind"] == kind)
+
+
+ro = one("Rollout")
+spec = ro["spec"]
+canary = spec["strategy"]["canary"]
+pod = spec["template"]["spec"]
+tpl = next((d for d in docs if d["kind"] == "AnalysisTemplate"), None)
+metrics = tpl["spec"]["metrics"] if tpl else []
+if how == "no-deadline":
+    del spec["progressDeadlineSeconds"]
+elif how == "no-abort":
+    spec["progressDeadlineAbort"] = False
+elif how == "no-steps":
+    canary["steps"] = []
+elif how == "pause-only":
+    canary["steps"] = [{"pause": {"duration": "5m"}}]
+elif how == "falling-weights":
+    canary["steps"] = [{"setWeight": 50}, {"pause": {"duration": "5m"}}, {"setWeight": 25}, {"pause": {"duration": "5m"}}]
+elif how == "traffic-routing":
+    canary["trafficRouting"] = {"istio": {}}
+elif how == "unavailable":
+    canary["maxUnavailable"] = 1
+elif how == "abort-delay":
+    canary["abortScaleDownDelaySeconds"] = 30
+elif how == "image":
+    pod["containers"][0]["image"] = "ghcr.io/example/other:1"
+elif how == "probe":
+    del pod["containers"][0]["readinessProbe"]
+elif how == "priority":
+    pod["priorityClassName"] = "platform-observability"
+elif how == "spread-key":
+    for c in pod["topologySpreadConstraints"]:
+        c["matchLabelKeys"] = ["pod-template-hash"]
+elif how == "selector":
+    spec["selector"]["matchLabels"]["extra"] = "x"
+elif how == "replicas-with-hpa":
+    spec["replicas"] = 2
+elif how == "hpa-deployment":
+    one("HorizontalPodAutoscaler")["spec"]["scaleTargetRef"] = {"apiVersion": "apps/v1", "kind": "Deployment", "name": "gateway"}
+elif how == "service-hash":
+    one("Service")["spec"]["selector"]["rollouts-pod-template-hash"] = "abc"
+elif how == "service-port":
+    one("Service")["spec"]["ports"][0]["port"] = 9999
+elif how == "extra-deployment":
+    d = copy.deepcopy(ro)
+    d["kind"] = "Deployment"
+    docs.append(d)
+elif how == "root":
+    spec["template"]["spec"]["securityContext"]["runAsNonRoot"] = False
+    pod["containers"][0]["securityContext"]["runAsNonRoot"] = False
+elif how == "no-failure-condition":
+    del metrics[0]["failureCondition"]
+elif how == "no-success-condition":
+    del metrics[1]["successCondition"]
+elif how == "no-failure-limit":
+    del metrics[0]["failureLimit"]
+elif how == "no-inconclusive-limit":
+    del metrics[1]["inconclusiveLimit"]
+elif how == "no-interval":
+    del metrics[0]["interval"]
+elif how == "weak-threshold":
+    metrics[0]["successCondition"] = "result[0] >= 0.5"
+    metrics[0]["failureCondition"] = "result[0] < 0.5"
+elif how == "strict-threshold":
+    metrics[1]["successCondition"] = "result[0] >= 0.99"
+    metrics[1]["failureCondition"] = "result[0] < 0.99"
+elif how == "gap-conditions":
+    metrics[0]["failureCondition"] = "result[0] < 0.9"
+elif how == "all-pods":
+    for m in metrics:
+        q = m["provider"]["prometheus"]["query"]
+        m["provider"]["prometheus"]["query"] = q.replace("gateway-{{args.canary-hash}}-.+", ".+")
+elif how == "no-nan":
+    q = metrics[0]["provider"]["prometheus"]["query"]
+    metrics[0]["provider"]["prometheus"]["query"] = q.replace(" or vector(NaN)", "")
+elif how == "no-minimum":
+    q = metrics[1]["provider"]["prometheus"]["query"]
+    metrics[1]["provider"]["prometheus"]["query"] = q.replace(" >= 20)) or vector(NaN)", ")) or vector(NaN)")
+elif how == "address":
+    metrics[0]["provider"]["prometheus"]["address"] = "http://prometheus.example.test:9090"
+elif how == "operational-routes":
+    for m in metrics:
+        q = m["provider"]["prometheus"]["query"]
+        m["provider"]["prometheus"]["query"] = q.replace("/healthz|/readyz|/metrics|/version", "/nothing")
+elif how == "no-hash-arg":
+    del canary["analysis"]["args"]
+elif how == "no-starting-step":
+    del canary["analysis"]["startingStep"]
+elif how == "no-analysis-in-rollout":
+    del canary["analysis"]
+elif how == "other-template":
+    canary["analysis"]["templates"][0]["templateName"] = "other"
+elif how == "short-pauses":
+    canary["steps"] = [{"setWeight": 25}, {"pause": {"duration": "1m"}}, {"setWeight": 50}, {"pause": {"duration": "1m"}}]
+elif how == "slow-start":
+    for m in metrics:
+        m["initialDelay"] = "10m"
+elif how == "one-metric":
+    del metrics[1]
+else:
+    sys.exit("unknown mutation " + how)
+yaml.safe_dump_all(docs, open(dst, "w", encoding="utf-8"), sort_keys=False)
+ROPY
+  # ro_fails FILE DEPLOYMENT MODE MUTATION MESSAGE DESCRIPTION
+  ro_fails() {
+    "$contract_py" "$ro/mutate.py" "$1" "$ro/mutated.yaml" "$4" || { bad "$6 (mutation $4 failed)"; return; }
+    contract "$ro/mutated.yaml" rollout t "$2" "$3" "$mon"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$5" "$work/cout"; then ok "$6"; else bad "$6 (exit $rc)"; fi
+  }
+  a="$ro/roa.yaml"
+  d="$ro/dep.yaml"
+  ro_fails "$a" "$d" analysis no-deadline "the Rollout has no progress deadline" "a Rollout without a progress deadline is named"
+  ro_fails "$a" "$d" analysis no-abort "does not abort when it passes its progress deadline" "a Rollout that does not abort on its deadline is named"
+  ro_fails "$a" "$d" analysis no-steps "the canary has no steps with a setWeight" "a Rollout without steps is named"
+  ro_fails "$a" "$d" analysis pause-only "the canary has no steps with a setWeight" "steps that only pause are named"
+  ro_fails "$a" "$d" analysis falling-weights "must rise and stay between 0 and 100" "weights that fall are named"
+  ro_fails "$a" "$d" analysis traffic-routing "sets trafficRouting" "a traffic router is named"
+  ro_fails "$a" "$d" analysis unavailable "the canary must have maxUnavailable 0" "a canary that may lower capacity is named"
+  ro_fails "$a" "$d" analysis abort-delay "abortScaleDownDelaySeconds is set" "a setting the project documents only for a traffic router is named"
+  ro_fails "$a" "$d" analysis image "the pod template of the Rollout differs from the pod template of the Deployment" "a different image in the Rollout is named"
+  ro_fails "$a" "$d" analysis probe "the pod template of the Rollout differs from the pod template of the Deployment" "a missing probe in the Rollout is named"
+  ro_fails "$a" "$d" analysis priority "the pod template of the Rollout differs from the pod template of the Deployment" "another priority class in the Rollout is named"
+  ro_fails "$a" "$d" analysis spread-key "must tell the revisions apart with rollouts-pod-template-hash" "the Deployment's revision label in a Rollout is named"
+  ro_fails "$a" "$d" analysis selector "the selector of the Rollout differs from the selector of the Deployment" "a different selector is named"
+  ro_fails "$a" "$d" analysis replicas-with-hpa "the Rollout sets replicas next to an autoscaler" "replicas next to the autoscaler are named"
+  ro_fails "$a" "$d" analysis hpa-deployment "does not target the Rollout" "an autoscaler that still targets the Deployment is named"
+  ro_fails "$a" "$d" analysis service-hash "must select the labels that the stable and the canary pods share" "a Service that selects one revision is named"
+  ro_fails "$a" "$d" analysis service-port "the objects other than the workload and the analysis are not the same" "a Service that differs between the modes is named"
+  ro_fails "$a" "$d" analysis extra-deployment "the Rollout render still has a Deployment" "a Deployment next to the Rollout is named"
+  ro_fails "$a" "$d" analysis no-failure-condition "metric success-ratio has no failureCondition" "a metric without a failure condition is named"
+  ro_fails "$a" "$d" analysis no-success-condition "metric fast-ratio has no successCondition" "a metric without a success condition is named"
+  ro_fails "$a" "$d" analysis no-failure-limit "metric success-ratio has no failureLimit" "a metric without a failure limit is named"
+  ro_fails "$a" "$d" analysis no-inconclusive-limit "metric fast-ratio has no inconclusiveLimit" "a metric without an inconclusive limit is named"
+  ro_fails "$a" "$d" analysis no-interval "metric success-ratio needs an interval and an initialDelay" "a metric without an interval is named"
+  ro_fails "$a" "$d" analysis weak-threshold "metric success-ratio has the threshold 0.5, which is not between the SLO objective 0.995" "a success threshold far below the SLO is named"
+  ro_fails "$a" "$d" analysis strict-threshold "metric fast-ratio has the threshold 0.99, which is not between the SLO objective 0.95" "a latency threshold above the SLO is named"
+  ro_fails "$a" "$d" analysis gap-conditions "metric success-ratio must have the conditions result[0] >= T and result[0] < T with the same T" "conditions with a gap between them are named"
+  ro_fails "$a" "$d" analysis all-pods "does not select the canary pods only" "a query on all pods is named"
+  ro_fails "$a" "$d" analysis no-nan "has no no-data value (or vector(NaN))" "a query without a no-data value is named"
+  ro_fails "$a" "$d" analysis no-minimum "metric fast-ratio has no minimum request count in the query" "a query without a minimum request count is named"
+  ro_fails "$a" "$d" analysis address "does not query the in-cluster Prometheus Service on port 9090" "another Prometheus address is named"
+  ro_fails "$a" "$d" analysis operational-routes "counts the operational routes" "a query that counts /healthz is named"
+  ro_fails "$a" "$d" analysis no-hash-arg "does not pass the canary pod template hash" "a Rollout that does not pass the hash is named"
+  ro_fails "$a" "$d" analysis no-starting-step "the background analysis has no startingStep" "an analysis with no starting step is named"
+  ro_fails "$a" "$d" analysis no-analysis-in-rollout "the Rollout has no background analysis" "a Rollout that does not use its analysis is named"
+  ro_fails "$a" "$d" analysis other-template "the Rollout analysis does not use the AnalysisTemplate gateway-canary" "a Rollout that names another template is named"
+  ro_fails "$a" "$d" analysis short-pauses "an idle canary would be promoted before it is decided" "pauses shorter than the analysis are named"
+  ro_fails "$a" "$d" analysis slow-start "an idle canary would be promoted before it is decided" "an analysis that starts too late is named"
+  ro_fails "$a" "$d" analysis one-metric "the AnalysisTemplate must have two metrics" "an analysis with one metric is named"
+  # The Rollout is subject to the same security rules as any workload.
+  "$contract_py" "$ro/mutate.py" "$a" "$ro/mutated.yaml" root
+  rc=0
+  "$contract_py" scripts/rendered-security-check.py t < "$ro/mutated.yaml" > "$work/cout" 2>&1 || rc=$?
+  check "a Rollout that may run as root is refused by the rendered security check, which names the Rollout" test "$rc" -eq 1 -a "$(grep -c 'Rollout' "$work/cout")" -ge 1
+  "$contract_py" "$ro/mutate.py" "$ro/ron.yaml" "$ro/mutated.yaml" unavailable
+  contract "$ro/mutated.yaml" scaling t hpa
+  check "the scaling contract names a canary that may lower capacity" grep -q 'the canary must have maxUnavailable 0 and a surge' "$work/cout"
+  "$contract_py" "$ro/mutate.py" "$ro/ron.yaml" "$ro/mutated.yaml" hpa-deployment
+  contract "$ro/mutated.yaml" scaling t hpa
+  check "and an autoscaler that targets a Deployment which is not there" grep -q 'does not target the Rollout gateway' "$work/cout"
+fi
+
 echo "chart-contract-check.py (PostgreSQL instances, priority classes, scaling alerts)"
 
 if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
@@ -2708,6 +2994,40 @@ elif how == "drop-alert":
         if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "scaling":
             for g in d["spec"]["groups"]:
                 g["rules"] = [r for r in g["rules"] if r["alert"] != "PodDisruptionBudgetBlocked"]
+elif how.startswith("delivery-"):
+    delivery = [r for d in docs if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "delivery" for g in d["spec"]["groups"] for r in g["rules"]]
+
+    def alert(name):
+        return next(r for r in delivery if r["alert"] == name)
+
+    if how == "delivery-page":
+        alert("RolloutAborted")["labels"]["severity"] = "page"
+    elif how == "delivery-short-for":
+        alert("RolloutPausedTooLong")["for"] = "5m"
+    elif how == "delivery-bad-anchor":
+        alert("AnalysisRunFailed")["annotations"]["runbook_url"] = "https://example.test/docs/runbooks/progressive-delivery.md#nowhere"
+    elif how == "delivery-wrong-anchor":
+        alert("AnalysisRunFailed")["annotations"]["runbook_url"] = alert("AnalysisRunError")["annotations"]["runbook_url"]
+    elif how == "delivery-other-doc":
+        alert("RolloutDegraded")["annotations"]["runbook_url"] = "https://example.test/docs/runbooks/alerts.md#rollout-degraded"
+    elif how == "delivery-other-metric":
+        alert("RolloutAborted")["expr"] = 'kube_pod_info{namespace="shop"} == 1'
+    elif how == "delivery-no-namespace":
+        alert("AnalysisRunFailed")["expr"] = 'analysis_run_info{phase="Failed"} == 1'
+    elif how == "delivery-no-summary":
+        del alert("RolloutsControllerDown")["annotations"]["summary"]
+    elif how == "delivery-drop":
+        for d in docs:
+            if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "delivery":
+                for g in d["spec"]["groups"]:
+                    g["rules"] = [r for r in g["rules"] if r["alert"] != "AnalysisRunError"]
+    elif how == "delivery-extra":
+        delivery.append(dict(alert("RolloutAborted"), alert="Unknown"))
+        for d in docs:
+            if d["kind"] == "PrometheusRule" and d["metadata"]["name"] == "delivery":
+                d["spec"]["groups"][0]["rules"].append(dict(alert("RolloutAborted"), alert="Unknown"))
+    else:
+        sys.exit("unknown mutation " + how)
 else:
     sys.exit("unknown mutation " + how)
 yaml.safe_dump_all(docs, open(dst, "w", encoding="utf-8"), sort_keys=False)
@@ -2753,6 +3073,22 @@ PMPY
   pm_fails "$pm/monitors.yaml" bad-anchor "points at #nowhere, which is not a heading of the alerts runbook" "a runbook link to a heading that does not exist is named" scaling-rules t docs/runbooks/alerts.md
   pm_fails "$pm/monitors.yaml" other-metric "PodsPending uses the metrics ['kube_pod_info']" "a metric that was not checked is named" scaling-rules t docs/runbooks/alerts.md
   pm_fails "$pm/monitors.yaml" drop-alert "the alert PodDisruptionBudgetBlocked is missing" "a missing alert is named" scaling-rules t docs/runbooks/alerts.md
+
+  contract "$pm/monitors.yaml" delivery-rules t docs/runbooks/progressive-delivery.md
+  check "the seven delivery alerts are tickets, wait long enough, use the metrics of the controller and link to headings of the progressive delivery runbook" test "$rc" -eq 0
+  dr="docs/runbooks/progressive-delivery.md"
+  pm_fails "$pm/monitors.yaml" delivery-page "RolloutAborted must have severity ticket" "a delivery alert that pages is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-short-for "RolloutPausedTooLong waits 5m and must wait at least 30m" "a delivery alert with a short wait is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-bad-anchor "points at #nowhere, and should point at #analysis-run-failed" "a runbook link to a heading that does not exist is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-wrong-anchor "AnalysisRunFailed points at #analysis-run-error, and should point at #analysis-run-failed" "a runbook link to the heading of another alert is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-other-doc "the runbook_url of RolloutDegraded is not a link to docs/runbooks/progressive-delivery.md with an anchor" "a link to another runbook is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-other-metric "RolloutAborted uses the metrics ['kube_pod_info'] and should use ['rollout_info']" "a metric that was not checked is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-no-namespace "AnalysisRunFailed does not select a namespace" "an alert on every namespace is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-no-summary "RolloutsControllerDown has no summary" "an alert without a summary is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-drop "the alert AnalysisRunError is missing" "a missing delivery alert is named" delivery-rules t "$dr"
+  pm_fails "$pm/monitors.yaml" delivery-extra "the alert Unknown is not one the check knows" "an alert the check does not know is named" delivery-rules t "$dr"
+  check "the ServiceMonitor of the controller keeps the namespace label of the rollouts (honorLabels), which every delivery alert selects on" test "$(awk '/^kind: ServiceMonitor/,0' "$pm/monitors.yaml" | sed -n '/name: argo-rollouts$/,/^---/p' | grep -c 'honorLabels: true')" = 1
+  check "the progressive delivery dashboard is one of the dashboards, with the same uid as its file name" test "$(grep -c '"uid": "sre-delivery"' platform/observability/dashboards/files/sre-delivery.json)" = 1
 fi
 
 echo "seed-secrets.sh (against a fake aws)"
@@ -3318,6 +3654,216 @@ ESOPY
   check "the data project, which deploys into data and shop, allows an ExternalSecret (it allows every namespaced kind)" test "$rc" -eq 0
   contract "$fixtures/secrets/eso-clusterstore.yaml" project-fit eso "$data_project" data
   check "but the data project does not allow a ClusterSecretStore" grep -q 'ClusterSecretStore/aws-parameter-store (external-secrets.io) is cluster-scoped and not in clusterResourceWhitelist of platform-data' "$work/cout"
+fi
+
+echo "Argo Rollouts (the controller, its network policies and the AppProject)"
+
+dl_apps="platform/argocd/apps"
+check "the controller is wave 18, after the observability stack and before the services" grep -q 'argocd.argoproj.io/sync-wave: "18"' "$dl_apps/99-delivery-argo-rollouts.yaml"
+check "its network policies are wave 19, after the controller" grep -q 'argocd.argoproj.io/sync-wave: "19"' "$dl_apps/100-delivery-network-policies.yaml"
+check "the controller is deployed from platform/delivery/argo-rollouts to the argo-rollouts namespace by platform-addons" test "$(grep -c -e 'path: platform/delivery/argo-rollouts$' -e 'namespace: argo-rollouts$' -e 'project: platform-addons$' "$dl_apps/99-delivery-argo-rollouts.yaml")" = 3
+check "it syncs with ServerSideApply and passes no value file but the defaults" test "$(grep -c -e '- ServerSideApply=true' "$dl_apps/99-delivery-argo-rollouts.yaml")" = 1 -a "$(grep -c 'values-ha' "$dl_apps/99-delivery-argo-rollouts.yaml")" = 0
+check "the namespace is created at the restricted Pod Security level" grep -q 'pod-security.kubernetes.io/enforce: restricted' "$dl_apps/99-delivery-argo-rollouts.yaml"
+check "the network policies are only for EKS clusters and get the Service range from the cluster Secret" test "$(grep -c -e 'platform.example/cloud: aws' -e "value: '.*platform.example/service-cidr" "$dl_apps/100-delivery-network-policies.yaml")" = 2
+check "and not the VPC range: the controller has no webhook" test "$(grep -v '^ *#' "$dl_apps/100-delivery-network-policies.yaml" platform/delivery/argo-rollouts-network-policies/values.yaml platform/delivery/argo-rollouts-network-policies/templates/*.yaml | grep -c -i -e 'vpc')" = 0
+check "the AppProject has the argo-rollouts namespace as a destination and no new cluster-scoped kind for it" test "$(grep -c 'namespace: argo-rollouts$' platform/argocd/bootstrap/appproject-platform-addons.yaml)" = 1
+check "the monitors chart has the ServiceMonitor, and Prometheus may scrape the controller and be queried by it" test -f platform/observability/monitors/templates/delivery.yaml -a "$(grep -c -e 'prometheus-allow-to-argo-rollouts' -e 'prometheus-allow-from-argo-rollouts' platform/observability/network-policies/templates/other-namespaces.yaml)" = 2
+check "the chart README says that the controller queries Prometheus for the analysis of the gateway canary" grep -q 'to run the analysis of a gateway canary' platform/delivery/argo-rollouts/README.md
+
+if [ -z "$contract_py" ] || ! command -v helm > /dev/null 2>&1; then
+  echo "  skip  needs helm and a Python with PyYAML"
+else
+  rl="$work/rollouts"
+  rm -rf "$rl"
+  mkdir -p "$rl"
+  np="platform/delivery/argo-rollouts-network-policies"
+  # The controller chart is a wrapper whose dependency is downloaded (helm dependency build), which this job does not do, as for the Kyverno and
+  # External Secrets charts. So the tests use a committed render, and scripts/delivery-check.sh, which builds the chart, fails if it is out of
+  # date and runs the same contracts on the real chart.
+  cp "$fixtures/delivery/argo-rollouts.yaml" "$rl/controller.yaml"
+  helm template delivery-network-policies "$np" --namespace argo-rollouts -f "$np/ci/aws-params.yaml" > "$rl/policies.yaml" 2> /dev/null || true
+  da="$dl_apps/99-delivery-argo-rollouts.yaml"
+
+  contract "$rl/controller.yaml" argo-rollouts t "$da"
+  check "the controller as rendered passes: one small, non-root, restricted pod with its priority class, five CRDs, nothing else, server-side apply" test "$rc" -eq 0
+  check "the controller has requests and limits, the priority class of the add-ons and a read-only root filesystem" test "$(grep -c -e 'priorityClassName: platform-addons-critical' -e 'readOnlyRootFilesystem: true' -e 'cpu: 50m' -e 'memory: 192Mi' "$rl/controller.yaml")" -ge 4
+  check "the chart renders no dashboard, no notifications Secret and no webhook" test "$(grep -c -e 'argo-rollouts-dashboard' -e '^kind: Secret' -e 'WebhookConfiguration' "$rl/controller.yaml")" = 0
+  contract "$rl/controller.yaml" project-fit rollouts "platform/argocd/bootstrap/appproject-platform-addons.yaml" argo-rollouts
+  check "everything the controller chart renders is allowed by the platform-addons project, as it is" test "$rc" -eq 0
+  contract "$rl/policies.yaml" project-fit rollouts "platform/argocd/bootstrap/appproject-platform-addons.yaml" argo-rollouts
+  check "and the network policies" test "$rc" -eq 0
+  contract "$rl/policies.yaml" network-policies rollouts
+  check "the network policies of the namespace meet the policy contract (a default deny for both directions, allows first, no open range)" test "$rc" -eq 0
+  check "the controller may be scraped by Prometheus and may query it, through the Service range, and nothing else" test "$(grep -c -e 'allow-prometheus-scrape' -e 'allow-prometheus-query' -e 'allow-kube-api-controller' -e 'name: allow-dns' -e 'name: default-deny' "$rl/policies.yaml")" = 5 -a "$(grep -c 'cidr: 0.0.0.0/0' "$rl/policies.yaml")" = 0
+  if helm template check "$np" > "$rl/nocidr.out" 2>&1; then bad "the policies rendered without the Service range"; else ok "the network policy chart refuses to render without the Service range"; fi
+  check "and says which value is missing" grep -q 'serviceCidr must be set' "$rl/nocidr.out"
+  helm template check "$np" -f "$np/ci/aws-params.yaml" --set enabled=false > "$rl/off.yaml" 2> /dev/null || true
+  check "the network policies can be switched off" test "$(grep -c '^kind:' "$rl/off.yaml")" = 0
+
+  cat > "$rl/mutate.py" << 'RLPY'
+import copy
+import sys
+
+import yaml
+
+src, dst, how = sys.argv[1:4]
+docs = [d for d in yaml.safe_load_all(open(src, encoding="utf-8")) if d]
+
+
+def dep():
+    return next(d for d in docs if d["kind"] == "Deployment")
+
+
+def cont():
+    return dep()["spec"]["template"]["spec"]["containers"][0]
+
+
+pod = dep()["spec"]["template"]["spec"]
+if how == "extra-deployment":
+    d = copy.deepcopy(dep())
+    d["metadata"]["name"] = "argo-rollouts-dashboard"
+    docs.append(d)
+elif how == "no-limits":
+    del cont()["resources"]["limits"]
+elif how == "no-requests":
+    del cont()["resources"]["requests"]["memory"]
+elif how == "too-big":
+    cont()["resources"]["requests"]["cpu"] = "150m"
+elif how == "too-much-memory":
+    cont()["resources"]["requests"]["memory"] = "256Mi"
+elif how == "no-priority":
+    del pod["priorityClassName"]
+elif how == "root":
+    pod["securityContext"]["runAsNonRoot"] = False
+elif how == "no-seccomp":
+    del pod["securityContext"]["seccompProfile"]
+    del cont()["securityContext"]["seccompProfile"]
+elif how == "escalation":
+    cont()["securityContext"]["allowPrivilegeEscalation"] = True
+elif how == "writable":
+    cont()["securityContext"]["readOnlyRootFilesystem"] = False
+elif how == "capabilities":
+    cont()["securityContext"]["capabilities"]["drop"] = ["NET_RAW"]
+elif how == "privileged":
+    cont()["securityContext"]["privileged"] = True
+elif how == "host-network":
+    pod["hostNetwork"] = True
+elif how == "two-replicas":
+    dep()["spec"]["replicas"] = 2
+elif how == "webhook":
+    docs.append({"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingWebhookConfiguration", "metadata": {"name": "x"}, "webhooks": []})
+elif how == "rollout":
+    docs.append({"apiVersion": "argoproj.io/v1alpha1", "kind": "Rollout", "metadata": {"name": "x", "namespace": "shop"}, "spec": {}})
+elif how == "analysis":
+    docs.append({"apiVersion": "argoproj.io/v1alpha1", "kind": "AnalysisTemplate", "metadata": {"name": "x", "namespace": "shop"}, "spec": {}})
+elif how == "secret":
+    docs.append({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "notifications", "namespace": "argo-rollouts"}})
+elif how == "provider-rights":
+    docs.append({"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole", "metadata": {"name": "mesh"},
+                 "rules": [{"apiGroups": ["networking.istio.io"], "resources": ["virtualservices"], "verbs": ["get"]}]})
+elif how == "no-crd":
+    docs = [d for d in docs if d["kind"] != "CustomResourceDefinition"]
+elif how == "missing-crd":
+    docs.append({"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition", "metadata": {"name": "other.example.test"}})
+    docs = [d for d in docs if not (d["kind"] == "CustomResourceDefinition" and d["metadata"]["name"] == "rollouts.argoproj.io")]
+elif how == "no-metrics-service":
+    docs = [d for d in docs if d["kind"] != "Service"]
+elif how == "near-limit-crd":
+    big = next(d for d in docs if d["kind"] == "CustomResourceDefinition")
+    big["metadata"]["annotations"] = {"description": "x" * 230000}
+else:
+    sys.exit("unknown mutation " + how)
+yaml.safe_dump_all(docs, open(dst, "w", encoding="utf-8"), sort_keys=False)
+RLPY
+  # rl_fails FILE APPSET MUTATION MESSAGE DESCRIPTION
+  rl_fails() {
+    "$contract_py" "$rl/mutate.py" "$1" "$rl/mutated.yaml" "$3" || { bad "$5 (mutation $3 failed)"; return; }
+    contract "$rl/mutated.yaml" argo-rollouts t "$2"
+    if [ "$rc" -eq 1 ] && grep -qF -- "$4" "$work/cout"; then ok "$5"; else bad "$5 (exit $rc)"; fi
+  }
+  c="$rl/controller.yaml"
+  rl_fails "$c" "$da" extra-deployment "the only Deployment must be argo-rollouts (no dashboard)" "a dashboard Deployment is named"
+  rl_fails "$c" "$da" no-limits "container argo-rollouts has no limits cpu" "a container without limits is named"
+  rl_fails "$c" "$da" no-requests "container argo-rollouts has no requests memory" "a container without requests is named"
+  rl_fails "$c" "$da" too-big "which is not under 100m" "requests of 100m CPU or more are named"
+  rl_fails "$c" "$da" too-much-memory "which is not under 128Mi" "requests of 128Mi or more are named"
+  rl_fails "$c" "$da" no-priority "must use the priority class platform-addons-critical" "a controller without its priority class is named"
+  rl_fails "$c" "$da" root "must set runAsNonRoot: true" "a pod that may run as root is named"
+  rl_fails "$c" "$da" no-seccomp "must have the seccomp profile RuntimeDefault" "a missing seccomp profile is named"
+  rl_fails "$c" "$da" escalation "must set allowPrivilegeEscalation: false" "privilege escalation is named"
+  rl_fails "$c" "$da" writable "must have a read-only root filesystem" "a writable root filesystem is named"
+  rl_fails "$c" "$da" capabilities "must drop all capabilities" "capabilities that are not all dropped are named"
+  rl_fails "$c" "$da" privileged "is privileged" "a privileged container is named"
+  rl_fails "$c" "$da" host-network "must not use the host network" "the host network is named"
+  rl_fails "$c" "$da" two-replicas "replicas without --leader-elect would all act at once" "two replicas without leader election are named"
+  rl_fails "$c" "$da" webhook "the controller has no webhook" "a webhook configuration is named"
+  rl_fails "$c" "$da" rollout "the controller chart holds no Rollout and no analysis" "a Rollout in the controller chart is named"
+  rl_fails "$c" "$da" analysis "the controller chart holds no Rollout and no analysis" "an AnalysisTemplate in the controller chart is named"
+  rl_fails "$c" "$da" secret "there are no notifications to configure" "a notifications Secret is named"
+  rl_fails "$c" "$da" provider-rights "no traffic router is used, so the provider rights stay off" "rights for a service mesh are named"
+  rl_fails "$c" "$da" no-crd "no CRD is rendered; render with --include-crds" "a render without CRDs is named"
+  rl_fails "$c" "$da" missing-crd "the CRD rollouts.argoproj.io is not rendered" "a missing CRD of the project is named"
+  rl_fails "$c" "$da" no-metrics-service "expected one Service with the port metrics (8090)" "a missing metrics Service is named"
+
+  # The ApplicationSet: a changed file must be noticed.
+  "$contract_py" - "$da" "$rl" << 'RLPY'
+import sys
+
+import yaml
+
+src, out = sys.argv[1:3]
+base = yaml.safe_load(open(src, encoding="utf-8"))
+
+
+def write(name, fn):
+    d = yaml.safe_load(yaml.safe_dump(base))
+    fn(d)
+    yaml.safe_dump(d, open(out + "/" + name, "w", encoding="utf-8"), sort_keys=False)
+
+
+tpl = lambda d: d["spec"]["template"]["spec"]
+write("appset-no-ssa.yaml", lambda d: tpl(d)["syncPolicy"]["syncOptions"].remove("ServerSideApply=true"))
+write("appset-baseline.yaml", lambda d: tpl(d)["syncPolicy"]["managedNamespaceMetadata"]["labels"].update({"pod-security.kubernetes.io/enforce": "baseline"}))
+write("appset-label.yaml", lambda d: d["spec"]["generators"][0]["clusters"]["selector"]["matchLabels"].pop("platform.example/progressive-delivery"))
+write("appset-namespace.yaml", lambda d: tpl(d)["destination"].update({"namespace": "default"}))
+write("appset-project.yaml", lambda d: tpl(d).update({"project": "default"}))
+RLPY
+  "$contract_py" "$rl/mutate.py" "$c" "$rl/near.yaml" near-limit-crd
+  contract "$rl/near.yaml" argo-rollouts t "$rl/appset-no-ssa.yaml"
+  check "a CRD within 20 percent of the limit of client-side apply needs ServerSideApply, and its absence is named" test "$rc" -eq 1 -a "$(grep -c 'is within 20 percent of what client-side apply can store (256 KiB), or over it, so the ApplicationSet needs ServerSideApply=true' "$work/cout")" = 1
+  contract "$rl/near.yaml" argo-rollouts t "$da"
+  check "and it passes with the real ApplicationSet" test "$rc" -eq 0
+  contract "$c" argo-rollouts t "$rl/appset-baseline.yaml"
+  check "a namespace created below the restricted level is named" grep -q 'not created at the restricted Pod Security level' "$work/cout"
+  contract "$c" argo-rollouts t "$rl/appset-label.yaml"
+  check "the wrong cluster label is named" grep -q 'does not select clusters by platform.example/progressive-delivery=true' "$work/cout"
+  contract "$c" argo-rollouts t "$rl/appset-namespace.yaml"
+  check "the wrong namespace is named" grep -q 'does not deploy to the argo-rollouts namespace' "$work/cout"
+  contract "$c" argo-rollouts t "$rl/appset-project.yaml"
+  check "the wrong project is named" grep -q 'does not use the platform-addons project' "$work/cout"
+
+  # The AppProject: nothing wider than the controller needs.
+  cat > "$rl/project-bad.yaml" << 'RLYAML'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: shop
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: demo
+RLYAML
+  contract "$rl/project-bad.yaml" project-fit rollouts "platform/argocd/bootstrap/appproject-platform-addons.yaml" argo-rollouts
+  check "a workload in another namespace and cluster-scoped kinds outside the list are refused" test "$rc" -eq 1
+  check "the namespace is named" grep -q 'is in the namespace shop, which is not a destination of' "$work/cout"
+  check "a storage class and a persistent volume are named" test "$(grep -c 'is cluster-scoped and not in clusterResourceWhitelist' "$work/cout")" -ge 2
 fi
 
 echo "Secrets from Parameter Store (the credential charts in both modes)"

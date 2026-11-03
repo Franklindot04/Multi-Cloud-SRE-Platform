@@ -106,6 +106,7 @@ platform/addons/*/charts/
 platform/data/*/charts/
 platform/observability/*/charts/
 platform/security/*/charts/
+platform/delivery/*/charts/
 platform/argocd/install/charts/
 *.tgz
 

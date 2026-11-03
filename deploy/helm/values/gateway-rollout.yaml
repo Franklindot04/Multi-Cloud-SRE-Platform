@@ -1,0 +1,17 @@
+---
+# Canary rollout of the gateway (rollout.enabled is NOT set here: Argo CD sets it, and rollout.analysis.enabled, from the labels of
+# the cluster; see platform/argocd/apps/83-apps-gateway.yaml). Only the gateway has this file: its series are the ones the SLOs of
+# the gateway read, and it is stateless, so a second revision next to the first is safe. The orders service stays a Deployment
+# (ADR-0028). The steps and the thresholds are the defaults of deploy/helm/service/values.yaml; they are listed here so that a
+# change to the gateway is visible in one place.
+rollout:
+  steps:
+    - setWeight: 25
+    - pause: {duration: 5m}
+    - setWeight: 50
+    - pause: {duration: 5m}
+  analysis:
+    service: gateway
+    successRatio: 0.99
+    fastRatio: 0.90
+    minRequests: 20

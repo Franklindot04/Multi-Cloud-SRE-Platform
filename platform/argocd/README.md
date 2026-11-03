@@ -41,6 +41,7 @@ platform/argocd/
                     80-... 83-...                     the sample services, one ApplicationSet each
                     84-... 86-...                     the Kyverno policy engine, its network policies and the admission policies
                     87-... 89-...                     the External Secrets Operator, its store and its network policies (platform/security)
+                    99, 100                           the Argo Rollouts controller and its network policies (platform/delivery); the numbers follow the observability files
                     90-... 98-...                     the metrics, logging and tracing stack (platform/observability)
 ```
 
@@ -58,6 +59,7 @@ A cluster is a Secret in the `argocd` namespace. Its **labels** choose which add
 | `platform.example/data-profile` | `standard`, `ha` | Data layer profile (default `standard`; `ha` needs three nodes) |
 | `platform.example/observability` | `true`, `false` | Deploy the metrics and logging stack from `platform/observability` (default `false`; no volumes, no ingress) |
 | `platform.example/policy` | `true`, `false` | Deploy the Kyverno policy engine from `platform/security` (default `false`; no policies, no volumes, no ingress) |
+| `platform.example/progressive-delivery` | `true`, `false` | Deploy the Argo Rollouts controller from `platform/delivery` (default `false`; the controller, its network policies and its metrics, no dashboard, no volumes, no ingress; the gateway becomes a canary Rollout on the same clusters in the data profile, see [ADR-0028](../../docs/adr/0028-progressive-delivery.md)) |
 | `platform.example/external-secrets` | `true`, `false` | Deploy the External Secrets Operator and the ClusterSecretStore `aws-parameter-store` from `platform/security` (default `false`; EKS only; no ExternalSecret, no credential, no volumes, no ingress) |
 | `platform.example/apps` | `true`, `false` | Deploy the sample services from `deploy/helm` (default `false`; needs published images) |
 | `platform.example/apps-profile` | `memory`, `data` | Service profile (default `memory`; `data` needs the data layer) |
@@ -105,8 +107,8 @@ The ApplicationSets carry `argocd.argoproj.io/sync-wave` annotations, so the roo
 | 15 | `observability-loki` |
 | 16 | `observability-alloy` (the log collector) |
 | 17 | `observability-network-policies` (default deny and the allow rules for the `observability` namespace; EKS clusters only) |
-| 18 | `policy-kyverno` (the Kyverno policy engine, no policies yet; only on clusters labelled `platform.example/policy=true`) |
-| 19 | `policy-network-policies` (default deny and the allow rules for the `kyverno` namespace; EKS clusters only) |
+| 18 | `policy-kyverno` (the Kyverno policy engine, no policies yet; only on clusters labelled `platform.example/policy=true`), `delivery-argo-rollouts` (the Argo Rollouts controller; the Rollouts themselves come from the gateway chart; only on clusters labelled `platform.example/progressive-delivery=true`) |
+| 19 | `policy-network-policies` (default deny and the allow rules for the `kyverno` namespace; EKS clusters only), `delivery-network-policies` (the same for the `argo-rollouts` namespace; EKS clusters only) |
 | 20 | `policy-policies` (the Kyverno admission policies for `shop`, in Audit; only on clusters labelled `platform.example/policy=true`), `apps-notifier`, `apps-payments` (only on clusters labelled `platform.example/apps=true`) |
 | 21 | `apps-orders` |
 | 22 | `apps-gateway` |
@@ -125,7 +127,7 @@ Waves order how the ApplicationSets are created; each generated Application then
 - No ingress: the server runs in insecure (plain HTTP) mode **inside the pod** because it is reached only through `kubectl port-forward`, which is already authenticated and encrypted by the Kubernetes API. Remove that setting when an ingress with TLS is added.
 - Default RBAC role is read-only (`policy.default: role:readonly`); Dex and notifications are disabled.
 - The built-in `admin` account is kept for bootstrap. Rotate its password after the first login and delete the initial secret (see the runbook).
-- A fourth AppProject, `platform-apps`, restricts the sample services to the `shop` namespace and a short allowlist of namespaced kinds (the only cluster-scoped kind is `Namespace`), so it cannot reach the `data` namespace or its volumes. A third AppProject, `platform-data`, restricts the data layer to the namespaces `data`, `shop`, `cnpg-system` and `rabbitmq-system` and an allowlist of cluster-scoped kinds that includes StorageClass.
+- A fourth AppProject, `platform-apps`, restricts the sample services to the `shop` namespace and a short allowlist of namespaced kinds (the only cluster-scoped kind is `Namespace`; `Rollout` and `AnalysisTemplate` of `argoproj.io` are on the list for the gateway canary), so it cannot reach the `data` namespace or its volumes. A third AppProject, `platform-data`, restricts the data layer to the namespaces `data`, `shop`, `cnpg-system` and `rabbitmq-system` and an allowlist of cluster-scoped kinds that includes StorageClass.
 - A fifth AppProject, `platform-observability`, restricts the metrics and logging stack to the namespaces `observability` and `kube-system` (for the CoreDNS Service the stack creates there), the cluster-scoped kinds a Prometheus Operator install needs (the namespace, CRDs and read-only roles, but no webhook configurations) and a short allowlist of namespaced kinds. The existing projects do not fit: `platform-addons` allows other namespaces and kinds, and `platform-data` and `platform-apps` are scoped to the data and shop namespaces. The monitors for the services and the data layer live in the `observability` namespace and select their targets, so this project cannot touch `shop` or `data`. `make observability-check` verifies that everything the charts render is allowed by it.
 - AppProjects limit sources to this repository, destinations to the namespaces in use, and cluster-scoped kinds to an allowlist, and warn about orphaned resources.
 

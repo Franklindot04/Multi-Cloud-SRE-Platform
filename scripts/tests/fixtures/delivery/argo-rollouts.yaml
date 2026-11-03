@@ -1,0 +1,536 @@
+---
+# A render of platform/delivery/argo-rollouts (chart 2.43.8, with ci/aws-params.yaml), with a small stand-in for each of its five CRDs
+# in place of them. It is kept so that scripts/test-scripts.sh needs no downloaded dependency: the chart's tarball is not committed and
+# the test job does not build it, as for the Kyverno and External Secrets charts. scripts/delivery-check.sh builds the chart and fails
+# if this file differs from the real render.
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rollouts.argoproj.io
+spec:
+  group: argoproj.io
+  names:
+    kind: Rollout
+    listKind: RolloutList
+    plural: rollouts
+    shortNames:
+      - ro
+    singular: rollout
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: analysisruns.argoproj.io
+spec:
+  group: argoproj.io
+  names:
+    kind: AnalysisRun
+    listKind: AnalysisRunList
+    plural: analysisruns
+    shortNames:
+      - ar
+    singular: analysisrun
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: analysistemplates.argoproj.io
+spec:
+  group: argoproj.io
+  names:
+    kind: AnalysisTemplate
+    listKind: AnalysisTemplateList
+    plural: analysistemplates
+    shortNames:
+      - at
+    singular: analysistemplate
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusteranalysistemplates.argoproj.io
+spec:
+  group: argoproj.io
+  names:
+    kind: ClusterAnalysisTemplate
+    listKind: ClusterAnalysisTemplateList
+    plural: clusteranalysistemplates
+    shortNames:
+      - cat
+    singular: clusteranalysistemplate
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: experiments.argoproj.io
+spec:
+  group: argoproj.io
+  names:
+    kind: Experiment
+    listKind: ExperimentList
+    plural: experiments
+    shortNames:
+      - exp
+    singular: experiment
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argo-rollouts
+  namespace: argo-rollouts
+  labels:
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argo-rollouts-config
+  namespace: argo-rollouts
+  labels:
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+data: null
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argo-rollouts-aggregate-to-view
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-view: 'true'
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - rollouts
+      - rollouts/scale
+      - experiments
+      - analysistemplates
+      - clusteranalysistemplates
+      - analysisruns
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argo-rollouts-aggregate-to-edit
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-edit: 'true'
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - rollouts
+      - rollouts/scale
+      - rollouts/status
+      - experiments
+      - analysistemplates
+      - clusteranalysistemplates
+      - analysisruns
+    verbs:
+      - create
+      - delete
+      - deletecollection
+      - get
+      - list
+      - patch
+      - update
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argo-rollouts-aggregate-to-admin
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-admin: 'true'
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - rollouts
+      - rollouts/scale
+      - rollouts/status
+      - experiments
+      - analysistemplates
+      - clusteranalysistemplates
+      - analysisruns
+    verbs:
+      - create
+      - delete
+      - deletecollection
+      - get
+      - list
+      - patch
+      - update
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argo-rollouts
+  labels:
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - rollouts
+      - rollouts/status
+      - rollouts/finalizers
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+      - patch
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - analysisruns
+      - analysisruns/finalizers
+      - experiments
+      - experiments/finalizers
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - analysistemplates
+      - clusteranalysistemplates
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - apps
+    resources:
+      - replicasets
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ''
+      - apps
+    resources:
+      - deployments
+      - podtemplates
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+  - apiGroups:
+      - ''
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+      - create
+      - delete
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - get
+      - update
+  - apiGroups:
+      - ''
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ''
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+  - apiGroups:
+      - ''
+    resources:
+      - pods
+    verbs:
+      - list
+      - update
+      - watch
+  - apiGroups:
+      - ''
+    resources:
+      - pods/eviction
+    verbs:
+      - create
+  - apiGroups:
+      - ''
+    resources:
+      - events
+    verbs:
+      - create
+      - update
+      - patch
+  - apiGroups:
+      - networking.k8s.io
+      - extensions
+    resources:
+      - ingresses
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+      - patch
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - update
+      - patch
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argo-rollouts
+  labels:
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: argo-rollouts
+subjects:
+  - kind: ServiceAccount
+    name: argo-rollouts
+    namespace: argo-rollouts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argo-rollouts-metrics
+  namespace: argo-rollouts
+  labels:
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+  annotations: null
+spec:
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 8090
+      targetPort: metrics
+  selector:
+    app.kubernetes.io/component: rollouts-controller
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argo-rollouts
+  namespace: argo-rollouts
+  labels:
+    app.kubernetes.io/component: rollouts-controller
+    helm.sh/chart: argo-rollouts-2.43.8
+    app.kubernetes.io/name: argo-rollouts
+    app.kubernetes.io/instance: argo-rollouts
+    app.kubernetes.io/version: v1.10.1
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: argo-rollouts
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: rollouts-controller
+      app.kubernetes.io/name: argo-rollouts
+      app.kubernetes.io/instance: argo-rollouts
+  strategy:
+    type: RollingUpdate
+  replicas: 1
+  revisionHistoryLimit: 10
+  template:
+    metadata:
+      annotations:
+        checksum/cm: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+      labels:
+        app.kubernetes.io/name: argo-rollouts
+        app.kubernetes.io/instance: argo-rollouts
+        app.kubernetes.io/component: rollouts-controller
+    spec:
+      serviceAccountName: argo-rollouts
+      containers:
+        - image: quay.io/argoproj/argo-rollouts:v1.10.1
+          args:
+            - --healthzPort=8080
+            - --metricsPort=8090
+            - --loglevel=info
+            - --logformat=text
+            - --kloglevel=0
+          imagePullPolicy: IfNotPresent
+          name: argo-rollouts
+          ports:
+            - containerPort: 8090
+              name: metrics
+            - containerPort: 8080
+              name: healthz
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            timeoutSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            limits:
+              cpu: 200m
+              memory: 192Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: plugin-bin
+              mountPath: /home/argo-rollouts/plugin-bin
+            - name: tmp
+              mountPath: /tmp
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      priorityClassName: platform-addons-critical
+      volumes:
+        - name: plugin-bin
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

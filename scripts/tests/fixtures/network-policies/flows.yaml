@@ -23,9 +23,10 @@ namespaces:
   rabbitmq-system: {}
   kyverno: {}
   external-secrets: {}
+  argo-rollouts: {}
 
 # Namespaces whose pods must all be isolated for ingress and egress (they have policies).
-enforced: [shop, data, observability, kyverno, external-secrets]
+enforced: [shop, data, observability, kyverno, external-secrets, argo-rollouts]
 
 # Addresses that are not pods. All are examples.
 endpoints:
@@ -177,6 +178,18 @@ pods:
     labels: {app: stray}
     source: a workload added to the namespace later, with no policy of its own; only the default deny holds it
 
+  - name: argo-rollouts/argo-rollouts
+    labels:
+      app.kubernetes.io/name: argo-rollouts
+      app.kubernetes.io/component: rollouts-controller
+      app.kubernetes.io/instance: argo-rollouts
+    source: >-
+      the controller Deployment of the Argo Rollouts chart 2.43.8 (rendered by the check; declared here so the unit tests need no wrapper
+      chart)
+  - name: argo-rollouts/stray
+    labels: {app: stray}
+    source: a workload added to the namespace later, with no policy of its own; only the default deny holds it
+
 # Short names for the flows below.
 names:
   gateway: shop/gateway
@@ -218,6 +231,8 @@ names:
   eso-webhook: external-secrets/external-secrets-webhook
   eso-cert-controller: external-secrets/external-secrets-cert-controller
   eso-stray: external-secrets/stray
+  rollouts-controller: argo-rollouts/argo-rollouts
+  rollouts-stray: argo-rollouts/stray
 
 # Flows. A row says that "from" (one name or a list) opens a connection to "to" (one name or a list) on each of "ports"
 # (protocol TCP unless it says otherwise), and that it is expected to be allowed or denied. "profiles" is the values profile
@@ -832,6 +847,103 @@ flows:
     expect: deny
     note: a pod with no policy of its own is held by the default deny
   - from: eso-stray
+    to: coredns
+    port: 53
+    protocol: UDP
+    expect: allow
+    via: [service, pod]
+    note: the DNS rule covers every pod of the namespace, so a new pod can resolve names
+
+  # --- argo-rollouts: the Argo Rollouts controller ---
+  - from: rollouts-controller
+    to: coredns
+    ports: [53]
+    protocol: UDP
+    expect: allow
+    via: [service, pod]
+    note: DNS
+  - from: rollouts-controller
+    to: coredns
+    ports: [53]
+    protocol: TCP
+    expect: allow
+    via: [service, pod]
+    note: DNS over TCP
+  - from: rollouts-controller
+    to: api-server
+    port: 443
+    expect: allow
+    note: the controller calls the API through the Service kubernetes
+  - from: prometheus
+    to: rollouts-controller
+    port: 8090
+    expect: allow
+    via: pod
+    note: metrics
+  - from: rollouts-controller
+    to: prometheus
+    port: 9090
+    expect: allow
+    via: service
+    note: the analysis of the gateway canary queries Prometheus through its Service
+  - from: rollouts-controller
+    to: prometheus
+    ports: [8080, 3000, 9093]
+    expect: deny
+    via: pod
+    note: only the query port of Prometheus is open to the controller
+  - from: rollouts-controller
+    to: [grafana, loki, tempo, alertmanager, ksm, collector]
+    ports: [3000, 3100, 3200, 9093, 8080, 4317]
+    expect: deny
+    note: the controller reads Prometheus and nothing else in the observability namespace
+  - from: rollouts-controller
+    to: internet
+    ports: [80, 443]
+    expect: deny
+    note: the controller has no egress to the internet (no notifications, no plugins downloaded)
+  - from: rollouts-controller
+    to: [vpc-client, api-server-eni, kubelet]
+    ports: [443, 10250]
+    expect: deny
+    note: the Service range has its own rule; the VPC range is not open
+  - from: rollouts-controller
+    to: [gateway, orders, payments, notifier, postgres, valkey, rabbitmq, kyverno-admission, eso-controller]
+    ports: [443, 8080, 8081, 5432, 6379, 5672, 9443, 8090]
+    expect: deny
+    note: the controller calls nothing outside its namespace but the API, DNS and Prometheus
+  - from: [gateway, orders, payments, notifier, postgres, valkey, rabbitmq, grafana, loki, tempo, kyverno-admission, eso-controller]
+    to: rollouts-controller
+    ports: [8090, 8080]
+    expect: deny
+    note: shop, data, observability, Kyverno and External Secrets pods do not reach the controller; only Prometheus does
+  - from: [vpc-client, internet, api-server-eni]
+    to: rollouts-controller
+    ports: [8090, 8080, 443]
+    expect: deny
+    note: nothing but Prometheus reads the metrics, and the controller has no webhook for the API server to call
+  - from: prometheus
+    to: rollouts-controller
+    port: 8080
+    expect: deny
+    via: pod
+    note: Prometheus may scrape metrics only
+  - from: [prometheus, grafana, orders, rollouts-controller]
+    to: rollouts-stray
+    ports: [8090, 8080, 443]
+    expect: deny
+    note: nothing may reach a pod with no policy of its own
+  - from: [internet, vpc-client]
+    to: rollouts-stray
+    ports: [8090, 8080]
+    expect: deny
+    note: a new pod with no policy of its own takes nothing from outside either
+  - from: rollouts-stray
+    to: [internet, api-server, api-server-eni, prometheus]
+    ports: [443, 9090]
+    expect: deny
+    note: a pod with no policy of its own is held by the default deny
+  - from: rollouts-stray
     to: coredns
     port: 53
     protocol: UDP

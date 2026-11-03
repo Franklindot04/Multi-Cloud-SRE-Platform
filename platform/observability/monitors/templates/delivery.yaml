@@ -1,0 +1,30 @@
+{{- if .Values.delivery.argoRollouts.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argo-rollouts
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: argo-rollouts-monitor
+    app.kubernetes.io/part-of: observability
+  annotations:
+    # The CRD comes from the kube-prometheus-stack Application, which may not have synced yet.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  jobLabel: app.kubernetes.io/name
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.delivery.argoRollouts.namespace }}
+  # The Service of the controller's metrics (the port "metrics", 8090) carries the instance label of the release.
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: argo-rollouts
+      app.kubernetes.io/component: rollouts-controller
+  endpoints:
+    - port: metrics
+      path: /metrics
+      # The rollout and analysis metrics carry the namespace of the Rollout in the label "namespace". Without honorLabels Prometheus would
+      # rename it to exported_namespace and put the namespace of the controller there, and every query on namespace="shop" would be empty.
+      honorLabels: true
+      interval: {{ .Values.delivery.argoRollouts.interval }}
+{{- end }}

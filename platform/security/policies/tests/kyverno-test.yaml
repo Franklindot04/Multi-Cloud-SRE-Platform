@@ -276,3 +276,95 @@ results:
       - exempt-job
       - exempt-pod
     result: skip
+  # Argo Rollouts
+  - policy: require-probes
+    isValidatingPolicy: true
+    resources:
+      - rollout-good
+    result: pass
+  - policy: require-probes
+    isValidatingPolicy: true
+    resources:
+      - rollout-probes-no-readiness
+      - rollout-probes-no-liveness
+      - rollout-probes-none
+      - rollout-probes-second-container
+    result: fail
+  - policy: require-probes
+    isValidatingPolicy: true
+    resources:
+      - rollout-elsewhere
+      - rollout-exempt
+    result: skip
+  - policy: require-image-digest
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-good
+      - rollout-pod-registry-docker
+      - rollout-pod-resources-none
+      - rollout-pod-label-none
+    result: pass
+  - policy: require-image-digest
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-digest-tag-only
+    result: fail
+  - policy: require-image-digest
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-exempt
+    result: skip
+  - policy: restrict-image-registries
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-good
+      - rollout-pod-digest-tag-only
+      - rollout-pod-resources-none
+      - rollout-pod-label-none
+    result: pass
+  - policy: restrict-image-registries
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-registry-docker
+    result: fail
+  - policy: restrict-image-registries
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-exempt
+    result: skip
+  - policy: require-resources
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-good
+      - rollout-pod-digest-tag-only
+      - rollout-pod-registry-docker
+      - rollout-pod-label-none
+    result: pass
+  - policy: require-resources
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-resources-none
+    result: fail
+  - policy: require-resources
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-exempt
+    result: skip
+  - policy: require-app-name-label
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-good
+      - rollout-pod-digest-tag-only
+      - rollout-pod-registry-docker
+      - rollout-pod-resources-none
+    result: pass
+  - policy: require-app-name-label
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-label-none
+    result: fail
+  - policy: require-app-name-label
+    isValidatingPolicy: true
+    resources:
+      - rollout-pod-exempt
+    result: skip

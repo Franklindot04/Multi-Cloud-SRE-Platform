@@ -50,6 +50,12 @@ The observability charts (platform/observability) add checks on the rendered out
                       (maxUnavailable 0), and the grace period covers the preStop sleep, the drain and the shutdown time.
                       The EXPECT of each service and profile is in scripts/deploy-check.sh, which keeps a service with
                       in-memory state at one replica
+  rollout LABEL DEPLOYMENT_RENDER MODE MONITORS_VALUES
+                      the Rollout mode of the service chart (stdin) against the Deployment mode of the same inputs (DEPLOYMENT_RENDER): the same
+                      pod template, selector, replicas and other objects, the autoscaler on the Rollout, a progress deadline that aborts, canary
+                      steps, no traffic router; MODE analysis adds the background analysis (a success and a failure condition on every metric,
+                      limits, the canary pods only, a minimum request count, a no-data value, thresholds at the SLO objectives of
+                      MONITORS_VALUES minus a margin, and a decision before the pauses end); MODE no-analysis wants none
   priority LABEL CLASS [EXEMPT...]
                       every pod a render creates or asks an operator to create uses the PriorityClass CLASS: the pod template
                       of each Deployment, StatefulSet, DaemonSet, Job and CronJob, and the Prometheus, Alertmanager,
@@ -63,6 +69,9 @@ The observability charts (platform/observability) add checks on the rendered out
                       and the chart renders none, the instances avoid one node (preferred or required), spread over zones
                       without leaving a pod Pending unless the mode says so, replicate asynchronously (no synchronous
                       replicas), update the primary by switchover, and carry the priority class; with one, no budget
+  delivery-rules LABEL RUNBOOK_MD
+                      the PrometheusRule delivery: the seven alerts on canary rollouts, each a ticket with a minimum wait, a summary, a description and
+                      a runbook_url that links to a heading of docs/runbooks/progressive-delivery.md, on the metrics of the Argo Rollouts controller only
   scaling-rules LABEL ALERTS_MD
                       the PrometheusRule "scaling" has the four alerts HpaAtMaxReplicas, PodDisruptionBudgetBlocked, PodsPending and
                       PostgresInstancesNotReady, each a ticket (never a page) that waits at least 15, 30, 10 and 10 minutes, with a
@@ -95,6 +104,16 @@ The observability charts (platform/observability) add checks on the rendered out
                       credentials) names each Secret of the CONTRACT that a chart makes, in its namespace, with its keys, its
                       type and its labels. The Secrets a generator makes exist only when the Job runs, so this reads the script
                       of the Job; a Secret made by an operator has only its name checked in the copy Job
+  argo-rollouts LABEL APPSET
+                      the Argo Rollouts install is the controller and nothing else, safe and small: one Deployment argo-rollouts
+                      with requests and limits (together under 100m CPU and 128Mi of memory per replica), the priority class
+                      platform-addons-critical, a pod that is non-root with a RuntimeDefault seccomp profile, no privilege
+                      escalation, a read-only root filesystem and every capability dropped, and --leader-elect when it has more than
+                      one replica; metrics on the port 8090, exposed by a Service named metrics; the five CRDs of the project; no
+                      dashboard, no notifications, no webhook configuration, no Rollout or analysis object and no rights for a
+                      traffic router; and, because a CRD is within 20 percent of what client-side apply can store (or over it), the
+                      ApplicationSet (APPSET) syncs with ServerSideApply=true, in the namespace argo-rollouts at the restricted level,
+                      for clusters labelled platform.example/progressive-delivery=true
   loki LABEL          the Loki configuration is single tenant, uses the TSDB index with schema v13 and the filesystem,
                       has the compactor's retention on with a retention period of at most 168h, and sets ingestion and
                       line size limits
@@ -315,7 +334,7 @@ def check_postgres_gate(docs, label):
     return problems
 
 
-WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Pod", "CronJob")
+WORKLOAD_KINDS = ("Deployment", "Rollout", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "Pod", "CronJob")
 CLUSTER_SCOPED = {
     "Namespace",
     "CustomResourceDefinition",
@@ -1347,10 +1366,12 @@ def check_scaling(docs, label, expect):
     by_kind = {}
     for d in docs:
         by_kind.setdefault(d["kind"], []).append(d)
-    deployments = by_kind.get("Deployment", [])
+    deployments = by_kind.get("Deployment", []) + by_kind.get("Rollout", [])
     if len(deployments) != 1:
-        return ["{}: expected one Deployment, found {}".format(label, len(deployments))]
+        return ["{}: expected one Deployment or Rollout, found {}".format(label, len(deployments))]
     dep = deployments[0]
+    kind = dep["kind"]
+    api = "argoproj.io/v1alpha1" if kind == "Rollout" else "apps/v1"
     spec = dep["spec"]
     pod = spec["template"]["spec"]
     pod_labels = (spec["template"].get("metadata") or {}).get("labels") or {}
@@ -1367,8 +1388,8 @@ def check_scaling(docs, label, expect):
         else:
             h = hpas[0]["spec"]
             ref = h.get("scaleTargetRef") or {}
-            if (ref.get("kind"), ref.get("name"), ref.get("apiVersion")) != ("Deployment", dep["metadata"]["name"], "apps/v1"):
-                problems.append("{}: the autoscaler does not target the Deployment {}".format(label, dep["metadata"]["name"]))
+            if (ref.get("kind"), ref.get("name"), ref.get("apiVersion")) != (kind, dep["metadata"]["name"], api):
+                problems.append("{}: the autoscaler does not target the {} {}".format(label, kind, dep["metadata"]["name"]))
             starts = h.get("minReplicas")
             if not isinstance(starts, int) or starts < 2:
                 problems.append("{}: the autoscaler minimum is {}, it must be at least 2".format(label, starts))
@@ -1383,8 +1404,8 @@ def check_scaling(docs, label, expect):
             if not isinstance(window, int) or window < 300:
                 problems.append("{}: the scale-down stabilisation window is {}, it must be at least 300 seconds".format(label, window))
         if "replicas" in spec:
-            problems.append("{}: the Deployment sets replicas ({}) next to an autoscaler; they would fight over the count".format(
-                label, spec["replicas"]))
+            problems.append("{}: the {} sets replicas ({}) next to an autoscaler; they would fight over the count".format(
+                label, kind, spec["replicas"]))
     elif expect.startswith("replicas="):
         starts = int(expect.split("=", 1)[1])
         if hpas:
@@ -1404,7 +1425,7 @@ def check_scaling(docs, label, expect):
             problems.append("{}: the budget must be maxUnavailable: 1".format(label))
         match = (b["spec"].get("selector") or {}).get("matchLabels") or {}
         if not match or any(pod_labels.get(k) != v for k, v in match.items()):
-            problems.append("{}: the budget does not select the pods of the Deployment".format(label))
+            problems.append("{}: the budget does not select the pods of the {}".format(label, kind))
 
     constraints = pod.get("topologySpreadConstraints") or []
     keys = {c.get("topologyKey"): c for c in constraints}
@@ -1417,13 +1438,18 @@ def check_scaling(docs, label, expect):
             problems.append("{}: the spread over {} has no valid whenUnsatisfiable".format(label, key))
         sel = (c.get("labelSelector") or {}).get("matchLabels") or {}
         if not sel or any(pod_labels.get(k) != v for k, v in sel.items()):
-            problems.append("{}: the spread over {} does not select the pods of the Deployment".format(label, key))
+            problems.append("{}: the spread over {} does not select the pods of the {}".format(label, key, kind))
     if len({c.get("whenUnsatisfiable") for c in constraints}) > 1:
         problems.append("{}: the spread constraints disagree on whenUnsatisfiable".format(label))
 
-    ru = (spec.get("strategy") or {}).get("rollingUpdate") or {}
-    if (spec.get("strategy") or {}).get("type") != "RollingUpdate" or str(ru.get("maxUnavailable")) != "0" or not ru.get("maxSurge"):
-        problems.append("{}: the rollout must be RollingUpdate with maxUnavailable 0 and a surge".format(label))
+    if kind == "Rollout":
+        canary = (spec.get("strategy") or {}).get("canary") or {}
+        if str(canary.get("maxUnavailable")) != "0" or not canary.get("maxSurge"):
+            problems.append("{}: the canary must have maxUnavailable 0 and a surge".format(label))
+    else:
+        ru = (spec.get("strategy") or {}).get("rollingUpdate") or {}
+        if (spec.get("strategy") or {}).get("type") != "RollingUpdate" or str(ru.get("maxUnavailable")) != "0" or not ru.get("maxSurge"):
+            problems.append("{}: the rollout must be RollingUpdate with maxUnavailable 0 and a surge".format(label))
 
     container = pod["containers"][0]
     sleep = (((container.get("lifecycle") or {}).get("preStop") or {}).get("sleep") or {}).get("seconds")
@@ -1590,6 +1616,66 @@ def check_scaling_rules(docs, label, alerts_md):
     return problems
 
 
+DELIVERY_ALERTS = {
+    # name: (minimum for in minutes, the anchor in the runbook, metrics the expression may use)
+    "RolloutAborted": (5, "rollout-aborted", {"rollout_info"}),
+    "RolloutDegraded": (10, "rollout-degraded", {"rollout_info"}),
+    "RolloutPausedTooLong": (30, "rollout-paused-too-long", {"rollout_info"}),
+    "AnalysisRunFailed": (5, "analysis-run-failed", {"analysis_run_info"}),
+    "AnalysisRunError": (5, "analysis-run-error", {"analysis_run_metric_phase"}),
+    "RolloutsControllerDown": (10, "rollouts-controller-down", {"up", "kube_deployment_status_replicas_available"}),
+    "RolloutsControllerNotReconciling": (15, "rollouts-controller-not-reconciling", {"rollout_reconcile_error", "analysis_run_reconcile_error"}),
+}
+
+
+def check_delivery_rules(docs, label, runbook_md):
+    """The PrometheusRule "delivery" (monitors chart): the alerts on canary rollouts are the ones listed in DELIVERY_ALERTS, each a ticket
+    that waits at least its minimum, with a summary, a description and a runbook_url that is a link to a heading of the progressive
+    delivery runbook, on the metrics of the Argo Rollouts controller and no others, and on a namespace (the rollouts and analysis runs of
+    shop, or the controller's own)."""
+    problems = []
+    rules_docs = [d for d in docs if d.get("kind") == "PrometheusRule" and (d.get("metadata") or {}).get("name") == "delivery"]
+    if len(rules_docs) != 1:
+        return ["{}: expected exactly one PrometheusRule named delivery, found {}".format(label, len(rules_docs))]
+    rules = [r for g in rules_docs[0]["spec"].get("groups") or [] for r in g.get("rules") or []]
+    anchors = set()
+    for line in open(runbook_md, encoding="utf-8"):
+        if line.startswith("### "):
+            anchors.add(re.sub(r"[^a-z0-9 -]", "", line[4:].strip().lower()).replace(" ", "-"))
+    by_name = {r.get("alert"): r for r in rules}
+    for name, (minimum, anchor, metrics) in DELIVERY_ALERTS.items():
+        r = by_name.get(name)
+        if r is None:
+            problems.append("{}: the alert {} is missing".format(label, name))
+            continue
+        if (r.get("labels") or {}).get("severity") != "ticket":
+            problems.append("{}: {} must have severity ticket".format(label, name))
+        waited = _minutes(r.get("for"))
+        if waited is None or waited < minimum:
+            problems.append("{}: {} waits {} and must wait at least {}m".format(label, name, r.get("for"), minimum))
+        ann = r.get("annotations") or {}
+        for key in ("summary", "description", "runbook_url"):
+            if not ann.get(key):
+                problems.append("{}: {} has no {}".format(label, name, key))
+        m = re.match(r"^https://\S+/docs/runbooks/progressive-delivery\.md#([a-z0-9-]+)$", str(ann.get("runbook_url", "")))
+        if not m:
+            problems.append("{}: the runbook_url of {} is not a link to docs/runbooks/progressive-delivery.md with an anchor".format(label, name))
+        elif m.group(1) != anchor:
+            problems.append("{}: the runbook_url of {} points at #{}, and should point at #{}".format(label, name, m.group(1), anchor))
+        elif anchor not in anchors:
+            problems.append("{}: the runbook_url of {} points at #{}, which is not a heading of the progressive delivery runbook".format(label, name, anchor))
+        expr = r.get("expr", "")
+        used = set(re.findall(r"\b((?:rollout|analysis_run|kube)_[a-z_]+|up)\{", expr))
+        if used != metrics:
+            problems.append("{}: {} uses the metrics {} and should use {}".format(label, name, sorted(used), sorted(metrics)))
+        if 'namespace="' not in expr:
+            problems.append("{}: {} does not select a namespace".format(label, name))
+    for name in by_name:
+        if name not in DELIVERY_ALERTS:
+            problems.append("{}: the alert {} is not one the check knows".format(label, name))
+    return problems
+
+
 def table_waves(readme):
     """{ApplicationSet name: wave} from the README table of '| wave | `name`, `name` ... |' rows."""
     waves = {}
@@ -1655,6 +1741,11 @@ def check_waves(apps_dir, readme):
         ("eso-store", "data-secrets"),
         ("eso-store", "observability-secrets"),
         ("eso-store", "apps-notifier"),
+        # The controller comes after the observability stack (its analyses read Prometheus), its network policies after it, and both before
+        # the services that will use Rollouts.
+        ("observability-network-policies", "delivery-argo-rollouts"),
+        ("delivery-argo-rollouts", "delivery-network-policies"),
+        ("delivery-argo-rollouts", "apps-notifier"),
     ]
     for first, second in before:
         a, b = wave(first), wave(second)
@@ -1663,7 +1754,7 @@ def check_waves(apps_dir, readme):
 
     # The README must say what the files say.
     for name, (w, path) in sorted(actual.items()):
-        if not name.startswith(("data-", "apps-", "observability-", "policy-", "eso-")):
+        if not name.startswith(("data-", "apps-", "observability-", "policy-", "eso-", "delivery-")):
             continue
         if name not in documented:
             problems.append("{} ({}) is not in the wave table of {}".format(name, path, readme))
@@ -1756,7 +1847,7 @@ def check_network_policies(docs, label):
 
     namespaces = {(d.get("metadata") or {}).get("namespace") for d in policies}
     for d in docs:
-        if d["kind"] not in ("Deployment", "StatefulSet", "Job"):
+        if d["kind"] not in ("Deployment", "Rollout", "StatefulSet", "Job"):
             continue
         template = (d.get("spec") or {}).get("template") or {}
         pod_labels = (template.get("metadata") or {}).get("labels") or {}
@@ -1786,7 +1877,7 @@ def pod_label_sets(docs):
         kind = d["kind"]
         name = (d.get("metadata") or {}).get("name")
         spec = d.get("spec") or {}
-        if kind in ("Deployment", "StatefulSet", "DaemonSet", "Job"):
+        if kind in ("Deployment", "Rollout", "StatefulSet", "DaemonSet", "Job"):
             labels = dict(((spec.get("template") or {}).get("metadata") or {}).get("labels") or {})
             if kind == "Job":
                 # The Job controller adds this label to its pods.
@@ -2247,6 +2338,299 @@ def check_secrets_generated(docs, label, contract_file):
     return problems
 
 
+ROLLOUTS_CRDS = {
+    "rollouts.argoproj.io",
+    "analysisruns.argoproj.io",
+    "analysistemplates.argoproj.io",
+    "clusteranalysistemplates.argoproj.io",
+    "experiments.argoproj.io",
+}
+ROLLOUTS_PROVIDER_GROUPS = ("istio.io", "elbv2.k8s.aws", "smi-spec.io", "gateway.networking.k8s.io", "traefik", "getambassador.io", "appmesh", "apisix", "projectcontour", "solo.io")
+
+
+def check_argo_rollouts(docs, label, appset_file):
+    problems = []
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    deployments = [d for d in docs if d["kind"] == "Deployment"]
+    if [d["metadata"]["name"] for d in deployments] != ["argo-rollouts"]:
+        fail("the only Deployment must be argo-rollouts (no dashboard), found {}".format([d["metadata"]["name"] for d in deployments]))
+    controller = next((d for d in deployments if d["metadata"]["name"] == "argo-rollouts"), None)
+    if controller is not None:
+        spec = controller["spec"]
+        replicas = spec.get("replicas") or 1
+        pod = spec["template"]["spec"]
+        if pod.get("priorityClassName") != "platform-addons-critical":
+            fail("the controller must use the priority class platform-addons-critical, not {!r}".format(pod.get("priorityClassName")))
+        podsc = pod.get("securityContext") or {}
+        if podsc.get("runAsNonRoot") is not True:
+            fail("the controller pod must set runAsNonRoot: true")
+        if pod.get("hostNetwork") or pod.get("hostPID") or pod.get("hostIPC"):
+            fail("the controller must not use the host network or the host namespaces")
+        cpu = memory = 0.0
+        for c in pod.get("containers") or []:
+            sc = c.get("securityContext") or {}
+            res = c.get("resources") or {}
+            for part in ("requests", "limits"):
+                for key in ("cpu", "memory"):
+                    if key not in (res.get(part) or {}):
+                        fail("container {} has no {} {}".format(c["name"], part, key))
+            req = res.get("requests") or {}
+            if "cpu" in req and "memory" in req:
+                cpu += cpu_millicores(req["cpu"])
+                memory += memory_mebibytes(req["memory"])
+            seccomp = (sc.get("seccompProfile") or podsc.get("seccompProfile") or {}).get("type")
+            if seccomp != "RuntimeDefault":
+                fail("container {} must have the seccomp profile RuntimeDefault".format(c["name"]))
+            if sc.get("allowPrivilegeEscalation") is not False:
+                fail("container {} must set allowPrivilegeEscalation: false".format(c["name"]))
+            if sc.get("readOnlyRootFilesystem") is not True:
+                fail("container {} must have a read-only root filesystem".format(c["name"]))
+            if (sc.get("capabilities") or {}).get("drop") != ["ALL"]:
+                fail("container {} must drop all capabilities".format(c["name"]))
+            if sc.get("privileged"):
+                fail("container {} is privileged".format(c["name"]))
+            ports = {p.get("containerPort") for p in c.get("ports") or []}
+            if 8090 not in ports:
+                fail("container {} does not serve metrics on port 8090".format(c["name"]))
+            if replicas > 1 and "--leader-elect" not in (c.get("args") or []):
+                fail("{} replicas without --leader-elect would all act at once".format(replicas))
+        if cpu >= 100:
+            fail("the controller requests {:g}m CPU, which is not under 100m".format(cpu))
+        if memory >= 128:
+            fail("the controller requests {:g}Mi of memory, which is not under 128Mi".format(memory))
+    services = [d for d in docs if d["kind"] == "Service" and any(p.get("name") == "metrics" and p.get("port") == 8090 for p in (d.get("spec") or {}).get("ports") or [])]
+    if len(services) != 1:
+        fail("expected one Service with the port metrics (8090), found {}".format(len(services)))
+    for d in docs:
+        if d["kind"] in ("ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"):
+            fail("{} is rendered; the controller has no webhook".format(name_of(d)))
+        if d["kind"] in ("Rollout", "AnalysisTemplate", "ClusterAnalysisTemplate", "AnalysisRun", "Experiment"):
+            fail("{} is rendered; the controller chart holds no Rollout and no analysis".format(name_of(d)))
+        if d["kind"] == "Secret":
+            fail("{} is rendered; there are no notifications to configure".format(name_of(d)))
+        if d["kind"] in ("ClusterRole", "Role"):
+            for rule in d.get("rules") or []:
+                for group in rule.get("apiGroups") or []:
+                    if any(g in group for g in ROLLOUTS_PROVIDER_GROUPS):
+                        fail("{} has rights on {}; no traffic router is used, so the provider rights stay off".format(name_of(d), group))
+    crds = {d["metadata"]["name"]: d for d in docs if d["kind"] == "CustomResourceDefinition"}
+    if not crds:
+        fail("no CRD is rendered; render with --include-crds")
+    else:
+        for missing in sorted(ROLLOUTS_CRDS - set(crds)):
+            fail("the CRD {} is not rendered".format(missing))
+    appset = yaml.safe_load(open(appset_file, encoding="utf-8"))
+    tpl = ((appset.get("spec") or {}).get("template") or {}).get("spec") or {}
+    sync = tpl.get("syncPolicy") or {}
+    near = [n for n, d in crds.items() if len(json.dumps(d)) > CLIENT_SIDE_APPLY_LIMIT * 0.8]
+    if near and "ServerSideApply=true" not in (sync.get("syncOptions") or []):
+        fail("{} is within 20 percent of what client-side apply can store (256 KiB), or over it, so the ApplicationSet needs ServerSideApply=true".format(near[0]))
+    labels = ((sync.get("managedNamespaceMetadata") or {}).get("labels")) or {}
+    if labels.get("pod-security.kubernetes.io/enforce") != "restricted":
+        fail("the argo-rollouts namespace is not created at the restricted Pod Security level")
+    if tpl.get("destination", {}).get("namespace") != "argo-rollouts":
+        fail("the ApplicationSet does not deploy to the argo-rollouts namespace")
+    if tpl.get("project") != "platform-addons":
+        fail("the ApplicationSet does not use the platform-addons project")
+    match = (((appset.get("spec") or {}).get("generators") or [{}])[0].get("clusters") or {}).get("selector", {}).get("matchLabels", {})
+    if match.get("platform.example/progressive-delivery") != "true":
+        fail("the ApplicationSet does not select clusters by platform.example/progressive-delivery=true")
+    return problems
+
+
+def duration_seconds(text):
+    """Seconds in a duration such as 90s, 5m or 1h (Rollouts and the analysis use these); None when it is not one."""
+    m = re.fullmatch(r"(\d+)([smh])", str(text))
+    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600}[m.group(2)] if m else None
+
+
+def slo_objective(values_file, name):
+    for slo in (yaml.safe_load(open(values_file, encoding="utf-8")).get("slo") or {}).get("slos") or []:
+        if slo.get("name") == name:
+            return float(slo["objective"])
+    return None
+
+
+ROLLOUT_MAX_MARGIN = 0.10
+
+
+def check_rollout(docs, label, deployment_file, mode, monitors_values):
+    """The Rollout mode of the service chart (rollout.enabled) against the Deployment mode of the same inputs, and the rules for a canary.
+
+    Parity: the pod template (labels, annotations, containers, probes, resources, security context, priority class, topology spread),
+    the selector, the replica count and every other object are the same in both modes. The only difference allowed in the pod template
+    is the label the topology spread uses to tell the revisions apart (pod-template-hash for a Deployment, rollouts-pod-template-hash
+    for a Rollout). The autoscaler targets the Rollout. The Service and the budget select the labels both revisions share.
+
+    Rules: a progress deadline that aborts, steps with a weight, no traffic router, maxUnavailable 0 within the budget, and (MODE
+    "analysis") a background analysis whose every metric has a success condition and a failure condition, limits, a query on the canary
+    pods only (the pod name holds the pod template hash, which is passed in), a minimum request count and a no-data value, and
+    thresholds at the SLO objectives minus a margin of at most ROLLOUT_MAX_MARGIN. The analysis has to decide, as inconclusive or as
+    failed, before the pauses of the steps run out, or an idle canary would be promoted without a decision. MODE "no-analysis": no
+    AnalysisTemplate and no analysis in the Rollout.
+    """
+    problems = []
+
+    def fail(message):
+        problems.append("{}: {}".format(label, message))
+
+    rollouts = [d for d in docs if d["kind"] == "Rollout"]
+    if [d["kind"] for d in docs].count("Deployment"):
+        fail("the Rollout render still has a Deployment")
+    if len(rollouts) != 1:
+        return problems + ["{}: expected one Rollout, found {}".format(label, len(rollouts))]
+    ro = rollouts[0]
+    spec = ro["spec"]
+    other = [d for d in yaml.safe_load_all(open(deployment_file, encoding="utf-8")) if d]
+    deployments = [d for d in other if d["kind"] == "Deployment"]
+    if len(deployments) != 1 or any(d["kind"] == "Rollout" for d in other):
+        return problems + ["{}: {} must hold one Deployment and no Rollout".format(label, deployment_file)]
+    dep = deployments[0]
+
+    def template_without_hash_key(t):
+        t = yaml.safe_load(yaml.safe_dump(t))
+        for c in (t.get("spec") or {}).get("topologySpreadConstraints") or []:
+            c.pop("matchLabelKeys", None)
+        return t
+
+    dep_t, ro_t = dep["spec"]["template"], spec["template"]
+    if template_without_hash_key(dep_t) != template_without_hash_key(ro_t):
+        fail("the pod template of the Rollout differs from the pod template of the Deployment (labels, probes, resources, security or spread)")
+    for name, t, want in (("Deployment", dep_t, ["pod-template-hash"]), ("Rollout", ro_t, ["rollouts-pod-template-hash"])):
+        for c in (t["spec"].get("topologySpreadConstraints") or []):
+            if c.get("matchLabelKeys") != want:
+                fail("the topology spread of the {} must tell the revisions apart with {}, not {}".format(name, want[0], c.get("matchLabelKeys")))
+    if spec.get("selector") != dep["spec"].get("selector"):
+        fail("the selector of the Rollout differs from the selector of the Deployment")
+    if spec.get("replicas") != dep["spec"].get("replicas"):
+        fail("replicas is {} in the Rollout and {} in the Deployment".format(spec.get("replicas"), dep["spec"].get("replicas")))
+
+    def rest(items):
+        out = {}
+        for d in items:
+            if d["kind"] in ("Deployment", "Rollout", "AnalysisTemplate"):
+                continue
+            d = yaml.safe_load(yaml.safe_dump(d))
+            if d["kind"] == "HorizontalPodAutoscaler":
+                d["spec"]["scaleTargetRef"] = {"name": d["spec"]["scaleTargetRef"]["name"]}
+            out[(d["kind"], d["metadata"]["name"])] = d
+        return out
+
+    if rest(docs) != rest(other):
+        fail("the objects other than the workload and the analysis are not the same in the Rollout mode and the Deployment mode")
+    for h in [d for d in docs if d["kind"] == "HorizontalPodAutoscaler"]:
+        ref = h["spec"]["scaleTargetRef"]
+        if (ref.get("apiVersion"), ref.get("kind"), ref.get("name")) != ("argoproj.io/v1alpha1", "Rollout", ro["metadata"]["name"]):
+            fail("the autoscaler does not target the Rollout {}".format(ro["metadata"]["name"]))
+        if "replicas" in spec:
+            fail("the Rollout sets replicas next to an autoscaler; they would fight over the count")
+    pod_labels = (ro_t.get("metadata") or {}).get("labels") or {}
+    for d in docs:
+        sel = None
+        if d["kind"] == "Service":
+            sel = d["spec"].get("selector")
+        elif d["kind"] == "PodDisruptionBudget":
+            sel = (d["spec"].get("selector") or {}).get("matchLabels")
+        if sel is not None and (not sel or any(pod_labels.get(k) != v for k, v in sel.items()) or "rollouts-pod-template-hash" in sel):
+            fail("{} must select the labels that the stable and the canary pods share, and not the revision label".format(name_of(d)))
+
+    if not isinstance(spec.get("progressDeadlineSeconds"), int) or spec["progressDeadlineSeconds"] < 1:
+        fail("the Rollout has no progress deadline (progressDeadlineSeconds)")
+    if spec.get("progressDeadlineAbort") is not True:
+        fail("the Rollout does not abort when it passes its progress deadline (progressDeadlineAbort: true)")
+    canary = (spec.get("strategy") or {}).get("canary")
+    if not canary:
+        return problems + ["{}: the Rollout has no canary strategy".format(label)]
+    steps = canary.get("steps") or []
+    weights = [s["setWeight"] for s in steps if "setWeight" in s]
+    if not steps or not weights:
+        fail("the canary has no steps with a setWeight: it would be promoted at once")
+    if weights != sorted(weights) or any(not 0 < w < 100 for w in weights):
+        fail("the canary weights {} must rise and stay between 0 and 100".format(weights))
+    if "trafficRouting" in canary:
+        fail("the canary sets trafficRouting; this platform has no traffic router, so the weights are replica ratios")
+    if str(canary.get("maxUnavailable")) != "0" or not canary.get("maxSurge"):
+        fail("the canary must have maxUnavailable 0 and a maxSurge")
+    for b in [d for d in docs if d["kind"] == "PodDisruptionBudget"]:
+        if isinstance(canary.get("maxUnavailable"), int) and canary["maxUnavailable"] > b["spec"].get("maxUnavailable", 0):
+            fail("the canary maxUnavailable is above the budget maxUnavailable")
+    if "abortScaleDownDelaySeconds" in canary:
+        fail("abortScaleDownDelaySeconds is set; the project documents it only for a canary with a traffic router")
+
+    templates = [d for d in docs if d["kind"] == "AnalysisTemplate"]
+    analysis = canary.get("analysis")
+    if mode == "no-analysis":
+        if templates or analysis:
+            fail("the render is asked to have no analysis, but has an AnalysisTemplate or an analysis in the Rollout")
+        return problems
+    if mode != "analysis":
+        return problems + ["{}: unknown mode {}".format(label, mode)]
+    if len(templates) != 1:
+        return problems + ["{}: expected one AnalysisTemplate, found {}".format(label, len(templates))]
+    tpl = templates[0]
+    if not analysis:
+        return problems + ["{}: the Rollout has no background analysis (strategy.canary.analysis)".format(label)]
+    if [t.get("templateName") for t in analysis.get("templates") or []] != [tpl["metadata"]["name"]]:
+        fail("the Rollout analysis does not use the AnalysisTemplate {}".format(tpl["metadata"]["name"]))
+    if not isinstance(analysis.get("startingStep"), int):
+        fail("the background analysis has no startingStep, so it would start before the canary exists")
+    args = {a["name"]: a for a in analysis.get("args") or []}
+    if (args.get("canary-hash") or {}).get("valueFrom") != {"podTemplateHashValue": "Latest"}:
+        fail("the Rollout does not pass the canary pod template hash (canary-hash, podTemplateHashValue: Latest) to the analysis")
+    if "canary-hash" not in [a["name"] for a in tpl["spec"].get("args") or []]:
+        fail("the AnalysisTemplate does not declare the argument canary-hash")
+    metrics = tpl["spec"].get("metrics") or []
+    if len(metrics) != 2:
+        fail("the AnalysisTemplate must have two metrics (success ratio and fast ratio), found {}".format(len(metrics)))
+    objectives = {"success-ratio": slo_objective(monitors_values, "gateway-availability"), "fast-ratio": slo_objective(monitors_values, "gateway-latency")}
+    seconds_to_decide = 0
+    for m in metrics:
+        where = "metric {}".format(m.get("name"))
+        success, failure = m.get("successCondition"), m.get("failureCondition")
+        if not success:
+            fail("{} has no successCondition".format(where))
+        if not failure:
+            fail("{} has no failureCondition: a bad canary would never fail, only wait".format(where))
+        for field in ("failureLimit", "inconclusiveLimit", "consecutiveErrorLimit"):
+            if not isinstance(m.get(field), int) or m[field] < 0:
+                fail("{} has no {}".format(where, field))
+        interval, delay = duration_seconds(m.get("interval")), duration_seconds(m.get("initialDelay"))
+        if interval is None or delay is None:
+            fail("{} needs an interval and an initialDelay as durations such as 1m".format(where))
+        elif isinstance(m.get("failureLimit"), int) and isinstance(m.get("inconclusiveLimit"), int):
+            seconds_to_decide = max(seconds_to_decide, delay + (max(m["failureLimit"], m["inconclusiveLimit"]) + 1) * interval)
+        threshold = re.fullmatch(r"result\[0\] >= ([0-9.]+)", success or "")
+        below = re.fullmatch(r"result\[0\] < ([0-9.]+)", failure or "")
+        if success and failure and not (threshold and below and threshold.group(1) == below.group(1)):
+            fail("{} must have the conditions result[0] >= T and result[0] < T with the same T, so that only no data is inconclusive".format(where))
+        objective = objectives.get(m.get("name"))
+        if threshold and objective is not None:
+            value = float(threshold.group(1))
+            if value > objective or value < objective - ROLLOUT_MAX_MARGIN:
+                fail("{} has the threshold {}, which is not between the SLO objective {} minus {:g} and the objective".format(
+                    where, value, objective, ROLLOUT_MAX_MARGIN))
+        prom = (m.get("provider") or {}).get("prometheus") or {}
+        if not re.fullmatch(r"http://[a-z0-9-]+\.[a-z0-9-]+\.svc\.cluster\.local:9090", prom.get("address", "")):
+            fail("{} does not query the in-cluster Prometheus Service on port 9090".format(where))
+        query = prom.get("query", "")
+        if "pod=~\"{}-{{{{args.canary-hash}}}}-".format(ro["metadata"]["name"]) not in query:
+            fail("{} does not select the canary pods only (pod=~\"<name>-{{{{args.canary-hash}}}}-...\")".format(where))
+        if "vector(NaN)" not in query:
+            fail("{} has no no-data value (or vector(NaN)): with no traffic the result would be empty and not inconclusive".format(where))
+        if not re.search(r">= \d+\)\) or vector\(NaN\)$", query.strip()):
+            fail("{} has no minimum request count in the query".format(where))
+        if "/healthz" not in query:
+            fail("{} counts the operational routes, which the SLO rules leave out".format(where))
+    pause_seconds = sum(duration_seconds((s["pause"] or {}).get("duration")) or 0 for s in steps if "pause" in s)
+    if seconds_to_decide and pause_seconds <= seconds_to_decide:
+        fail("the pauses of the steps total {}s but the analysis needs up to {}s to fail or turn inconclusive: an idle canary would be "
+             "promoted before it is decided".format(pause_seconds, seconds_to_decide))
+    return problems
+
+
 POLICY_NAMES = {
     "require-image-digest",
     "restrict-image-registries",
@@ -2319,8 +2703,8 @@ def check_policies(docs, label, mode, images_file, verify_script):
             problems.append("{} does not skip the workloads that carry platform.example/policy-exempt".format(where))
         resources = [r for rule in constraints.get("resourceRules") or [] for r in rule.get("resources") or []]
         if name == "require-probes":
-            if sorted(resources) != ["daemonsets", "deployments", "statefulsets"]:
-                problems.append("{} must match deployments, statefulsets and daemonsets only (Jobs are exempt), not {}".format(where, resources))
+            if sorted(resources) != ["daemonsets", "deployments", "rollouts", "statefulsets"]:
+                problems.append("{} must match deployments, statefulsets, daemonsets and rollouts only (Jobs are exempt), not {}".format(where, resources))
         else:
             if resources != ["pods"]:
                 problems.append("{} must match pods and no subresource, so the ephemeral debug container is not stopped (it matches {})".format(where, resources))
@@ -2397,6 +2781,8 @@ def main(argv):
         problems = check_priority(load_stdin(), argv[2], argv[3], set(argv[4:]))
     elif len(argv) == 3 and argv[1] == "priority-classes":
         problems = check_priority_classes(load_stdin(), argv[2])
+    elif len(argv) == 4 and argv[1] == "delivery-rules":
+        problems = check_delivery_rules(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "scaling-rules":
         problems = check_scaling_rules(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "postgres-ha":
@@ -2407,6 +2793,10 @@ def main(argv):
         problems = check_secrets_external(load_stdin(), argv[2], argv[3], argv[4], argv[5])
     elif len(argv) == 4 and argv[1] == "secrets-generated":
         problems = check_secrets_generated(load_stdin(), argv[2], argv[3])
+    elif len(argv) == 6 and argv[1] == "rollout":
+        problems = check_rollout(load_stdin(), argv[2], argv[3], argv[4], argv[5])
+    elif len(argv) == 4 and argv[1] == "argo-rollouts":
+        problems = check_argo_rollouts(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "external-secrets":
         problems = check_external_secrets(load_stdin(), argv[2], argv[3])
     elif len(argv) == 4 and argv[1] == "eso-store":

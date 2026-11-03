@@ -34,6 +34,12 @@ spec:
     # The CPU autoscaler of the services that are safe to scale out (deploy/helm/service/templates/hpa.yaml).
     - group: autoscaling
       kind: HorizontalPodAutoscaler
+    # The canary Rollout and its analysis (deploy/helm/service/templates/rollout.yaml and analysistemplate.yaml), only on clusters with
+    # the Argo Rollouts controller. Two kinds of the group, not the group: no AnalysisRun, Experiment or ClusterAnalysisTemplate.
+    - group: argoproj.io
+      kind: Rollout
+    - group: argoproj.io
+      kind: AnalysisTemplate
     - group: networking.k8s.io
       kind: Ingress
     # The default deny and the allow rules of each service (deploy/helm/service/templates/networkpolicy.yaml), all in shop.

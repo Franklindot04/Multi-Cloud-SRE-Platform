@@ -1,0 +1,42 @@
+{{- include "service.validateScaling" . -}}
+{{- include "service.validateRollout" . -}}
+{{- if .Values.rollout.enabled }}
+{{- $name := include "service.name" . }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "service.labels" . | nindent 4 }}
+spec:
+  {{- /* With an autoscaler the field is left out, so the autoscaler's count is not reset by a sync (as for the Deployment). */}}
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ default 1 .Values.replicas }}
+  {{- end }}
+  revisionHistoryLimit: {{ .Values.rollout.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ .Values.rollout.progressDeadlineSeconds }}
+  progressDeadlineAbort: {{ .Values.rollout.progressDeadlineAbort }}
+  selector:
+    matchLabels:
+      {{- include "service.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "service.podTemplate" . | nindent 4 }}
+  strategy:
+    canary:
+      # No traffic router: a step's weight is a share of the replicas. The Service selects the pods of both revisions.
+      maxSurge: {{ if kindIs "string" .Values.rollout.maxSurge }}{{ .Values.rollout.maxSurge | quote }}{{ else }}{{ .Values.rollout.maxSurge }}{{ end }}
+      maxUnavailable: {{ if kindIs "string" .Values.rollout.maxUnavailable }}{{ .Values.rollout.maxUnavailable | quote }}{{ else }}{{ .Values.rollout.maxUnavailable }}{{ end }}
+      steps:
+        {{- toYaml .Values.rollout.steps | nindent 8 }}
+      {{- if .Values.rollout.analysis.enabled }}
+      # Background analysis: it starts at the first pause, when the canary pods exist, and runs until the rollout ends.
+      analysis:
+        startingStep: 1
+        templates:
+          - templateName: {{ $name }}-canary
+        args:
+          - name: canary-hash
+            valueFrom:
+              podTemplateHashValue: Latest
+      {{- end }}
+{{- end }}

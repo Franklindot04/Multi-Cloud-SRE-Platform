@@ -1,6 +1,6 @@
 # AWS environment stack
 
-Root Terraform stack for the AWS side of the platform. It currently provisions the VPC network and the EKS cluster by composing the [`aws-network`](../../modules/aws-network) and [`aws-eks`](../../modules/aws-eks) modules; other resources arrive in later changes.
+Root Terraform stack for the AWS side of the platform. It currently provisions the VPC network and the EKS cluster by composing the [`aws-network`](../../modules/aws-network) and [`aws-eks`](../../modules/aws-eks) modules; other resources are added as the platform grows.
 
 ## Files
 

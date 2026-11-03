@@ -1,0 +1,12 @@
+apiVersion: v2
+name: argo-rollouts
+description: Argo Rollouts controller (progressive delivery), without dashboard, notifications and analysis templates
+type: application
+version: 0.1.0
+appVersion: v1.10.1
+annotations:
+  platform/clouds: "aws,gcp"
+dependencies:
+  - name: argo-rollouts
+    version: 2.43.8
+    repository: https://argoproj.github.io/argo-helm

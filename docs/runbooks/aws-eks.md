@@ -33,6 +33,8 @@ With the defaults, expect a few dollars per day. Destroy as soon as you are done
 
 The details, and what to check afterwards, are in the [secrets runbook](secrets.md). A cluster that does not opt in needs none of this.
 
+The checks to run on a cluster for everything merged and not yet seen (network policies, Kyverno, resilience, external secrets and the Argo Rollouts canary), in order, with the flags and the node count to use, are in [checks for the next apply session](progressive-delivery.md#checks-for-the-next-apply-session).
+
 The network and cluster live in one stack. Terraform creates the network first and the cluster after it, because the cluster depends on the network outputs.
 
 ```bash

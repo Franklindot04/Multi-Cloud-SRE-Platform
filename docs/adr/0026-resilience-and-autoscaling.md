@@ -29,7 +29,7 @@ A service gets a second replica only when its state is outside the pod. The code
 | payments | data | 2, fixed | Safe with more (the unique idempotency key with `ON CONFLICT DO NOTHING` decides), but not scaled. A JVM uses a burst of CPU while it starts and warms up, which would read as load against a request of 100m. An autoscaler waits until there is load data to size it from |
 | notifier | both | 1 | Its duplicate detection and its store of notifications are in memory, per pod. A redelivered event can reach a pod that has not seen it, and a request for the list of notifications would show only what that pod recorded |
 
-Orders in the data profile publishes at least once, and the order of events is not kept across replicas, because two relays take different batches. The notifier stores each event under its own ID and does not depend on the order. The notifier stays at one replica until its state is shared, and scaling it by queue depth belongs to a later change (see the alternatives).
+Orders in the data profile publishes at least once, and the order of events is not kept across replicas, because two relays take different batches. The notifier stores each event under its own ID and does not depend on the order. The notifier stays at one replica until its state is shared, and scaling it by queue depth is future work (see the alternatives).
 
 ### Budgets, spread and rollout
 
@@ -66,7 +66,7 @@ Two instances in the data profile, a primary and one replica (`cluster.instances
 - **Budgets.** The operator creates and owns the budgets of the cluster (`enablePDB`, on above one instance). The chart renders none, and a check fails if one appears. From the operator's documentation: a drain that finds the primary on the node waits, and a Spot reclaim does not wait and the replica is promoted.
 - **Access.** The services keep using `platform-pg-rw`, which points at whichever instance is the primary. No pod name is configured anywhere. A replica streams from the primary through the same Service, so with this CNI the egress rule is matched against the Service address; the rules and the flow matrix from [ADR-0024](0024-network-policies.md) already cover it, and denied flows were added next to them.
 
-RabbitMQ and Valkey stay single instances. RabbitMQ would need three nodes and quorum queues, which is a later change.
+RabbitMQ and Valkey stay single instances. RabbitMQ would need three nodes and quorum queues, which is future work.
 
 ### Alerts
 

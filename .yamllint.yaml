@@ -22,6 +22,9 @@ ignore: |
   platform/security/*/templates/
   platform/security/*/charts/
   platform/security/*/Chart.lock
+  platform/delivery/*/templates/
+  platform/delivery/*/charts/
+  platform/delivery/*/Chart.lock
 
 rules:
   line-length:

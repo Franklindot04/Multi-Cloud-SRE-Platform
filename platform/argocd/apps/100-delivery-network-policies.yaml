@@ -1,0 +1,61 @@
+---
+# Default-deny network policies for the argo-rollouts namespace and the allow rules of the controller. Wave 19: after the controller (wave
+# 18). Only EKS clusters get it. The VPC CNI network policy agent matches egress against Service addresses, so the chart allows the Service
+# range (DNS, the API server and the Prometheus query port that the canary analysis uses) on the ports it needs. The controller has no
+# webhook, so no rule takes the VPC range. The Service range comes from the cluster annotation
+# platform.example/service-cidr (written by scripts/bootstrap-argocd.sh), never from Git. Inside the Application the allow rules are
+# applied (sync wave -2) before the deny (wave -1), so a deny
+# never lands without them.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: delivery-network-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "19"
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - clusters:
+        selector:
+          matchLabels:
+            platform.example/managed: "true"
+            platform.example/progressive-delivery: "true"
+            platform.example/cloud: aws
+  template:
+    metadata:
+      name: 'delivery-network-policies-{{ .nameNormalized }}'
+      labels:
+        platform.example/addon: delivery-network-policies
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: platform-addons
+      source:
+        repoURL: https://github.com/Franklindot04/Multi-Cloud-SRE-Platform.git
+        targetRevision: main
+        path: platform/delivery/argo-rollouts-network-policies
+        helm:
+          releaseName: delivery-network-policies
+          valueFiles:
+            - values.yaml
+          parameters:
+            - name: serviceCidr
+              value: '{{ index .metadata.annotations "platform.example/service-cidr" }}'
+              forceString: true
+      destination:
+        server: '{{ .server }}'
+        namespace: argo-rollouts
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PruneLast=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 5m

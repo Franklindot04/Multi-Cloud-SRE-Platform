@@ -1339,3 +1339,429 @@ spec:
         httpGet:
           path: /healthz
           port: 8080
+# Pods and controllers of Argo Rollouts (ADR-0028). A Rollout is a controller like a Deployment, in the group argoproj.io: the probe policy
+# matches it. The pod policies match pods, and the pods a Rollout makes are ordinary pods, so the rollout-pod-* cases stand for them (what
+# the ReplicaSet of a Rollout creates, with the label rollouts-pod-template-hash). The pod policies do not look at the Rollout object.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: rollout-good
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: rollout-good
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: rollout-good
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause:
+            duration: 5m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: rollout-probes-no-readiness
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: rollout-probes-no-readiness
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: rollout-probes-no-readiness
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause:
+            duration: 5m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: rollout-probes-no-liveness
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: rollout-probes-no-liveness
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: rollout-probes-no-liveness
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause:
+            duration: 5m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: rollout-probes-none
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: rollout-probes-none
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: rollout-probes-none
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause:
+            duration: 5m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: rollout-probes-second-container
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: rollout-probes-second-container
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: rollout-probes-second-container
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+        - name: sidecar
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause:
+            duration: 5m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: rollout-elsewhere
+  namespace: other
+spec:
+  selector:
+    matchLabels:
+      app: rollout-elsewhere
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: rollout-elsewhere
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause:
+            duration: 5m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: rollout-exempt
+  namespace: shop
+  labels:
+    platform.example/policy-exempt: 'true'
+spec:
+  selector:
+    matchLabels:
+      app: rollout-exempt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app: rollout-exempt
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause:
+            duration: 5m
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rollout-pod-good
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+    app: rollout-pod-good
+    rollouts-pod-template-hash: abc123
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rollout-pod-digest-tag-only
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+    app: rollout-pod-digest-tag-only
+    rollouts-pod-template-hash: abc123
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/franklindot04/gateway:1.0
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rollout-pod-registry-docker
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+    app: rollout-pod-registry-docker
+    rollouts-pod-template-hash: abc123
+spec:
+  containers:
+    - name: app
+      image: docker.io/library/busybox:1.37@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rollout-pod-resources-none
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+    app: rollout-pod-resources-none
+    rollouts-pod-template-hash: abc123
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rollout-pod-label-none
+  namespace: shop
+  labels:
+    app: rollout-pod-label-none
+    rollouts-pod-template-hash: abc123
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/franklindot04/gateway:1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rollout-pod-exempt
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: gateway
+    app: rollout-pod-exempt
+    rollouts-pod-template-hash: abc123
+    platform.example/policy-exempt: 'true'
+spec:
+  containers:
+    - name: app
+      image: docker.io/library/busybox:1.37
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080

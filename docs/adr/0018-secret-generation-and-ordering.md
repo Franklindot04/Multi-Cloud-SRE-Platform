@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-29
+- See also: [ADR-0027](0027-external-secrets.md), which adds a second mode in which the passwords come from Parameter Store through the External Secrets Operator. The generator Jobs of this ADR stay as the default, and the ordering and teardown rules below apply to both modes.
 
 ## Context
 

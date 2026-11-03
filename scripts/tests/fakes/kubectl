@@ -172,7 +172,7 @@ case "$*" in
     fi
     echo secret/cluster-in-cluster
     ;;
-  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets-")
+  "-n argocd label secret cluster-in-cluster platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets- platform.example/progressive-delivery-")
     mark labels-removed
     echo "secret/cluster-in-cluster unlabeled"
     ;;
@@ -187,6 +187,7 @@ case "$*" in
       printf '%s\n' application.argoproj.io/apps-orders-in-cluster application.argoproj.io/data-postgres-in-cluster \
         application.argoproj.io/observability-stack-in-cluster application.argoproj.io/policy-kyverno-in-cluster \
         application.argoproj.io/eso-operator-in-cluster \
+        application.argoproj.io/delivery-argo-rollouts-in-cluster \
         application.argoproj.io/cert-manager-in-cluster
     fi
     ;;

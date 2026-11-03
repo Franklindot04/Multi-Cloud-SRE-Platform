@@ -5,6 +5,11 @@ on:
     paths:
       - "platform/observability/**"
       - "platform/argocd/**"
+      - "deploy/helm/service/**"
+      - "deploy/helm/tests/**"
+      - "deploy/helm/values/gateway*"
+      - "docs/runbooks/alerts.md"
+      - "docs/runbooks/progressive-delivery.md"
       - "scripts/**"
       - ".yamllint.yaml"
       - ".github/workflows/observability.yml"

@@ -8,10 +8,13 @@
 # complete within the timeout; nothing later runs after a failure.
 #
 #    1. remove the cluster Secret labels platform.example/apps, platform.example/data,
-#       platform.example/observability, platform.example/policy and platform.example/external-secrets (the label keys are
-#       deleted, not set to false), so the ApplicationSets stop recreating Applications
-#    2. wait until the apps-*, data-*, observability-*, policy-* and eso-* Applications are gone (this also removes the
-#       CloudNativePG, RabbitMQ Cluster, Prometheus, Kyverno and External Secrets controllers)
+#       platform.example/observability, platform.example/policy, platform.example/external-secrets and
+#       platform.example/progressive-delivery (the label keys are deleted, not set to false), so the ApplicationSets stop recreating
+#       Applications
+#    2. wait until the apps-*, data-*, observability-*, policy-*, eso-* and delivery-* Applications are gone (this also removes the
+#       CloudNativePG, RabbitMQ Cluster, Prometheus, Kyverno, External Secrets and Argo Rollouts controllers; a Rollout needs no step of
+#       its own: it has no finalizer that outlives the controller, the CRDs go with the Application, and the ReplicaSets it made are
+#       deleted by the garbage collector, which step 5 waits for)
 #    3. delete the Kyverno policies (every ClusterPolicy, Policy, ValidatingPolicy and ImageValidatingPolicy), then the validating and mutating webhook
 #       configurations whose names start with kyverno, and wait until they are gone; a webhook with no controller
 #       behind it can block the deletions that follow
@@ -244,7 +247,7 @@ apps_gone() {
     DETAIL="could not list Applications"
     return 1
   }
-  DETAIL="$(printf '%s\n' "$out" | grep -E '/(apps|data|observability|policy|eso)-' || true)"
+  DETAIL="$(printf '%s\n' "$out" | grep -E '/(apps|data|observability|policy|eso|delivery)-' || true)"
   [ -z "$DETAIL" ]
 }
 
@@ -491,13 +494,13 @@ fi
 step "Remove the cluster Secret labels, so the ApplicationSets stop recreating Applications"
 if k -n "$ARGO_NS" get secret "$CLUSTER_SECRET" -o name > /dev/null 2>&1; then
   # A trailing '-' deletes the label key. Absent labels are reported by kubectl and are not an error.
-  run k -n "$ARGO_NS" label secret "$CLUSTER_SECRET" platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets-
+  run k -n "$ARGO_NS" label secret "$CLUSTER_SECRET" platform.example/apps- platform.example/data- platform.example/observability- platform.example/policy- platform.example/external-secrets- platform.example/progressive-delivery-
 else
   fail "Secret $ARGO_NS/$CLUSTER_SECRET not found in context '$CONTEXT'. Is this the Argo CD hub cluster?"
 fi
 
-step "Wait for the apps-*, data-*, observability-*, policy-* and eso-* Applications to be deleted"
-wait_for "no apps-*, data-*, observability-*, policy-* or eso-* Application remains" apps_gone
+step "Wait for the apps-*, data-*, observability-*, policy-*, eso-* and delivery-* Applications to be deleted"
+wait_for "no apps-*, data-*, observability-*, policy-*, eso-* or delivery-* Application remains" apps_gone
 
 step "Delete the Kyverno policies and webhook configurations (a webhook with no controller can block the deletions that follow)"
 for crd in $KYVERNO_POLICY_CRDS; do

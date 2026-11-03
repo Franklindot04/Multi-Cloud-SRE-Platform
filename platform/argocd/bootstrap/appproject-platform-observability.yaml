@@ -61,7 +61,7 @@ spec:
       kind: Role
     - group: rbac.authorization.k8s.io
       kind: RoleBinding
-    # An ExternalSecret can make the Secrets of the stack from Parameter Store instead of a generator Job (a later change). Only this
+    # An ExternalSecret can make the Secrets of the stack from Parameter Store instead of a generator Job. Only this
     # kind: the stores are cluster-scoped and belong to the platform-addons project.
     - group: external-secrets.io
       kind: ExternalSecret

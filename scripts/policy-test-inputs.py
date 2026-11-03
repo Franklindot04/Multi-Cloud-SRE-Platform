@@ -19,8 +19,8 @@ import yaml
 
 yaml.SafeLoader.add_constructor("tag:yaml.org,2002:value", lambda loader, node: loader.construct_scalar(node))
 
-WORKLOADS = ("Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod")
-CONTROLLERS = ("Deployment", "StatefulSet", "DaemonSet")
+WORKLOADS = ("Deployment", "Rollout", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod")
+CONTROLLERS = ("Deployment", "Rollout", "StatefulSet", "DaemonSet")
 POD_POLICIES = ["require-image-digest", "restrict-image-registries", "require-resources", "require-app-name-label"]
 EXEMPT = "platform.example/policy-exempt"
 
@@ -49,8 +49,19 @@ def reality(out_dir, entries):
             resources.append(doc)
             name = doc["metadata"]["name"]
             result = "skip" if exempt(doc) else "pass"
-            for policy in POD_POLICIES:
-                results.setdefault((policy, result), []).append(name)
+            if doc["kind"] == "Rollout":
+                # The pod policies match pods, not the Rollout: they are tested on the pod its ReplicaSet creates from the template.
+                template = doc["spec"]["template"]
+                labels = dict((template.get("metadata") or {}).get("labels") or {})
+                labels["rollouts-pod-template-hash"] = "abc123"
+                pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name + "-pod", "namespace": "shop", "labels": labels},
+                       "spec": template["spec"]}
+                resources.append(pod)
+                for policy in POD_POLICIES:
+                    results.setdefault((policy, result), []).append(pod["metadata"]["name"])
+            else:
+                for policy in POD_POLICIES:
+                    results.setdefault((policy, result), []).append(name)
             if doc["kind"] in CONTROLLERS:
                 results.setdefault(("require-probes", result), []).append(name)
     with open(out_dir + "/resources.yaml", "w", encoding="utf-8") as handle:

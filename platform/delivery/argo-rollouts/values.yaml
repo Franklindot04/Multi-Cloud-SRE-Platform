@@ -1,0 +1,70 @@
+---
+# Argo Rollouts from the official chart (vendored by version, see Chart.yaml): the controller only. This installs the controller and its
+# CRDs; no Rollout, AnalysisTemplate or AnalysisRun is deployed by it (the service chart and the analysis templates come in later
+# changes).
+# No dashboard and no notifications controller: nothing here needs them, and the dashboard is a web server with the rights to read and
+# change every Rollout.
+argo-rollouts:
+  # The chart installs its CRDs (Rollout, AnalysisRun, AnalysisTemplate, ClusterAnalysisTemplate, Experiment) and keeps them if
+  # the release goes.
+  # The biggest, analysisruns.argoproj.io, is about 230 KB as rendered (measured on a YAML dump of chart 2.43.8): under the 256 KiB that
+  # client-side apply can store in an annotation, but not by much, and a chart update can cross it. So the Argo CD Application syncs with
+  # ServerSideApply=true (platform/argocd/apps/99-delivery-argo-rollouts.yaml) and nothing breaks when it does.
+  installCRDs: true
+  keepCRDs: true
+
+  controller:
+    # One replica. The cost of the controller being down is small: pods that a Rollout already made keep running and keep serving; only a
+    # rollout in progress stalls where it is (a new image is not rolled forward, an analysis does not finish, a promotion waits) until the
+    # controller is back, which on a Spot cluster is the time to start a pod on another node. A second replica with leader
+    # election would take
+    # over in seconds (values-ha.yaml) but costs another 50m CPU and 64Mi, on a cluster where the requests already exceed what two nodes
+    # hold (docs/runbooks/resilience.md). So the default is one, and the high availability values are for a cluster with room.
+    replicas: 1
+    # Rank with the add-ons and the data layer, above the services and the observability stack (platform/addons/priority-classes).
+    priorityClassName: platform-addons-critical
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 192Mi
+    # Metrics on the port "metrics" (8090) of a Service. The ServiceMonitor is in platform/observability/monitors, like the ones
+    # for Kyverno
+    # and the External Secrets Operator, so this chart needs no Prometheus Operator CRD.
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: false
+
+  # Restricted Pod Security: these are the chart's defaults, repeated so that a chart change cannot loosen them silently. The seccomp
+  # profile is RuntimeDefault, all capabilities are dropped, the root filesystem is read-only and nothing may escalate.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  # No dashboard (a web server that can change every Rollout), no notifications.
+  dashboard:
+    enabled: false
+  notifications:
+    configmap:
+      create: false
+    secret:
+      create: false
+
+  # The controller's rights for traffic routers: none. Rollouts of this platform are replica-based canaries and blue-green swaps
+  # of Services; a
+  # traffic router (the AWS Load Balancer Controller, a service mesh, the Gateway API) is a later decision, and its rights can be switched
+  # on then (one value each).
+  providerRBAC:
+    enabled: false

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: argo-rollouts-network-policies
+description: Default-deny network policies for the argo-rollouts namespace, with the allow rules the Argo Rollouts controller needs
+type: application
+version: 0.1.0
+annotations:
+  platform/clouds: "aws"

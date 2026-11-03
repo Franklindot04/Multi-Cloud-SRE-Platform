@@ -35,6 +35,11 @@ resourceRules:
     apiVersions: [v1]
     operations: [CREATE, UPDATE]
     resources: [deployments, statefulsets, daemonsets]
+  {{- /* Argo Rollouts (platform/delivery): a Rollout has spec.template like a Deployment. The rule is harmless where the CRD is not installed. */}}
+  - apiGroups: [argoproj.io]
+    apiVersions: [v1alpha1]
+    operations: [CREATE, UPDATE]
+    resources: [rollouts]
 {{- end -}}
 
 {{- define "policies.autogen" -}}

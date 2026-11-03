@@ -6,14 +6,17 @@ One chart deploys all four sample services. Argo CD renders it once per service 
 
 ```text
 deploy/helm/
-  service/            the chart: Deployment, Service, ServiceAccount, PodDisruptionBudget, migration Job
-                      (PreSync hook), NetworkPolicies, optional Ingress, Certificate, ServiceMonitor and BackendConfig
+  service/            the chart: Deployment (or, with rollout.enabled, an Argo Rollout and its AnalysisTemplate), Service,
+                      ServiceAccount, PodDisruptionBudget, migration Job (PreSync hook), NetworkPolicies, optional
+                      Ingress, Certificate, ServiceMonitor and BackendConfig
+  tests/              promtool tests for the queries of the canary analysis
   values/
     images.yaml       registry, tag and per-service digests: the one file CI updates (the tag is a placeholder)
     <service>.yaml    what is the same in every profile: port, user, resources, plain environment
     <service>-memory.yaml   STORAGE=memory, CACHE=none, MESSAGING=http (the default profile)
     <service>-data.yaml     postgres, valkey and rabbitmq; the Secrets they read; the migration Job
     cloud-aws.yaml, cloud-gcp.yaml   ingress annotations per cloud (used by the gateway)
+    gateway-rollout.yaml    canary steps and analysis thresholds of the gateway (rollout.enabled is set by Argo CD, not here)
 ```
 
 The RabbitMQ credential copy lives with the data layer, in [`platform/data/rabbitmq-credentials`](../../platform/data/rabbitmq-credentials).
@@ -29,7 +32,7 @@ The release name is the service name: the chart names the Service, Deployment an
 
 ## What the chart does
 
-- Rolling update with `maxUnavailable: 0` and a surge of one, a PodDisruptionBudget for a service with more than one replica, topology spread over nodes and zones, an optional CPU autoscaler (see [Replicas, budgets and autoscaling](#replicas-budgets-and-autoscaling)), and the `platform-apps` priority class.
+- Rolling update with `maxUnavailable: 0` and a surge of one (or, with `rollout.enabled`, a canary; see [Canary rollouts](#canary-rollouts-argo-rollouts)), a PodDisruptionBudget for a service with more than one replica, topology spread over nodes and zones, an optional CPU autoscaler (see [Replicas, budgets and autoscaling](#replicas-budgets-and-autoscaling)), and the `platform-apps` priority class.
 - Restricted security context on every container and Job: non-root numeric user, no privilege escalation, all capabilities dropped, `RuntimeDefault` seccomp, read-only root filesystem (an `emptyDir` on `/tmp` only for payments), no service account token, requests and limits.
 - Probes on `/healthz` (startup, liveness) and `/readyz` (readiness); a `preStop` sleep and a grace period derived from the drain and shutdown timeouts.
 - Passwords as mounted Secret files (`NAME_FILE`), other connection details from the same Secrets.
@@ -56,6 +59,36 @@ A service may run more than one replica only when its state is outside the pod. 
 The reasoning is in [ADR-0026](../../docs/adr/0026-resilience-and-autoscaling.md), and applying, checking and testing it are in the [resilience runbook](../../docs/runbooks/resilience.md).
 
 `scripts/chart-contract-check.py scaling` checks every rendered service against this (see the table in `scripts/deploy-check.sh`): the replica count or the autoscaler each service and profile should have, no `replicas` next to an autoscaler, a budget exactly when there is more than one replica, the spread, the rollout and the grace period. A service with in-memory state cannot be given a second replica without the check failing. Nothing here has run on a cluster.
+
+## Canary rollouts (Argo Rollouts)
+
+With `rollout.enabled: true` the chart renders an Argo `Rollout` in place of the Deployment. The default is `false`: every service renders a Deployment, as before, and the memory profile and local clusters never change. Argo CD turns it on for the **gateway only**, in the **data profile only**, on a cluster labelled `platform.example/progressive-delivery=true` (`scripts/bootstrap-argocd.sh --enable-progressive-delivery`, which also deploys the controller; see [`platform/delivery`](../../platform/delivery/argo-rollouts/README.md)). `rollout.analysis.enabled` is set from the same label and from `platform.example/observability`, because the analysis reads Prometheus. [ADR-0028](../../docs/adr/0028-progressive-delivery.md) has the reasoning.
+
+- **One pod template.** The Deployment and the Rollout both include `service.podTemplate` (`templates/_pod.tpl`): labels, annotations, probes, resources, security context, priority class and topology spread come from one place, so the two modes cannot drift. The only difference is the label that tells the revisions apart in the spread (`pod-template-hash` for a Deployment, `rollouts-pod-template-hash` for a Rollout). `scripts/chart-contract-check.py rollout` compares the two renders of the same inputs.
+- **Canary without a traffic router.** There is no ingress controller with weighted routing and no service mesh, so `setWeight` is a share of the **replicas**: the Service sends requests to every ready pod, stable and canary alike, in proportion to the pods. The split is **approximate and depends on the replica count**. Rollouts picks the whole number of canary pods whose share is closest to the weight (a tie rounds up, and there is at least one canary and one stable pod between 1 and 99 percent). With 2 replicas, 25 percent is 1 canary pod and 1 stable pod, which is about half of the requests; with 4 replicas it is 1 of 4. The steps are values (default: 25 percent, pause 5m, 50 percent, pause 5m, then the canary is promoted), and `maxSurge` (50 percent) lets the larger step have its pods.
+- **The Service and the budget are unchanged.** Both select `app.kubernetes.io/name` and `instance`, which the pods of both ReplicaSets carry, and not the revision label. The Rollout has no `replicas` field when the autoscaler is on, as the Deployment has none, and the autoscaler's `scaleTargetRef` is the Rollout (it has a scale subresource). `maxUnavailable` is 0, so a rollout never takes a ready pod away; that is within the budget's `maxUnavailable: 1`, which counts voluntary disruptions only, and the chart refuses a higher value.
+- **Deadline and abort.** `progressDeadlineSeconds` is 600 and `progressDeadlineAbort` is true: a rollout that makes no progress is aborted. An abort sets the canary weight back to zero, so the canary pods are scaled down and the stable pods keep serving. `abortScaleDownDelaySeconds` is not used: the project documents it only for a canary with a traffic router.
+
+### The analysis
+
+The `AnalysisTemplate` `gateway-canary` runs in the background while the steps proceed (`startingStep: 1`, so from the first pause, when the canary pods exist). It has two metrics, each queried every minute from the in-cluster Prometheus (`http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090`; the controller runs the query, which is why the network policy of the controller allows port 9090 and `scripts/observability-check.sh` checks the address against the Service the stack renders):
+
+| Metric | Query (the SLO series, the canary pods only) | Default threshold (SLO minus a margin) |
+| --- | --- | --- |
+| `success-ratio` | one minus 5xx over the requests that are not 4xx, from `http_requests_total` | 0.99 (the objective is 99.5 percent) |
+| `fast-ratio` | requests of at most 0.5 s over all requests, from `http_request_duration_seconds` | 0.90 (the objective is 95 percent) |
+
+Both leave out `/healthz`, `/readyz`, `/metrics` and `/version`, as the SLO rules do, and use the same series (`http_requests_total{service="gateway",route,status}` and the histogram with `le="0.5"`; the names are those of `platform/observability/monitors/values.yaml`). The margin is there because a window of two minutes holds few requests: one slow or failed request must not abort a rollout by itself, and `failureLimit: 2` allows a third bad measurement before the run fails.
+
+**Per pod.** With a replica-based canary there is no separate canary Service, so the canary is told apart by pod. The Rollout passes the pod template hash of the new revision to the analysis (`args: canary-hash` from `valueFrom: podTemplateHashValue: Latest`, which the project documents), and the queries select `pod=~"gateway-<hash>-.+"`: the ReplicaSet of a Rollout is named `<rollout>-<hash>` and its pods `<rollout>-<hash>-<suffix>`. **How the `pod` label was checked.** Prometheus gets it from the ServiceMonitor: the Prometheus Operator adds a relabeling from `__meta_kubernetes_pod_name` to the target label `pod` for every ServiceMonitor (read in its source, `generateServiceMonitorConfig`), and `platform/observability/monitors/templates/services.yaml` is a ServiceMonitor with no `targetLabels` or `honorLabels` that would change it. The pod name pattern comes from how Argo Rollouts names its ReplicaSets (its documentation and source). **Neither has been seen on a cluster.** Check it with `kubectl -n shop get pods` and the query `count by (pod) (http_requests_total{service="gateway"})` in Prometheus.
+
+**No traffic.** An idle dev cluster gets no requests, and a query with no requests returns no data, or NaN. The rule: a measurement is made only when the canary served at least `minRequests` (20) requests in the window; below that, or when the canary has no series yet, the query returns **NaN** (`... or vector(NaN)`). The success condition is `result[0] >= T` and the failure condition `result[0] < T`; NaN is neither, so the measurement is **inconclusive** (the project documents this for a template with both conditions). More than `inconclusiveLimit` (2) inconclusive measurements make the run inconclusive, and the rollout **pauses at its current step** and waits for a person to promote or abort it. So an idle cluster neither promotes blindly nor aborts for nothing. The analysis decides after about `initialDelay` (2m) plus three intervals (3m), which is before the 10 minutes of pauses end; `chart-contract-check.py rollout` fails if the pauses are shorter than that, because the timed pauses would otherwise promote the canary before the analysis could say anything. If Prometheus cannot be reached the measurement is an error, and after `consecutiveErrorLimit` (3) in a row the run errors and the rollout is aborted: it fails closed.
+
+**Generating load** for a check on a dev cluster is described in the runbook that follows this change; there is no load tool in the repository.
+
+The queries are tested by `scripts/observability-check.sh` with `promtool` against synthetic series (`tests/analysis-queries.test.yaml`): all good, canary failing, canary slow, and four kinds of no traffic. The queries in the test are the ones the chart renders. What that cannot show is in [ADR-0028](../../docs/adr/0028-progressive-delivery.md).
+
+**Switching an existing release** from a Deployment to a Rollout: the Rollout creates its own ReplicaSet and the Deployment is pruned last (`PruneLast=true`), so the new pods are up before the old ones go. Not tried on a cluster.
 
 ## Network policies
 
@@ -87,4 +120,4 @@ No image reference is hard-coded. `values/images.yaml` carries the registry (Git
 make deploy-check
 ```
 
-`helm lint --strict` and `helm template` for every service under every profile and cloud (and with the optional features on), `kubeconform` against the Kubernetes version of each cloud, security checks on the rendered output (non-root, no privilege escalation, capabilities dropped, seccomp, limits, read-only root filesystem, no host access, no mounted token, no secret values, no LoadBalancer or NodePort Service, no `:latest`), `yamllint` and `shellcheck`.
+`helm lint --strict` and `helm template` for every service under every profile and cloud (and with the optional features on, and the gateway as a Rollout with and without the analysis), `kubeconform` against the Kubernetes version of each cloud, security checks on the rendered output (non-root, no privilege escalation, capabilities dropped, seccomp, limits, read-only root filesystem, no host access, no mounted token, no secret values, no LoadBalancer or NodePort Service, no `:latest`), `yamllint` and `shellcheck`.
